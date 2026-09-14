@@ -4,45 +4,141 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     lcc-src = { url = "github:drh/lcc"; flake = false; };
-    tinycc-src = { url = "git+https://repo.or.cz/tinycc.git"; flake = false; };
+    # Pinned to a tag, not the mob branch: repo.or.cz's `mob` gets rewritten,
+    # which would eventually break evaluation. We want it for the tests2 corpus
+    # (139 cases with .expect files) rather than for its compiler.
+    tinycc-src = { url = "git+https://repo.or.cz/tinycc.git?ref=refs/tags/release_0_9_27"; flake = false; };
     nix-riscv = { url = "github:eisbaw/nix-riscv"; flake = false; };
   };
 
-  outputs = { self, nixpkgs, lcc-src, tinycc-src, nix-riscv }:
+  outputs = { nixpkgs, lcc-src, tinycc-src, nix-riscv, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
 
-      # Reference oracle: lcc's own frontend, used to diff our Nix IR against.
-      # lcc 4.2 predates strict aliasing and miscompiles at -O1 on modern gcc
-      # (rcc segfaults before emitting anything), hence -O0 -fno-strict-aliasing.
+      # lcc's own frontend, used as the oracle we diff our Nix frontend against.
+      #
+      # Build flags: -O0 is the load-bearing one. lcc's arena allocator
+      # (alloc.c's `union align`) predates 16-byte-aligned types, so sym.c's
+      # install() returns under-aligned memory -- live UB on every symbol
+      # installation. x86 tolerates it at -O0; from -O1 GCC's alignment
+      # assumptions kill it and rcc crashes on every input. -fno-strict-aliasing
+      # does NOT fix this (measured: -O2 with it still crashes 18/18).
       rcc = pkgs.stdenv.mkDerivation {
         pname = "lcc-rcc";
         version = "4.2";
         src = lcc-src;
         nativeBuildInputs = [ pkgs.byacc ];
+
+        # Upstream bug: every IR override flag uses its literal's length except
+        # -mulops_calls=, which compares 18 bytes against a 14-char string and so
+        # can never match -- a silent no-op. Fixed here so it is not a trap for
+        # later work, but NOT used by rcc-rv32: with the flag actually live,
+        # dag.c promotes MUL/DIV/MOD to forest roots, and neither symbolic.c's
+        # valid-forest switch nor dagcheck.md (whose only stmt roots are INDIR*,
+        # CALL* and V) knows about that. Making it work needs patching both plus
+        # regenerating lburg output, which would make the oracle less like real
+        # lcc -- defeating the point of having one. The mul/div/mod libcall
+        # promotion is therefore a known, separately-tested divergence.
+        postPatch = ''
+          substituteInPlace src/main.c \
+            --replace-fail '"-mulops_calls=", 18' '"-mulops_calls=", 14' \
+            --replace-fail "argv[i][18] - '0'" "argv[i][14] - '0'"
+
+        '';
+
         buildPhase = ''
           mkdir -p $PWD/build
           make BUILDDIR=$PWD/build HOSTFILE=etc/linux.c \
-               CFLAGS='-g -O0 -std=gnu89 -w -fno-strict-aliasing' \
+               CFLAGS='-g -O0 -std=gnu89 -w' \
                $PWD/build/rcc
         '';
-        installPhase = "install -Dm755 build/rcc $out/bin/rcc";
+
+        # A miscompiled rcc installs perfectly happily, and a one-function smoke
+        # test does not catch it: an -O1 build passes `int f(int a){return a+1;}`
+        # while crashing on every real file. So gate on lcc's own corpus.
+        doCheck = true;
+        nativeCheckInputs = [ pkgs.gcc ];
+        checkPhase = ''
+          fail=0 pass=0
+          for f in tst/*.c; do
+            case "$(basename $f)" in
+              front.c|paranoia.c|yacc.c) continue ;;   # diagnostics test / need headers we do not ship
+            esac
+            gcc -E -P -std=gnu89 -nostdinc -Iinclude/x86/linux "$f" > t.i 2>/dev/null || continue
+            if ./build/rcc -target=symbolic < t.i > t.sym 2>/dev/null && [ -s t.sym ]; then
+              pass=$((pass + 1))
+            else
+              echo "rcc failed on $f"; fail=$((fail + 1))
+            fi
+          done
+          echo "rcc corpus: $pass passed, $fail failed"
+          [ "$fail" = 0 ] || { echo "rcc is miscompiled"; exit 1; }
+          [ "$pass" -ge 15 ] || { echo "corpus shrank to $pass; expected >= 15"; exit 1; }
+        '';
+
+        installPhase = ''
+          install -Dm755 build/rcc $out/bin/rcc
+          # symbolicIR declares little_endian = 0, i.e. a big-endian machine.
+          # decl.c and init.c consult it for bitfield and initializer layout:
+          # measured, `unsigned b:5` shifts by 24 at 0 and by 3 at 1. Diffing
+          # against raw `rcc -target=symbolic` would silently compare us to a
+          # target that is not ours, so always go through this wrapper.
+          mkdir -p $out/bin
+          cat > $out/bin/rcc-rv32 <<EOF
+          #!${pkgs.runtimeShell}
+          exec $out/bin/rcc -target=symbolic -little_endian=1 "\$@"
+          EOF
+          chmod +x $out/bin/rcc-rv32
+        '';
+        meta.mainProgram = "rcc";
       };
+
+      encoder = import ./poc/01-encoder/encode.nix;
+      cases = import ./poc/01-encoder/cases.nix;
     in {
       packages.${system} = { inherit rcc; default = rcc; };
+
+      checks.${system} = {
+        # The encoder is a pure expression, so evaluate it in the flake's own
+        # evaluation and hand the results to the builder as plain text. The
+        # earlier version ran `nix eval` inside a nix build, which needed
+        # pkgs.nix in the sandbox, a private store and NIX_CONFIG. This way a
+        # throwing encoder fails at flake-eval time instead of inside a builder.
+        encoder = pkgs.runCommand "encoder-diff"
+          {
+            nativeBuildInputs = [
+              pkgs.python3
+              pkgs.pkgsCross.riscv32-embedded.buildPackages.binutils
+            ];
+            asm = pkgs.writeText "cases.s"
+              (builtins.concatStringsSep "\n" (map (c: c.asm) cases) + "\n");
+            ours = pkgs.writeText "cases.hex"
+              (builtins.concatStringsSep "\n" (map (c: encoder.toHex c.word) cases));
+            # Forcing this throws if any reject case encoded or any control case did not.
+            mustFail = import ./poc/01-encoder/must-fail.nix;
+          }
+          ''
+            riscv32-none-elf-as -march=rv32i -o a.o "$asm"
+            riscv32-none-elf-objcopy -O binary --only-section=.text a.o a.bin
+            cp "$asm" in.s; cp "$ours" ours.txt
+            python3 ${./poc/01-encoder/compare.py} . | tee $out
+            echo "$mustFail" >> $out
+          '';
+      };
 
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           rcc
-          pkgs.just
-          pkgs.python3
-          # oracle for the instruction encoder: diff our bytes against GNU as
+          pkgs.just pkgs.python3
           pkgs.pkgsCross.riscv32-embedded.buildPackages.binutils
-          # for building the tinycc reference compiler when needed
           pkgs.gcc pkgs.gnumake pkgs.byacc
+          pkgs.shellcheck pkgs.statix pkgs.deadnix
         ];
         shellHook = ''
+          # tinycc is not a port source, it is the test corpus. nix-riscv is the
+          # execution substrate for the closed loop. Pinned so the versions the
+          # tests are written against cannot drift.
           export LCC_SRC=${lcc-src}
           export TINYCC_SRC=${tinycc-src}
           export NIX_RISCV=${nix-riscv}

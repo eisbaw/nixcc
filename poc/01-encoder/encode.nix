@@ -10,7 +10,9 @@ let
 
   powers = b.genList (n: if n == 0 then 1 else 2 * b.elemAt powers (n - 1)) 33;
   pow2 = n: b.elemAt powers n;
-  u32 = x: b.bitAnd x 4294967295;
+  u32 = x:
+    if x >= -2147483648 && x <= 4294967295 then b.bitAnd x 4294967295
+    else throw "u32: ${toString x} is outside [-2^31, 2^32-1]";
 
   # bits x lo width  ==  (x >> lo) & ((1 << width) - 1), on the unsigned value
   bits = x: lo: width: b.bitAnd (b.div (u32 x) (pow2 lo)) (pow2 width - 1);
@@ -50,7 +52,12 @@ let
   shType = op: f3: f7: rd: rs1: shamt:
     at f7 25 + at (fits "shamt" shamt 0 31) 20 + at (reg rs1) 15 + at f3 12 + at (reg rd) 7 + op;
 
-  sType = op: f3: rs1: rs2: imm:
+  # Argument order deliberately matches the assembly it encodes -- `sw a0, 0(sp)`
+  # is (src, base, imm). Taking base first reads naturally from the instruction
+  # format and is the reverse of every other mnemonic here, and a swapped pair
+  # still encodes to a valid instruction, so a differential test would not catch
+  # the mistake.
+  sType = op: f3: rs2: rs1: imm:
     let i = bits (fits "S-imm" imm (-2048) 2047) 0 12; in
     at (bits i 5 7) 25 + at (reg rs2) 20 + at (reg rs1) 15 + at f3 12 + at (bits i 0 5) 7 + op;
 
@@ -71,7 +78,7 @@ let
     + at (bits i 12 8) 12 + at (reg rd) 7 + op;
 
   OP = 51; OP_IMM = 19; LOAD = 3; STORE = 35; BRANCH = 99;
-  JALR = 103; JAL = 111; LUI = 55; AUIPC = 23; SYSTEM = 115;
+  JALR = 103; JAL = 111; LUI = 55; AUIPC = 23; SYSTEM = 115; MISC_MEM = 15;
 
   i = {
     # register-register
@@ -94,6 +101,11 @@ let
     # jumps and upper immediates
     jal = jType JAL; jalr = iType JALR 0;
     lui = uType LUI; auipc = uType AUIPC;
+    # memory ordering. Operand bits are i=8, o=4, r=2, w=1; plain `fence` in
+    # GNU as means `fence iorw, iorw`, i.e. pred = succ = 15.
+    fence = pred: succ:
+      at 0 28 + at (fits "fence pred" pred 0 15) 24 + at (fits "fence succ" succ 0 15) 20
+      + MISC_MEM;
     # system
     ecall = iType SYSTEM 0 "zero" "zero" 0;
     ebreak = iType SYSTEM 0 "zero" "zero" 1;
