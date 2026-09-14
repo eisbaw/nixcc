@@ -48,6 +48,15 @@ REPEATS = 3
 # Slack for GC timing and scheduler noise; a quadratic lexer misses it by 10x,
 # not by 30%.
 TOLERANCE = 1.35
+# The end-to-end step is the PRODUCT of the four adjacent ones, so holding it to
+# the same tolerance makes it far the strictest check here by accident: four
+# steps each inside 1.35x can multiply out to 3.3x. It gets its own number,
+# chosen from measurement rather than taste -- across ten runs of this ladder
+# the end-to-end ratio-of-ratios came in at 0.88 to 1.02 on a quiet machine and
+# 1.23 to 1.26 with other builds running. A quadratic lexer would read 13.9x
+# here, not 1.3x, so 1.5 still leaves two orders of magnitude of signal. If this
+# starts flaking, the number is wrong and wants re-measuring, not raising.
+END_TO_END_TOLERANCE = 1.5
 MIN_POINTS = 4
 MIN_SPAN = 8.0
 # The evaluator's fixed cost is subtracted from every point, so the smallest
@@ -162,12 +171,12 @@ def main(argv):
         fault(f"the ladder only spans {span:.1f}x, at least {MIN_SPAN}x is needed")
 
     bad = []
-    steps = [(rows[i], rows[i + 1]) for i in range(len(rows) - 1)]
-    steps.append((rows[0], rows[-1]))
-    for a, z in steps:
+    steps = [(rows[i], rows[i + 1], TOLERANCE) for i in range(len(rows) - 1)]
+    steps.append((rows[0], rows[-1], END_TO_END_TOLERANCE))
+    for a, z, tol in steps:
         grew = z["bytes"] / a["bytes"]
         slower = z["work"] / a["work"]
-        verdict = "ok" if slower <= grew * TOLERANCE else "SUPERLINEAR"
+        verdict = "ok" if slower <= grew * tol else "SUPERLINEAR"
         print(f"  {a['bytes']:>8} -> {z['bytes']:>8}: {grew:.2f}x input, "
               f"{slower:.2f}x CPU  {verdict}")
         if verdict != "ok":
@@ -202,7 +211,8 @@ def main(argv):
         print(f"FAIL: {rows[-1]['bytes']} bytes peaked at {rows[-1]['rss'] / 1024:.0f} MB, "
               f"over the {MAX_RSS_KB / 1024:.0f} MB ceiling")
         sys.exit(1)
-    print(f"PASS: {len(rows)} sizes spanning {span:.1f}x, all steps linear within {TOLERANCE}x")
+    print(f"PASS: {len(rows)} sizes spanning {span:.1f}x, every step linear within "
+          f"{TOLERANCE}x and the whole ladder within {END_TO_END_TOLERANCE}x")
 
 
 if __name__ == "__main__":
