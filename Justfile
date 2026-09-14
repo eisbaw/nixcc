@@ -18,13 +18,31 @@ poc:
     #!/usr/bin/env bash
     set -euo pipefail
     ran=0
-    for d in poc/*/; do
+    refused=0
+    # Numbered directories only: poc/lib/ is what the PoCs share, not a PoC.
+    # Still a hard error rather than a skip, so a real PoC cannot go missing.
+    for d in poc/[0-9]*-*/; do
       [ -e "$d/run.sh" ] || { echo "no run.sh in $d" >&2; exit 1; }
       echo "== $d"
-      nix develop --command bash "$d/run.sh"
+      status=0
+      nix develop --command bash "$d/run.sh" || status=$?
       ran=$((ran + 1))
+      # Exit 3 is a timing ladder refusing to judge a machine that was busy
+      # while it measured. That is not a failure of the thing under test, so it
+      # must not stop the PoCs after it from running -- and not a pass either,
+      # so the suite still ends red, with a count rather than a silence.
+      case "$status" in
+        0) ;;
+        3) refused=$((refused + 1)); echo "== $d rendered NO VERDICT; carrying on" ;;
+        *) exit "$status" ;;
+      esac
     done
     [ "$ran" -gt 0 ] || { echo "no PoCs ran -- a green suite that tested nothing" >&2; exit 1; }
+    if [ "$refused" -gt 0 ]; then
+      echo "$ran PoC(s) ran and $refused rendered NO VERDICT: this machine was too" >&2
+      echo "busy to measure linearity on. Every other check in them passed." >&2
+      exit 3
+    fi
     echo "$ran PoC(s) passed"
 
 # Differential-test the RV32I encoder against GNU as

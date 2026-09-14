@@ -4,3 +4,4 @@ result-*
 /lcc/
 /nix-riscv/
 *.o
+__pycache__/

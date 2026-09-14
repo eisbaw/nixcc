@@ -22,27 +22,34 @@ lexer reported a 2.77x time ratio for a 1.86x size step -- a false
 clock is still reported, and the acceptance limits below are still wall clock,
 because that is what a user waits for.
 
-CPU time and peak RSS come from os.wait4, which reports the child's own
-figures, rather than from getrusage(RUSAGE_CHILDREN), which is a running
-maximum over every child this process has ever had.
-
 Switching to CPU time narrows the problem but does not remove it. Measured on a
 14-core machine with every core saturated, the largest ladder point's CPU time
 inflated 3x while the smallest inflated 2.5x -- memory-bandwidth contention
 costs a 500 MB working set more than an 82 MB one, and that is real CPU time,
-not waiting. So the load average is recorded, and a superlinear verdict reached
-on a loaded machine is reported as a measurement failure rather than as a
-verdict on the lexer. It still fails; it just does not lie about why. The load
-average is a one-minute mean and lags a spike, so this diagnosis catches
-sustained load and not a burst -- it is a courtesy, not a guarantee.
+not waiting. So contention is measured around every ladder point, and when the
+machine was busy this harness renders NO VERDICT at all: not a pass, not a
+failure. See poc/lib/contention.py, which owns that measurement and is shared
+with poc/03-matcher/scale.py.
 """
-import os
 import pathlib
-import shlex
 import shutil
 import sys
-import time
+import traceback
 
+# The guard is a sibling directory, so it has to be put on the path before it
+# can be imported -- and a missing one has to be a HARNESS FAULT rather than
+# the exit 1 Python would give, because exit 1 here means "the lexer is
+# superlinear".
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent / "lib"))
+try:
+    import contention
+except ImportError as e:
+    print(f"HARNESS FAULT: cannot import the contention guard ({e}); "
+          f"poc/lib must sit beside this harness")
+    sys.exit(2)
+
+# The cheapest of at least this many runs is the measurement; the shared guard
+# adds more when the window is too short to read contention over.
 REPEATS = 3
 # A doubling of input may cost at most this much more than a doubling of time.
 # Slack for GC timing and scheduler noise; a quadratic lexer misses it by 10x,
@@ -69,49 +76,11 @@ MIN_BASELINE_RATIO = 3.0
 MAX_RSS_KB = 1024 * 1024
 # task-002 acceptance: a 1000-line file, under 10 s and under 2 GB.
 AC_SECONDS = 10.0
-# Above this share of the machine's cores, a superlinear verdict is not
-# evidence about the lexer. Measured: see the module docstring.
-BUSY_FRACTION = 0.5
 AC_RSS_KB = 2 * 1024 * 1024
-
-
-def loadavg():
-    """One-minute load average, or 0.0 where /proc is not available."""
-    try:
-        with open("/proc/loadavg") as f:
-            return float(f.read().split()[0])
-    except (OSError, ValueError):
-        return 0.0
-
-
-def fault(msg):
-    print(f"HARNESS FAULT: {msg}")
-    sys.exit(2)
-
-
-def run(argv):
-    """Run argv, returning (stdout, wall seconds, CPU seconds, peak RSS in KB)."""
-    r, w = os.pipe()
-    t0 = time.monotonic()
-    pid = os.posix_spawn(argv[0], argv, os.environ,
-                         file_actions=[(os.POSIX_SPAWN_DUP2, w, 1)])
-    os.close(w)
-    out = b""
-    while chunk := os.read(r, 65536):
-        out += chunk
-    os.close(r)
-    _, status, usage = os.wait4(pid, 0)
-    elapsed = time.monotonic() - t0
-    code = os.waitstatus_to_exitcode(status)
-    if code != 0:
-        fault(f"`{shlex.join(argv)}` exited with code {code}")
-    return out.decode(), elapsed, usage.ru_utime + usage.ru_stime, usage.ru_maxrss
-
-
-def best(argv):
-    """Cheapest of REPEATS runs, chosen by CPU time. Minimum, not mean: we are
-    measuring the algorithm, and noise only ever adds work."""
-    return min((run(argv) for _ in range(REPEATS)), key=lambda r: r[2])
+# Contention -- how busy the machine may have been for any of this to count as
+# a verdict -- is measured and decided in poc/lib/contention.py, threshold and
+# all. This file asks it; it does not carry a copy of the number.
+fault = contention.fault
 
 
 def main(argv):
@@ -125,19 +94,19 @@ def main(argv):
     nix = shutil.which("nix")
     if nix is None:
         fault("no `nix' on PATH -- run this inside nix develop")
-    cores = os.cpu_count() or 1
-    load = loadavg()
-    _, base_wall, base_cpu, _ = best([nix, "eval", "--impure", "--raw", "--expr", '""'])
+    base = contention.best([nix, "eval", "--impure", "--raw", "--expr", '""'], REPEATS)
+    base_wall, base_cpu = base.wall, base.cpu
 
     rows = []
     for f in files:
-        out, secs, cpu, rss = best([
+        point = contention.best([
             nix, "eval", "--impure", "--raw", "--expr",
             f'import {poc}/bench.nix {{ path = "{f}"; }}',
-        ])
-        parts = out.split()
+        ], REPEATS)
+        secs, cpu, rss = point.wall, point.cpu, point.rss
+        parts = point.out.split()
         if len(parts) != 2:
-            fault(f"bench.nix printed {out!r} for {f}, expected two numbers")
+            fault(f"bench.nix printed {point.out!r} for {f}, expected two numbers")
         nbytes, ntokens = int(parts[0]), int(parts[1])
         if nbytes != f.stat().st_size:
             fault(f"bench lexed {nbytes} bytes of {f} but the file is {f.stat().st_size}")
@@ -148,27 +117,46 @@ def main(argv):
         # baseline being subtracted from it, the ratios below are measuring
         # start-up noise. That is a broken measurement, not a slow lexer.
         if work < base_cpu * MIN_BASELINE_RATIO:
+            # Contention inflates the baseline, which shrinks `work' -- so ask
+            # the guard first, or a busy machine gets told its ladder points
+            # are too small when the truth is that it was busy.
+            contention.require_quiet([("baseline", base), (f"{nbytes} bytes", point)],
+                                     "lexer")
             fault(f"{f} cost {cpu:.3f} s CPU against a {base_cpu:.3f} s baseline; "
                   f"this ladder point is too small to measure")
         rows.append({
             "path": f, "lines": sum(1 for _ in f.open("rb")), "bytes": nbytes,
             "tokens": ntokens, "secs": secs, "work": work, "rss": rss,
+            "point": point,
         })
 
-    load = max(load, loadavg())
     rows.sort(key=lambda r: r["bytes"])
-    print(f"machine: {cores} cores, 1-minute load average {load:.1f}")
+    # The baseline is in here because it is subtracted from every point: a
+    # baseline measured under load deflates all of them at once.
+    points = [("baseline", base)] + [(f"{r['bytes']} bytes", r["point"]) for r in rows]
+    quiet = contention.quiet(points)
+    contention.report(points)
     print(f"evaluator start-up baseline: {base_wall:.3f} s wall, "
-          f"{base_cpu:.3f} s CPU (subtracted from `lex cpu s')")
+          f"{base_cpu:.3f} s CPU (subtracted from `lex cpu s'), measured against "
+          f"{base.foreign:.2f} cores of other work")
     print(f"{'lines':>7} {'bytes':>8} {'tokens':>8} {'wall s':>8} {'lex cpu s':>9} "
-          f"{'tokens/s':>9} {'peak RSS':>10}")
+          f"{'tokens/s':>9} {'peak RSS':>10} {'busy cores':>11}")
     for r in rows:
         print(f"{r['lines']:>7} {r['bytes']:>8} {r['tokens']:>8} {r['secs']:>8.2f} "
-              f"{r['work']:>9.2f} {r['tokens'] / r['work']:>9.0f} {r['rss'] / 1024:>7.0f} MB")
+              f"{r['work']:>9.2f} {r['tokens'] / r['work']:>9.0f} {r['rss'] / 1024:>7.0f} MB "
+              f"{r['point'].foreign:>11.2f}")
 
     span = rows[-1]["bytes"] / rows[0]["bytes"]
     if span < MIN_SPAN:
         fault(f"the ladder only spans {span:.1f}x, at least {MIN_SPAN}x is needed")
+    # The smallest ladder point stands in for the acceptance criterion. Ladder
+    # points are whole source files concatenated, never cut mid-comment, so the
+    # count overshoots 1000 -- which makes the check stricter, not weaker. This
+    # is a fact about the input rather than a verdict on the lexer, so it is
+    # asked here, where contention cannot silence it.
+    ac = rows[0]
+    if ac["lines"] < 1000:
+        fault(f"the smallest ladder point is only {ac['lines']} lines; the criterion is 1000")
 
     bad = []
     steps = [(rows[i], rows[i + 1], TOLERANCE) for i in range(len(rows) - 1)]
@@ -176,44 +164,64 @@ def main(argv):
     for a, z, tol in steps:
         grew = z["bytes"] / a["bytes"]
         slower = z["work"] / a["work"]
-        verdict = "ok" if slower <= grew * tol else "SUPERLINEAR"
+        # On a busy machine the ratios are still printed -- they are what was
+        # measured -- but they are not turned into a verdict in either
+        # direction, and `bad' stays empty so nothing downstream reads one.
+        verdict = ("unjudged" if not quiet else
+                   "ok" if slower <= grew * tol else "SUPERLINEAR")
         print(f"  {a['bytes']:>8} -> {z['bytes']:>8}: {grew:.2f}x input, "
               f"{slower:.2f}x CPU  {verdict}")
-        if verdict != "ok":
+        if verdict == "SUPERLINEAR":
             bad.append((a["bytes"], z["bytes"], grew, slower))
 
-    # The smallest ladder point stands in for the acceptance criterion. Ladder
-    # points are whole source files concatenated, never cut mid-comment, so the
-    # count overshoots 1000 -- which makes the check stricter, not weaker.
-    ac = rows[0]
     print(f"acceptance point: {ac['lines']} lines, {ac['secs']:.2f} s "
           f"(limit {AC_SECONDS}), {ac['rss'] / 1024:.0f} MB peak RSS "
           f"(limit {AC_RSS_KB / 1024:.0f} MB); largest point "
           f"{rows[-1]['rss'] / 1024:.0f} MB (ceiling {MAX_RSS_KB / 1024:.0f} MB)")
 
+    # Peak RSS is a fact about one run rather than a comparison between two, so
+    # contention does not bear on it and it is judged whatever the machine was
+    # doing. It is also the budget decision-001 closes on, which makes it the
+    # last thing that should go quiet because something else was compiling.
+    memory = []
+    if ac["rss"] > AC_RSS_KB:
+        memory.append(f"{ac['lines']} lines peaked at {ac['rss'] / 1024:.0f} MB, "
+                      f"over the {AC_RSS_KB / 1024:.0f} MB limit")
+    if rows[-1]["rss"] > MAX_RSS_KB:
+        memory.append(f"{rows[-1]['bytes']} bytes peaked at "
+                      f"{rows[-1]['rss'] / 1024:.0f} MB, over the "
+                      f"{MAX_RSS_KB / 1024:.0f} MB ceiling")
+    for m in memory:
+        print(f"FAIL: {m}")
+    if memory:
+        sys.exit(contention.EXIT_FAIL)
+
+    # Everything below compares one run against another or against a wall
+    # clock, so none of it may be judged on a machine that was busy while
+    # measuring. That is the whole point: a pass measured under contention is
+    # as untrustworthy as a failure, and the guard this replaced could only
+    # ever downgrade a failure.
+    contention.require_quiet(points, "lexer")
+
     if bad:
         for a, z, grew, slower in bad:
             print(f"FAIL: {a} -> {z} bytes grew {grew:.2f}x but cost {slower:.2f}x CPU")
-        if load > cores * BUSY_FRACTION:
-            fault(f"...but the load average was {load:.1f} on {cores} cores. Contention "
-                  f"inflates the largest ladder point more than the smallest, so this is "
-                  f"not evidence about the lexer. Re-run on an idle machine.")
-        sys.exit(1)
-    if ac["lines"] < 1000:
-        fault(f"the smallest ladder point is only {ac['lines']} lines; the criterion is 1000")
+        sys.exit(contention.EXIT_FAIL)
     if ac["secs"] > AC_SECONDS:
         print(f"FAIL: {ac['lines']} lines took {ac['secs']:.2f} s, over the {AC_SECONDS} s limit")
-        sys.exit(1)
-    if ac["rss"] > AC_RSS_KB:
-        print(f"FAIL: {ac['lines']} lines peaked at {ac['rss'] / 1024:.0f} MB, over the limit")
-        sys.exit(1)
-    if rows[-1]["rss"] > MAX_RSS_KB:
-        print(f"FAIL: {rows[-1]['bytes']} bytes peaked at {rows[-1]['rss'] / 1024:.0f} MB, "
-              f"over the {MAX_RSS_KB / 1024:.0f} MB ceiling")
-        sys.exit(1)
+        sys.exit(contention.EXIT_FAIL)
     print(f"PASS: {len(rows)} sizes spanning {span:.1f}x, every step linear within "
           f"{TOLERANCE}x and the whole ladder within {END_TO_END_TOLERANCE}x")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except SystemExit:
+        raise
+    except BaseException:
+        # An uncaught exception exits 1, and exit 1 from this harness means
+        # "the lexer is superlinear". It is not; the harness broke.
+        traceback.print_exc()
+        fault("the throughput ladder crashed -- see the traceback above. This "
+              "is not a verdict on the lexer")

@@ -107,6 +107,7 @@ tests — lives in `just poc`.
     poc/01-encoder/   RV32I instruction encoder in pure Nix, + its oracles
     poc/02-lexer/     C89 lexer in pure Nix, + its tables and throughput ladder
     poc/03-matcher/   lburg-style instruction selector, + real lcc DAGs to run it on
+    poc/lib/          what the timing ladders share: the contention guard
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
     flake.nix         dev shell, the rcc oracle, and the checks output
 
