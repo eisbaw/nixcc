@@ -6,8 +6,10 @@ The goal is that `nix eval` alone can compile and run a C program — no gcc, no
 assembler, no linker, no emulator binary. C source in, program output out,
 inside a single evaluation.
 
-Status: **early.** The instruction encoder and a C89 lexer work and are
-verified. Nothing between them exists yet. See `backlog/` for what is done.
+Status: **early.** Three pieces work and are verified: an RV32I instruction
+encoder, a C89 lexer, and an lburg-style instruction selector that turns lcc's
+own DAG output into RV32 assembly. The parser and the DAG builder that would
+join the last two do not exist yet. See `backlog/` for what is done.
 
 ## Why lcc and not tcc
 
@@ -64,11 +66,20 @@ flake so the checks are reproducible:
   `-fno-strict-aliasing` does not help, which was measured rather than assumed.
 - **`riscv32-none-elf-as`** — for the instruction encoder.
 
+The instruction selector gets a third: its output is assembled, linked and
+**executed** in [nix-riscv](https://github.com/eisbaw/nix-riscv), an RV32I
+emulator that is itself pure Nix, while the host compiler builds the same C file
+and runs it. The two answers have to agree with each other and with a number
+written down in the test table, so two compilers agreeing on a wrong answer is
+still a failure. Its DAGs are regenerated from their `.c` with lcc on every run
+and diffed, so "these are real lcc DAGs, not ones invented to suit the rules"
+is a property the suite re-proves rather than a claim in a comment.
+
 The lexer has no external oracle, so it is pinned down three ways instead: a
 table of hand-written token sequences, a byte-for-byte round-trip over all 34
 lcc sources, and a must-fail suite with control cases.
 
-Both tests are mutation-tested: deliberately corrupting the code under test must
+All three are mutation-tested: deliberately corrupting the code under test must
 make them fail, and deliberately breaking the *harness* must make them fail too,
 with a different message. An earlier version reported `PASS` while comparing
 nothing.
@@ -80,18 +91,22 @@ nothing.
     just e2e             # build oracles, run every PoC
     just poc-encoder     # differential-test the RV32I encoder against GNU as
     just poc-lexer       # token tables, round-trip, throughput, mutation test
+    just poc-matcher     # rule table, labelling, cost duels, emitted code run
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
 
-`nix flake check` runs the encoder differential test and the lexer's token and
-round-trip checks. The throughput ladder and the mutation tests live in
-`just poc` because they time and mutate subprocesses.
+`nix flake check` runs everything that is a pure evaluation: the encoder
+differential test, the lexer's token and round-trip checks, and the matcher's
+rule, labelling and emitted-code checks. Anything that times, executes or
+mutates a subprocess — the throughput ladders, the emulator runs, the mutation
+tests — lives in `just poc`.
 
 ## Layout
 
     poc/01-encoder/   RV32I instruction encoder in pure Nix, + its oracles
     poc/02-lexer/     C89 lexer in pure Nix, + its tables and throughput ladder
+    poc/03-matcher/   lburg-style instruction selector, + real lcc DAGs to run it on
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
     flake.nix         dev shell, the rcc oracle, and the checks output
 

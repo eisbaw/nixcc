@@ -1,0 +1,20 @@
+export second
+segment text
+function second type=int function(int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=1
+caller a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+callee a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=2.000000
+blockbeg off=0
+blockend off=0
+ 2. CNSTI4 1
+1' ARGI4 #2 4 4
+6. ADDRFP4 a
+5. INDIRI4 count=2 #6
+4. MULI4 #5 #5
+3' ARGI4 #4 4 4
+8. ADDRGP4 h
+7' CALLI4 #8 {int function(int,int)}
+9' RETI4 #7
+ 1:
+maxoff=0
+import h
+progend

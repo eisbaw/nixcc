@@ -1,0 +1,318 @@
+# The matcher's verification, in one place so that run.sh and the flake's
+# `checks.matcher` cannot drift apart. Forcing this either throws with a
+# precise message or returns a summary of what was actually measured.
+#
+# The harness is as much on trial as the matcher. This project has already
+# shipped two tests that printed PASS while comparing nothing -- one because
+# zip() truncated, one because nothing ever looked at the field that was
+# wrong. So every count reported below is counted from work done, and a table
+# that has shrunk or been emptied is a HARNESS FAULT rather than a pass.
+#
+# The guards are ordered so that a HARNESS FAULT can never pre-empt a real
+# matcher diagnosis: the floors come first because an empty table cannot
+# produce a meaningful verdict, but everything derived from the tables is
+# checked as a matcher failure, and the "did we actually compare anything"
+# arithmetic comes last. Among the matcher's own verdicts, WHAT it emitted is
+# reported before WHY it chose that -- a cost duel is an explanation, and an
+# explanation of code that is already wrong is the less useful half.
+{ sources }: # { expr = ./ir/expr.sym; ... }, passed in so the flake can
+# supply store paths and run.sh can supply a mutated copy
+let
+  b = builtins;
+  parse = import ./parse.nix;
+  table = import ./rules.nix;
+  cases = import ./cases.nix;
+
+  # Floors, not targets. Raise them if the tables legitimately grow.
+  #
+  # They live HERE, not beside the tables they guard in cases.nix, and that is
+  # the point: a floor kept in the same file as its data is defeated by the
+  # same one-file edit it exists to catch. An earlier version of this put the
+  # last three in cases.nix and emptying every list AND zeroing every floor was
+  # a single sed, after which the suite passed while printing "0 required
+  # opcodes matched".
+  minFunctions = 7;
+  minSelections = 22;
+  minDuels = 4;
+  minRules = 35;
+  minNodes = 175;
+  minRequiredOps = 20;
+  minLibcalls = 3;
+  minForbidden = 5;
+  minFollows = 2;
+
+  fault = msg: throw "HARNESS FAULT: ${msg}";
+
+  emitWith = tbl: name:
+    let
+      fn = parse.parse (b.readFile sources.${name});
+      e = import ./emit.nix { table = tbl; };
+    in
+    (e.compile fn) // { inherit fn; };
+
+  compiled = b.listToAttrs (map
+    (c: { inherit (c) name; value = emitWith table c.name; })
+    cases.functions);
+
+  labelsOf = c: forest: (b.elemAt c.selected forest).labels;
+
+  # --- rule table ---------------------------------------------------------
+  ruleById = b.listToAttrs (map (r: { name = r.id; value = r; }) table.rules);
+  templates = b.concatStringsSep "\n" (map (r: r.tmpl) table.rules);
+  contains = needle: hay: b.length (b.split (b.replaceStrings [ "." "*" "+" "(" ")" "[" "]" "\\" "$" "^" "|" "?" "{" "}" ] [ "\\." "\\*" "\\+" "\\(" "\\)" "\\[" "\\]" "\\\\" "\\$" "\\^" "\\|" "\\?" "\\{" "\\}" ] needle) hay) > 1;
+
+  forbidden = b.filter (m: contains m templates) cases.forbiddenMnemonics;
+  badLibcall = b.filter
+    (l:
+      let r = ruleById.${l.rule} or null; in
+      r == null || r.op != l.op || !(contains "call ${l.symbol}" r.tmpl))
+    cases.libcalls;
+
+  # --- every node labels --------------------------------------------------
+  # Labelling is lazy, so this is also what forces the whole DP table: a node
+  # for which no nonterminal is reachable would reduce to a throw later, and
+  # naming it here says which one rather than which template broke.
+  nodeReports = b.concatLists (map
+    (c:
+      let comp = compiled.${c.name}; in
+      b.concatLists (b.genList
+        (i:
+          let
+            forest = b.elemAt comp.fn.forests i;
+            labels = labelsOf comp i;
+          in
+          map
+            (id: {
+              file = c.name;
+              forest = i;
+              inherit id;
+              op = forest.byId.${id}.op;
+              nts = b.length (b.attrNames labels.${id});
+            })
+            forest.order)
+        (b.length comp.fn.forests)))
+    cases.functions);
+  unlabelled = b.filter (r: r.nts == 0) nodeReports;
+  opsSeen = b.listToAttrs (map (r: { name = r.op; value = true; }) nodeReports);
+
+  # An opcode is "covered" when a node with that opcode exists in the corpus
+  # AND some rule for that same opcode labels it. A rule that exists but never
+  # fires does not count.
+  opCovered = op:
+    let
+      hits = b.filter (r: r.op == op) nodeReports;
+      fired = b.filter
+        (r:
+          let l = (labelsOf compiled.${r.file} r.forest).${r.id}; in
+          b.any (nt: (l.${nt}.rule.op or null) == op) (b.attrNames l))
+        hits;
+    in
+    { inherit op; present = hits != [ ]; fired = fired != [ ]; };
+  opCoverage = map opCovered cases.requiredOps;
+  opMissing = b.filter (c: !c.present) opCoverage;
+  opUnmatched = b.filter (c: c.present && !c.fired) opCoverage;
+
+  # --- selections ---------------------------------------------------------
+  selectionResults = map
+    (s:
+      let
+        l = (labelsOf compiled.${s.file} s.forest).${s.node} or null;
+        got = if l == null then null else l.${s.nt} or null;
+      in
+      s // {
+        gotRule = if got == null then "<no rule>" else got.rule.id;
+        gotCost = if got == null then (-1) else got.cost;
+        bad = got == null || got.rule.id != s.rule || got.cost != s.cost;
+      })
+    cases.selections;
+  selectionBad = b.filter (r: r.bad) selectionResults;
+
+  # --- cost duels ---------------------------------------------------------
+  # Raise the winner's cost and nothing else. If the labeller were taking the
+  # first matching rule rather than the cheapest, the choice would not move.
+  perturb = id: penalty: table // {
+    rules = map (r: if r.id == id then r // { cost = r.cost + penalty; } else r) table.rules;
+  };
+
+  duelResults = map
+    (d:
+      let
+        base = compiled.${d.file};
+        alt = emitWith (perturb d.winner d.penalty) d.file;
+        baseWin = ((labelsOf base d.forest).${d.node} or { }).${d.nt} or null;
+        altWin = ((labelsOf alt d.forest).${d.node} or { }).${d.nt} or null;
+        baseBody = b.concatStringsSep "\n" base.bodyLines;
+        altBody = b.concatStringsSep "\n" alt.bodyLines;
+        say = e: if e == null then "<no rule>" else "${e.rule.id}@${toString e.cost}";
+      in
+      d // {
+        got = say baseWin;
+        gotAlt = say altWin;
+        wrongWinner = baseWin == null || baseWin.rule.id != d.winner;
+        notCheaper = baseWin == null || altWin == null || !(baseWin.cost < altWin.cost);
+        noFlip = altWin == null || altWin.rule.id != d.loser;
+        missingWinnerAsm = !(contains d.winnerAsm baseBody);
+        strayLoserAsm = contains d.loserAsm baseBody;
+        missingLoserAsm = !(contains d.loserAsm altBody);
+      })
+    cases.duels;
+  duelBad = b.filter
+    (r: r.wrongWinner || r.notCheaper || r.noFlip || r.missingWinnerAsm || r.strayLoserAsm || r.missingLoserAsm)
+    duelResults;
+  duelWhy = r:
+    "${r.what} [${r.file} forest ${toString r.forest} #${r.node} ${r.nt}]: "
+    + (if r.wrongWinner then "expected ${r.winner} to win, got ${r.got}"
+    else if r.notCheaper then "${r.got} won but is not cheaper than ${r.gotAlt}"
+    else if r.noFlip then "raising ${r.winner} by ${toString r.penalty} should have handed it to ${r.loser}, but ${r.gotAlt} won -- the choice is not being made on cost"
+    else if r.missingWinnerAsm then "the emitted body does not contain `${r.winnerAsm}'"
+    else if r.strayLoserAsm then "the emitted body contains `${r.loserAsm}', which belongs to the losing rule"
+    else "with ${r.winner} penalised, the body still does not contain `${r.loserAsm}'");
+
+  # --- emitted assembly ---------------------------------------------------
+  emittedResults = map
+    (e:
+      let
+        comp = compiled.${e.file};
+        body = b.concatStringsSep "\n" comp.bodyLines;
+      in
+      e // {
+        # `present` is matched against whole lines and `absent` as substrings,
+        # which is what each means: "this instruction is emitted" against "this
+        # text appears nowhere". Matching `present` as a substring quietly
+        # accepted `mv a1,s11' for `mv a1,s1'.
+        missing = b.filter (t: !(b.elem t comp.bodyLines)) e.present;
+        stray = b.filter (t: contains t body) e.absent;
+        got = b.length (b.filter (l: b.match "[^ \t].*:" l == null) comp.bodyLines);
+        # What must be emitted IMMEDIATELY after a given label. A position, not
+        # a presence: "the value is reloaded after the join" cannot be said any
+        # other way, and it is the property that says a register is not being
+        # assumed live across a branch target.
+        misplaced = b.filter
+          (f:
+            let
+              at = b.filter (i: b.elemAt comp.bodyLines i == f.label)
+                (b.genList (i: i) (b.length comp.bodyLines));
+            in
+            at == [ ] || b.head at + 1 >= b.length comp.bodyLines
+            || b.elemAt comp.bodyLines (b.head at + 1) != f.instruction)
+          e.follows;
+      })
+    cases.emitted;
+  emittedBad = b.filter
+    (r: r.missing != [ ] || r.stray != [ ] || r.misplaced != [ ] || r.got != r.instructions)
+    emittedResults;
+  emittedWhy = r:
+    if r.stray != [ ] then "${r.file}: the emitted body contains ${b.concatStringsSep ", " (map (t: "`${t}'") r.stray)}, which it must not"
+    else if r.missing != [ ] then "${r.file}: the emitted body is missing ${b.concatStringsSep ", " (map (t: "`${t}'") r.missing)}"
+    else if r.misplaced != [ ] then "${r.file}: `${(b.head r.misplaced).instruction}' must be the first instruction after `${
+      (b.head r.misplaced).label}', and is not"
+    else "${r.file}: the matcher emitted ${toString r.got} instructions where ${
+      toString r.instructions} are expected, so it is producing different code and not just different registers";
+
+  # --- registers ----------------------------------------------------------
+  # Every callee-saved register the body touches must be one the EMITTED
+  # prologue saves and the EMITTED epilogue restores. Reading the intended save
+  # list out of the frame record instead would be checking the plan rather than
+  # the code: a prologue that saved one register fewer than the frame record
+  # says passed that version of this check.
+  regsIn = pattern: ls: b.filter (x: x != null) (map
+    (l: let m = b.match pattern l; in if m == null then null else b.head m)
+    ls);
+
+  savedCheck = map
+    (c:
+      let
+        comp = compiled.${c.name};
+        touched = b.concatLists (map
+          (l: b.filter (w: b.isString w && b.match "s[0-9]+" w != null) (b.split "[^a-z0-9]+" l))
+          comp.bodyLines);
+        saved = regsIn "\tsw (s[0-9]+),.*\\(sp\\)" comp.prologue;
+        restored = regsIn "\tlw (s[0-9]+),.*\\(sp\\)" comp.epilogue;
+        unsaved = b.attrNames (b.listToAttrs (map (t: { name = t; value = true; })
+          (b.filter (t: t != "s0" && !(b.elem t saved)) touched)));
+        lost = b.filter (t: !(b.elem t restored)) saved;
+      in
+      { file = c.name; inherit unsaved lost saved; touched = b.length touched; })
+    cases.functions;
+  savedBad = b.filter (r: r.unsaved != [ ] || r.lost != [ ]) savedCheck;
+  savedWhy = r:
+    if r.unsaved != [ ] then
+      "${r.file} uses callee-saved register(s) ${b.concatStringsSep ", " r.unsaved} that its prologue never saves"
+    else
+      "${r.file} saves ${b.concatStringsSep ", " r.lost} in its prologue and never restores them in its epilogue";
+
+  totalNodes = b.length nodeReports;
+  totalInstructions = b.foldl' (a: r: a + r.got) 0 emittedResults;
+  totalAssertions = b.foldl'
+    (a: r: a + b.length r.present + b.length r.absent + b.length r.follows + 1) 0
+    cases.emitted;
+  totalFollows = b.foldl' (a: r: a + b.length r.follows) 0 cases.emitted;
+in
+# --- floors: an empty table cannot produce a verdict at all ---------------
+if b.length cases.functions < minFunctions then
+  fault "only ${toString (b.length cases.functions)} test functions, expected at least ${
+    toString minFunctions} -- did cases.nix shrink?"
+else if b.length table.rules < minRules then
+  fault "the rule table has ${toString (b.length table.rules)} rules, fewer than the ${
+    toString minRules} floor"
+else if b.length cases.selections < minSelections then
+  fault "only ${toString (b.length cases.selections)} labelling expectations, expected at least ${
+    toString minSelections}"
+else if b.length cases.duels < minDuels then
+  fault "only ${toString (b.length cases.duels)} cost duels, expected at least ${toString minDuels}"
+else if b.length cases.requiredOps < minRequiredOps then
+  fault "cases.nix requires only ${toString (b.length cases.requiredOps)} opcodes to be covered, fewer than the ${
+    toString minRequiredOps} floor -- emptying that list turns the opcode-coverage check into a no-op"
+else if b.length cases.libcalls < minLibcalls then
+  fault "cases.nix names only ${toString (b.length cases.libcalls)} libcall lowerings, fewer than the ${
+    toString minLibcalls} floor"
+else if b.length cases.forbiddenMnemonics < minForbidden then
+  fault "cases.nix forbids only ${toString (b.length cases.forbiddenMnemonics)} mnemonics, fewer than the ${
+    toString minForbidden} floor -- emptying that list stops the check that RV32I has no multiplier"
+else if totalFollows < minFollows then
+  fault "only ${toString totalFollows} after-a-label assertions, fewer than the ${
+    toString minFollows} floor -- those are what pin that a register is not assumed live across a branch target"
+else if totalNodes < minNodes then
+  fault "the corpus DAGs hold ${toString totalNodes} nodes in total, fewer than the ${
+    toString minNodes} floor -- did the .sym files come back empty?"
+# --- the matcher's own verdicts -----------------------------------------
+else if unlabelled != [ ] then
+  throw "matcher: no rule labels ${(b.head unlabelled).op} (${(b.head unlabelled).file} forest ${
+    toString (b.head unlabelled).forest} node #${(b.head unlabelled).id}); ${
+    toString (b.length unlabelled)} node(s) affected"
+else if opUnmatched != [ ] then
+  throw "matcher: ${b.concatStringsSep ", " (map (c: c.op) opUnmatched)} appear in the corpus but no rule for those opcodes ever matched them"
+else if forbidden != [ ] then
+  throw "matcher: a rule template emits ${b.concatStringsSep ", " (map (m: "`${m}'") forbidden)}, which RV32I has not got (decision-003)"
+else if badLibcall != [ ] then
+  throw "matcher: ${(b.head badLibcall).op} must be lowered by rule `${(b.head badLibcall).rule}' to a call on ${
+    (b.head badLibcall).symbol}, and is not (decision-003)"
+else if selectionBad != [ ] then
+  throw "matcher: ${toString (b.length selectionBad)} of ${
+    toString (b.length selectionResults)} labelling expectations failed\n  ${
+    b.concatStringsSep "\n  " (map
+      (r: "${r.what} [${r.file} forest ${toString r.forest} #${r.node} ${r.nt}]: expected ${
+        r.rule}@${toString r.cost}, got ${r.gotRule}@${toString r.gotCost}")
+      selectionBad)}"
+else if emittedBad != [ ] then
+  throw "matcher: ${toString (b.length emittedBad)} emitted-assembly expectation(s) failed\n  ${
+    b.concatStringsSep "\n  " (map emittedWhy emittedBad)}"
+else if duelBad != [ ] then
+  throw "matcher: ${toString (b.length duelBad)} of ${toString (b.length duelResults)} cost duels failed\n  ${
+    b.concatStringsSep "\n  " (map duelWhy duelBad)}"
+else if savedBad != [ ] then
+  throw "matcher: ${savedWhy (b.head savedBad)}"
+# --- the corpus assumptions the above rest on ---------------------------
+else if opMissing != [ ] then
+  fault "${b.concatStringsSep ", " (map (c: c.op) opMissing)} is required by cases.nix but appears in none of the test DAGs, so nothing was checked for it"
+else if totalInstructions == 0 then
+  fault "the three cases emitted no instructions at all"
+else if totalAssertions < 20 then
+  fault "only ${toString totalAssertions} emitted-assembly assertions in total; the `present'/`absent' lists look emptied"
+else
+  "${toString (b.length cases.functions)} functions from real lcc output: ${
+    toString totalNodes} DAG nodes labelled, ${toString (b.length cases.selections)} rule/cost expectations, ${
+    toString (b.length cases.duels)} cost duels each flipped by a cost change, ${
+    toString totalAssertions} assertions over ${toString totalInstructions} emitted instructions, ${
+    toString (b.length cases.requiredOps)} required opcodes matched, ${
+    toString (b.length (b.attrNames opsSeen))} distinct opcodes seen\n"

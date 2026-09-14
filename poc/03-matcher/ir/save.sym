@@ -1,0 +1,43 @@
+export hold
+segment text
+function hold type=int function(int,int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=int sclass=register scope=PARAM flags=0 offset=0 ref=3.000000
+callee b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=2.000000
+blockbeg off=0
+local r type=int sclass=auto scope=LOCAL flags=0 offset=0 ref=2.000000
+local 2 type=int sclass=register scope=LOCAL flags=generated offset=4 ref=3.000000
+blockend off=8
+ 2. ADDRFP4 a
+4. ADDRFP4 a
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 3. ADDRFP4 a
+2. INDIRI4 count=2 #3
+4. CNSTI4 0
+1' EQI4 #2 #4 3
+6. ADDRLP4 2
+9. ADDRFP4 b
+8. INDIRI4 count=2 #9
+7. MULI4 #8 #8
+5' ASGNI4 #6 #7 4 4
+11. ADDRGP4 4
+10' JUMPV #11
+3:
+14. ADDRLP4 2
+16. ADDRFP4 a
+15. INDIRI4 #16
+13' ASGNI4 #14 #15 4 4
+4:
+19. ADDRLP4 r
+22. ADDRLP4 2
+21. INDIRI4 #22
+20. ADDI4 #2 #21
+18' ASGNI4 #19 #20 4 4
+25. ADDRLP4 r
+24. INDIRI4 #25
+23' RETI4 #24
+ 1:
+maxoff=8
+progend

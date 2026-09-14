@@ -4,7 +4,7 @@ title: Assembler and label layer for RV32
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:47'
-updated_date: '2026-09-14 19:50'
+updated_date: '2026-09-14 21:51'
 labels:
   - backend
   - assembler
@@ -46,4 +46,29 @@ builtins.substring COPIES ITS HAYSTACK -- cost proportional to the string being 
 The output is a byte list, not a string -- Nix strings cannot hold NUL (decision-001), so an ELF can never be one.
 
 Harness lessons from poc/02-lexer, which are the reason its suite catches things: order the guards so a HARNESS FAULT can never pre-empt a real diagnosis; assert the fields nothing else looks at (addresses and label offsets are this task's equivalent of line numbers, which went unverified in the lexer until a reviewer noticed a lexer answering 'line 1' to everything would pass every test); check what errors SAY and not only that they threw, which needs a shell loop because builtins.tryEval never returns the message; mutation-test the measurement code, not only the code under test; and measure performance in CPU time rather than wall clock, because a wall-clock linearity assertion fails on a busy machine from a change that never happened.
+
+forward-carried from task-003: poc/03-matcher emits assembly TEXT and hands it to riscv32-none-elf-as. When this task replaces that assembler, poc/03-matcher/ir/*.s is the first real corpus to feed it, and poc/03-matcher/run.sh already assembles, links and executes those three functions, so a Nix assembler can be diffed against binutils on exactly the same input.
+
+What the matcher's templates actually need from an assembler, which is more than the encoder (poc/01-encoder) provides today:
+  * PSEUDO-INSTRUCTIONS. The rule templates emit 'li', 'la', 'mv', 'call', 'j', 'ret', 'beqz'/'bnez'/'bgez'/'neg' (the last four only in runtime.s). 'li' and 'la' expand to lui+addi when the value does not fit 12 bits, and 'call' to auipc+jalr when the target is far. Either the assembler expands them or the rule table stops using them -- and the rule table is the wrong place, because expansion depends on the value, not the pattern.
+  * LOCAL LABELS and forward references: '.Lf_2' is branched to before it is defined, so this needs two passes or a fixpoint over label addresses, which is where branch-range relaxation also lives.
+  * DIRECTIVES the emitter produces: .text, .data, .align, .globl, .type, .size, .word.
+  * RELOCATIONS against symbols the function does not define -- 'la s1,g' and 'call h'. For a single-eval compiler these can be resolved at layout time rather than emitted as relocations, but something has to resolve them.
+
+Also: nix-riscv's rv32.nix takes { bytes; base; entry; } and 'run limit', and reports exitCode, regs and stdoutBytes. Syscall 93 is exit and 64 is write. poc/03-matcher/run.sh shows the whole path; it currently goes through objcopy only because there is no Nix linker yet.
+
+forward-carried from task-003: the emitted assembly also uses the pseudo-instruction 'la' for a global's address and 'call' for a direct call, both of which GNU as expands depending on the value and the distance. Those two, plus 'li', are the ones an in-Nix assembler cannot treat as single instructions.
+
+forward-carried from task-003, and this one is a trap rather than a fact: poc/03-matcher/emit.nix reads two fields out of the reduction state to build the prologue, and they are NOT interchangeable.
+
+  st.cseHigh  / st.depthHigh   running maxima. These are what the save list and
+                               the frame must be built from.
+  st.nextCse                   an allocation cursor. It RESETS to zero at every
+                               label, because the common-subexpression table
+                               does. It is read by the register-exhaustion
+                               check and by nothing else.
+
+Reading the cursor where the maximum was meant produced a function that wrote a callee-saved register, held it across a call, and neither saved nor restored it -- assembly that assembles, runs, and quietly corrupts its caller. poc/03-matcher/ir/save.c is the regression pin; check.nix's savedCheck catches it by scanning the emitted prologue rather than the frame record, which is the only reason it can see it at all.
+
+If this task grows emit.nix, or moves the prologue into an assembler layer, keep that distinction. The general form: any state threaded through a walk that resets at a control-flow boundary cannot also serve as a whole-function total.
 <!-- SECTION:NOTES:END -->

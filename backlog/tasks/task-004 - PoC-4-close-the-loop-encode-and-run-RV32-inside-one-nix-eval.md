@@ -4,7 +4,7 @@ title: 'PoC-4: close the loop, encode and run RV32 inside one nix eval'
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-14 18:47'
+updated_date: '2026-09-14 20:58'
 labels:
   - poc
   - integration
@@ -35,3 +35,11 @@ nix-riscv exposes load/step/run/report and implements the write() and exit() sys
 - [ ] #6 Runnable as 'just poc-loop'
 - [ ] #7 At least one backward and one forward branch is resolved from a symbol table, not hand-computed: without a label layer the human is acting as the linker, which proves nothing about the layer we need
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+forward-carried from task-003: poc/03-matcher already runs a large part of this loop, just not inside a single nix eval. It takes real lcc DAG output, selects instructions, emits RV32 assembly, and then goes OUT to riscv32-none-elf-as / ld / objcopy before coming back in to nix-riscv's rv32.nix, which executes the bytes and reports the exit code. Three functions do this in poc/03-matcher/run.sh and all three agree with the host compiler.
+
+So what task-004 has to replace is exactly the two external steps: assembling (task-006) and linking/laying out. The emulator side is already proven and is three lines -- cpu.run limit (cpu.load { bytes; base = 65536; entry = 65536; }) -- and syscall 93 carries the return value out as exitCode, which is what made the matcher's execution test cheap.
+<!-- SECTION:NOTES:END -->

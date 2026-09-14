@@ -1,0 +1,29 @@
+export dist
+segment text
+function dist type=int function(pointer to struct pt) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller p type=pointer to struct pt sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+callee p type=pointer to struct pt sclass=register scope=PARAM flags=0 offset=0 ref=3.000000
+blockbeg off=0
+local d type=int sclass=register scope=LOCAL flags=0 offset=0 ref=3.000000
+blockend off=4
+ 2. ADDRFP4 p
+4. ADDRFP4 p
+3. INDIRP4 #4
+1' ASGNP4 #2 #3 4 4
+ 2. ADDRLP4 count=2 d
+7. ADDRFP4 p
+6. INDIRP4 count=3 #7
+8. CNSTI4 4
+5. ADDP4 #6 #8
+4. INDIRI4 #5
+9. INDIRI4 #6
+3. SUBI4 #4 #9
+1' ASGNI4 #2 #3 4 4
+11. INDIRI4 #2
+10' ASGNI4 #6 #11 4 4
+ 3. ADDRLP4 d
+2. INDIRI4 #3
+1' RETI4 #2
+ 1:
+maxoff=4
+progend

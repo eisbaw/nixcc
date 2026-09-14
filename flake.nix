@@ -133,6 +133,31 @@
         # The throughput ladder, the mutation test and the check on the text
         # of each diagnostic stay in run.sh: they time subprocesses and read
         # thrown messages, neither of which an evaluation can do to itself.
+        # The matcher is pure in the same way, so its rule table, its label
+        # tables and the text it emits are forced during flake evaluation.
+        #
+        # This is a contract on the emitted TEXT, not on what the code
+        # computes: a rule template can be changed to compute the wrong thing
+        # while satisfying every assertion here. The semantic oracle -- which
+        # assembles, links and runs the result in the Nix RV32I emulator and
+        # compares against the host compiler -- is in run.sh, along with the
+        # scale ladder and the mutation test, because all three run and time
+        # subprocesses. `just poc-matcher' is the stronger gate of the two.
+        matcher = pkgs.runCommand "matcher-check"
+          {
+            # Derived from cases.nix so the case list has one definition;
+            # run.sh builds the same attrset from the same place.
+            report = import ./poc/03-matcher/check.nix {
+              sources = builtins.listToAttrs (map
+                (c: { inherit (c) name; value = ./poc/03-matcher/ir + "/${c.name}.sym"; })
+                (import ./poc/03-matcher/cases.nix).functions);
+            };
+            mustFail = (import ./poc/03-matcher/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s' "$report" "$mustFail" | tee $out
+          '';
+
         lexer = pkgs.runCommand "lexer-check"
           {
             report = import ./poc/02-lexer/check.nix {

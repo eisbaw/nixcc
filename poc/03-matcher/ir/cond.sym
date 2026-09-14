@@ -1,0 +1,42 @@
+export probe
+segment text
+function probe type=int function(int,int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=int sclass=register scope=PARAM flags=0 offset=0 ref=3.000000
+callee b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=1.000000
+blockbeg off=0
+local r type=int sclass=auto scope=LOCAL flags=0 offset=0 ref=2.000000
+local 2 type=int sclass=register scope=LOCAL flags=generated offset=4 ref=3.000000
+blockend off=8
+ 2. ADDRFP4 a
+4. ADDRFP4 a
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 3. ADDRFP4 a
+2. INDIRI4 count=2 #3
+4. CNSTI4 0
+1' EQI4 #2 #4 3
+6. ADDRLP4 2
+8. ADDRFP4 b
+7. INDIRI4 #8
+5' ASGNI4 #6 #7 4 4
+10. ADDRGP4 4
+9' JUMPV #10
+3:
+13. ADDRLP4 2
+15. ADDRFP4 a
+14. INDIRI4 #15
+12' ASGNI4 #13 #14 4 4
+4:
+18. ADDRLP4 r
+21. ADDRLP4 2
+20. INDIRI4 #21
+19. ADDI4 #2 #20
+17' ASGNI4 #18 #19 4 4
+24. ADDRLP4 r
+23. INDIRI4 #24
+22' RETI4 #23
+ 1:
+maxoff=8
+progend

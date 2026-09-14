@@ -6,9 +6,12 @@ default:
 oracle:
     nix build .#rcc
 
-# Dump lcc's reference IR for a C file (the oracle we diff our frontend against)
+# Dump lcc's reference IR for a C file (the oracle we diff our frontend against).
+# Goes through the rcc-rv32 wrapper, never raw `rcc -target=symbolic`: the raw
+# oracle declares little_endian=0 and lays out bitfields for a big-endian
+# machine (decision-004). Needs the dev shell, which is where rcc-rv32 lives.
 ir FILE:
-    nix run .#rcc -- -target=symbolic < {{FILE}}
+    rcc-rv32 < {{FILE}}
 
 # Run every proof-of-concept
 poc:
@@ -31,6 +34,11 @@ poc-encoder:
 # Exercise the C89 lexer: token tables, round-trip, throughput, mutation test
 poc-lexer:
     nix develop --command bash poc/02-lexer/run.sh
+
+# Exercise the lburg-style tree matcher: rule table, labelling, cost duels,
+# emitted RV32 assembly executed in the Nix emulator, scale, mutation test
+poc-matcher:
+    nix develop --command bash poc/03-matcher/run.sh
 
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:

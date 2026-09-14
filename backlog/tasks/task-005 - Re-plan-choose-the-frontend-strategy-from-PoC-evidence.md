@@ -4,7 +4,7 @@ title: 'Re-plan: choose the frontend strategy from PoC evidence'
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-14 19:51'
+updated_date: '2026-09-14 21:24'
 labels:
   - planning
   - wave-boundary
@@ -48,4 +48,10 @@ Two things the lexer deliberately does NOT do, both of which land on whatever th
 - No column numbers, and no 'file' (task-012). lcc threads a full Coordinate through every error, every DAG node and the symbolic IR the oracle emits, so a line-only token will not survive contact with the oracle diff.
 
 One shape decision is already made and is hard to reverse later: the token set is lcc's, which has NO compound-assignment tokens -- '<<=' is LSHIFT then '=', and lcc's parser disambiguates by peeking at the raw next character. Tokens record their preceding trivia so a parser can make the same peek via ws == "". A frontend strategy that wants '<<=' as one token has to change the lexer, not work around it.
+
+forward-carried from task-003: the lburg kill-risk resolved in favour of lcc. Declarative bottom-up matching works well in Nix -- the DP label table is a self-referential listToAttrs that laziness resolves in dependency order, measured linear at ~24000 DAG nodes/s over an 8x ladder of real lcc output. The rule table is 44 rows of pure data and the matcher that consumes it knows nothing about RISC-V. decision-002's argument stands.
+
+The number that should shape this re-plan is memory, not speed: 9.9-16.7 kB of peak RSS per DAG node for parse+label, roughly 2.5x the lexer's 4 kB/token, so ~220 MB for a 20000-node listing. A frontend that holds an AST and a DAG and a label table live at once is where that multiplies.
+
+forward-carried from task-003, correcting the memory figure in the earlier note: 8.4-8.7 kB of peak RSS per DAG node NET of the nix evaluator's own ~36 MB, flat across an 8x ladder. The 9.9-16.7 range quoted before was gross, and the apparent improvement with size was just that constant amortising. Roughly twice the lexer's 4 kB per token.
 <!-- SECTION:NOTES:END -->

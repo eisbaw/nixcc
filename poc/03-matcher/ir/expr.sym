@@ -1,0 +1,61 @@
+export f
+segment text
+function f type=int function(int,int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=1
+caller a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=1.000000
+callee b type=int sclass=register scope=PARAM flags=0 offset=4 ref=3.000000
+blockbeg off=0
+local x type=int sclass=register scope=LOCAL flags=0 offset=0 ref=13.000000
+blockend off=4
+ 2. ADDRFP4 b
+4. ADDRFP4 b
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRLP4 count=10 x
+5. ADDRFP4 a
+4. INDIRI4 #5
+7. ADDRFP4 b
+6. INDIRI4 count=3 #7
+3. ADDI4 #4 #6
+1' ASGNI4 #2 #3 4 4
+10. INDIRI4 #2
+11. CNSTI4 1
+9. SUBI4 #10 #11
+8' ASGNI4 #2 #9 4 4
+14. INDIRI4 #2
+13. MULI4 #14 #6
+12' ASGNI4 #2 #13 4 4
+17. INDIRI4 #2
+16. DIVI4 #17 #6
+15' ASGNI4 #2 #16 4 4
+20. INDIRI4 #2
+21. CNSTI4 2
+19. LSHI4 #20 #21
+18' ASGNI4 #2 #19 4 4
+23. ADDRGP4 g
+24. INDIRI4 count=2 #2
+22' ASGNI4 #23 #24 4 4
+26. CNSTI4 10
+25' LEI4 #24 #26 2
+ 3. ADDRLP4 count=2 x
+2. INDIRI4 #3
+1' ARGI4 #2 4 4
+6. ADDRGP4 g
+5. INDIRI4 #6
+4' ARGI4 #5 4 4
+8. ADDRGP4 h
+7' CALLI4 #8 {int function(int,int)}
+9' ASGNI4 #3 #7 4 4
+ 2:
+ 3. ADDRLP4 x
+2. INDIRI4 #3
+1' RETI4 #2
+ 1:
+maxoff=4
+import h
+segment bss
+export g
+global g type=int sclass=auto scope=GLOBAL flags=0 ref=1.500000
+space 4
+progend
