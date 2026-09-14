@@ -1,10 +1,10 @@
 ---
 id: TASK-003
 title: 'PoC-3: lburg-style bottom-up tree matcher for RV32'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-14 21:52'
+updated_date: '2026-09-14 21:53'
 labels:
   - poc
   - backend
@@ -132,4 +132,8 @@ Anything later that reads reduction state to decide what the prologue does must
 take a maximum, not a final value.
 
 ir/save.c pins it. check.nix's saved-register cross-check reads the EMITTED prologue rather than the frame record, which is what makes it able to see this at all, but it only reaches it on a function shaped like that one -- the other six cases claim at most one register before any label. Reverting the fix and re-running check.nix gives 'matcher: save uses callee-saved register(s) s10 that its prologue never saves'.
+
+Landed as d8064dd. Full gate green at commit time: encoder 126 instructions vs GNU as, lexer 71 token cases and 34 sources round-tripped with 10 mutations, matcher 7 functions / 178 DAG nodes / 30 rejects / 15 controls / 7 cases executed in the emulator with the host compiler agreeing / 22 mutations, lint clean, 3 PoCs passed.
+
+Scale ladder rendered a verdict on the third attempt: the first two were refused by the contention guard with the machine at load 16-20 on 14 cores from unrelated processes (a report job at 274%, Renode, a browser). At load 7.3 it read linear across 8.05x input for 6.66x CPU, every adjacent step inside 1.45x. That the gate needs a quiet machine to render this verdict at all is filed as task-020.
 <!-- SECTION:NOTES:END -->
