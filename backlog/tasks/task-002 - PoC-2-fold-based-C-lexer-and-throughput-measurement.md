@@ -4,7 +4,7 @@ title: 'PoC-2: fold-based C lexer and throughput measurement'
 status: In Progress
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-14 19:52'
+updated_date: '2026-09-14 19:55'
 labels:
   - poc
   - frontend
@@ -115,6 +115,8 @@ REMAINING LIMITS, none of them hidden:
 OPEN, and the only thing standing between this task and Done: acceptance criterion #2 says 'uses foldl'/genList/map only'. It does not -- the token loop is builtins.genericClosure. The criterion's own stated reason, 'no recursive function whose depth grows with input length', IS met and verified on pathological input. There is no way to write this lexer with foldl'/genList/map alone that is not either quadratic or linear in depth; the alternatives tried are under REJECTED APPROACHES above, and decision-001 now names genericClosure as the sanctioned primitive for a loop that must emit per step.
 
 So this is a judgement call about the criterion, not about the code, and it is not mine to make: either amend #2 to say what it was a proxy for, or reject the deviation and take the block-decomposition design instead (four moving parts, same asymptotics, measurably more complexity). Everything else in this task is done, verified and committed in 9039cc8.
+
+Landed in three commits: 9039cc8 (the lexer, its harness and the two evaluator constraints added to decision-001), 35138bd (this task's record and the notes forward-carried to 003, 005, 006 and 008), 2bb773e (the ladder's end-to-end tolerance, which was the product of four steps held to a single step's tolerance and would have gone red on a busy machine).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
