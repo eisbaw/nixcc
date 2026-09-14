@@ -125,6 +125,24 @@
             python3 ${./poc/01-encoder/compare.py} . | tee $out
             echo "$mustFail" >> $out
           '';
+
+        # The lexer is a pure expression as well, so the same trick applies:
+        # its tables, its reject paths and the byte-for-byte round-trip over
+        # every lcc source are forced during flake evaluation, and a failure is
+        # a throw at eval time rather than a builder that dies with no output.
+        # The throughput ladder, the mutation test and the check on the text
+        # of each diagnostic stay in run.sh: they time subprocesses and read
+        # thrown messages, neither of which an evaluation can do to itself.
+        lexer = pkgs.runCommand "lexer-check"
+          {
+            report = import ./poc/02-lexer/check.nix {
+              sources = import ./poc/02-lexer/sources.nix (lcc-src + "/src");
+            };
+            mustFail = (import ./poc/02-lexer/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s' "$report" "$mustFail" | tee $out
+          '';
       };
 
       devShells.${system}.default = pkgs.mkShell {

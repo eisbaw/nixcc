@@ -28,6 +28,10 @@ poc:
 poc-encoder:
     nix develop --command bash poc/01-encoder/run.sh
 
+# Exercise the C89 lexer: token tables, round-trip, throughput, mutation test
+poc-lexer:
+    nix develop --command bash poc/02-lexer/run.sh
+
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:
     #!/usr/bin/env bash
@@ -44,7 +48,7 @@ lint:
     set -euo pipefail
     nix develop --command statix check .
     nix develop --command deadnix --fail .
-    nix develop --command shellcheck poc/*/run.sh
+    nix develop --command shellcheck poc/*/*.sh
     echo "lint clean"
 
 # Print the pinned reference sources (lcc, tinycc, nix-riscv)

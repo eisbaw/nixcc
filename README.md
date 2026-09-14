@@ -6,8 +6,8 @@ The goal is that `nix eval` alone can compile and run a C program — no gcc, no
 assembler, no linker, no emulator binary. C source in, program output out,
 inside a single evaluation.
 
-Status: **early.** The instruction encoder works and is verified. The compiler
-does not exist yet. See `backlog/` for what is actually done.
+Status: **early.** The instruction encoder and a C89 lexer work and are
+verified. Nothing between them exists yet. See `backlog/` for what is done.
 
 ## Why lcc and not tcc
 
@@ -38,10 +38,19 @@ Every constraint below was measured, not assumed, and each one shaped the design
 - **Integers are 64-bit signed and overflow throws** rather than wrapping. This
   is why the target is RV32 and not RV64: 32-bit values have headroom, whereas
   RV64 would need hi/lo splitting on every arithmetic operation.
-- **Deep recursion is fatal.** Explicit tail recursion overflows the evaluator
-  stack by n=5000 and cannot be raised far enough to help. `builtins.foldl'`
-  runs 1e6 iterations in 0.6s because its loop lives in the C++ evaluator, so
-  every traversal in the compiler must be a fold.
+- **Recursion depth is capped** by the `max-call-depth` setting, default 10000,
+  and real work costs two or three depth units per level. It can be raised, but
+  only with a flag *and* a much larger `ulimit -s` — and we cannot demand either
+  of someone who just runs `nix eval`, which is the whole point. So no traversal
+  may have depth proportional to input length. Loops live in the C++ evaluator:
+  `builtins.foldl'` to reduce, `builtins.genericClosure` to iterate when each
+  step must also emit a value.
+- **Appending to a list is quadratic.** There is no O(1) cons and `++` copies:
+  `acc ++ [x]` costs 30s at n=200000 where `concatLists` of per-step singletons
+  costs 0.08s. This is the single finding most likely to sink a naive port.
+- **`builtins.substring` copies its haystack**, so slicing one lexeme per token
+  out of a source string is quadratic in file size — 22.7s against 2.1s on a
+  2.2 MB file. Text is sliced out of an exploded character list instead.
 
 ## Verification
 
@@ -50,13 +59,19 @@ flake so the checks are reproducible:
 
 - **`rcc -target=symbolic`** — lcc's own frontend, which dumps numbered DAG
   nodes. This gives a node-by-node diff target for our frontend before any
-  backend exists. Built at `-O0 -fno-strict-aliasing`, because lcc 4.2 predates
-  strict aliasing and `rcc` segfaults at `-O1` under modern gcc.
+  backend exists. Built at `-O0`, because lcc's arena allocator hands back
+  under-aligned memory and `rcc` crashes on every input from `-O1` upwards;
+  `-fno-strict-aliasing` does not help, which was measured rather than assumed.
 - **`riscv32-none-elf-as`** — for the instruction encoder.
 
-The encoder test is also mutation-tested: deliberately corrupting the encoder
-must make it fail, and deliberately breaking the *harness* must make it fail
-too. An earlier version reported `PASS` while comparing nothing.
+The lexer has no external oracle, so it is pinned down three ways instead: a
+table of hand-written token sequences, a byte-for-byte round-trip over all 34
+lcc sources, and a must-fail suite with control cases.
+
+Both tests are mutation-tested: deliberately corrupting the code under test must
+make them fail, and deliberately breaking the *harness* must make them fail too,
+with a different message. An earlier version reported `PASS` while comparing
+nothing.
 
 ## Usage
 
@@ -64,15 +79,19 @@ too. An earlier version reported `PASS` while comparing nothing.
 
     just e2e             # build oracles, run every PoC
     just poc-encoder     # differential-test the RV32I encoder against GNU as
+    just poc-lexer       # token tables, round-trip, throughput, mutation test
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
 
-`nix flake check` runs the encoder differential test in a sandbox.
+`nix flake check` runs the encoder differential test and the lexer's token and
+round-trip checks. The throughput ladder and the mutation tests live in
+`just poc` because they time and mutate subprocesses.
 
 ## Layout
 
     poc/01-encoder/   RV32I instruction encoder in pure Nix, + its oracles
+    poc/02-lexer/     C89 lexer in pure Nix, + its tables and throughput ladder
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
     flake.nix         dev shell, the rcc oracle, and the checks output
 
