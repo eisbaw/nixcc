@@ -4,7 +4,7 @@ title: 'Re-plan: choose the frontend strategy from PoC evidence'
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-14 21:24'
+updated_date: '2026-09-15 00:38'
 labels:
   - planning
   - wave-boundary
@@ -54,4 +54,14 @@ forward-carried from task-003: the lburg kill-risk resolved in favour of lcc. De
 The number that should shape this re-plan is memory, not speed: 9.9-16.7 kB of peak RSS per DAG node for parse+label, roughly 2.5x the lexer's 4 kB/token, so ~220 MB for a 20000-node listing. A frontend that holds an AST and a DAG and a label table live at once is where that multiplies.
 
 forward-carried from task-003, correcting the memory figure in the earlier note: 8.4-8.7 kB of peak RSS per DAG node NET of the nix evaluator's own ~36 MB, flat across an 8x ladder. The 9.9-16.7 range quoted before was gross, and the apparent improvement with size was just that constant amortising. Roughly twice the lexer's 4 kB per token.
+
+forward-carried from task-020: the two timing ladders now render THREE outcomes, not two. Exit 0 is a verdict that the implementation is linear, exit 1 a verdict that it is not, exit 3 'the machine was too busy for this measurement to mean anything' -- printed as NO VERDICT with the per-point contention that caused it. A re-plan reading these must not count a NO VERDICT as either; it is an absent measurement, and the fix for it is a re-run on a quiet machine rather than a decision.
+
+What the ladders actually say as of 2a6707e, measured ten times running against 2.10 to 3.45 cores of other work: the lexer is linear across a 13.9x span (31 kB to 431 kB, every adjacent step within 1.35x and end-to-end within 1.5x, ~44000 tokens/s, 501 MB peak at the top), and the matcher's labeller is linear across 8.1x (5050 to 40653 DAG nodes, ~21000 nodes/s, 9.3-9.6 kB per node net of the evaluator's own 36 MB). Both verdicts are now only rendered on a machine measured quiet enough to give them, which is the difference from the numbers task-003 closed with.
+
+Practical cost to budget for: on a machine that idles around 2 cores and bursts past 4 -- which this one does when other projects are running -- roughly one gate run in three refuses rather than reports. Six consecutive runs earlier the same evening went four green and two NO VERDICT. Re-running is the answer; raising the threshold is not, and the module says why (the distortion is already 1.19 of a 1.35 tolerance at 4.1 cores, and 1.36 at 6.4).
+
+Two things a re-plan may want to schedule. First, 'just e2e' went from about 2 minutes to 4m17, nearly all of it the four cases that prove the guard refuses in both directions, each of which runs a real ladder. Extracting a pure judge(rows, quiet, tolerances) from the ladders would make those cases synthetic and near-instant; it is a refactor of both ladders rather than a fix, so it was left. Second, there is still no Python linter in the dev shell -- statix, deadnix and shellcheck cover Nix and shell, and nothing covers the four .py files that now decide whether this architecture is linear.
+
+Known hole, recorded in poc/lib/contention.py rather than hidden: iowait counts as idle, so a machine saturating the memory bus through writeback reads quiet and gets a verdict it should not.
 <!-- SECTION:NOTES:END -->
