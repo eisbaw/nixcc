@@ -1,10 +1,10 @@
 ---
 id: TASK-006
 title: Assembler and label layer for RV32
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-14 18:47'
-updated_date: '2026-09-15 00:44'
+updated_date: '2026-09-15 01:41'
 labels:
   - backend
   - assembler
@@ -23,13 +23,13 @@ This is where the real bugs live -- PC-relative base off-by-one, forward referen
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Items are data: insn, label, data bytes, align
-- [ ] #2 Address assignment is a linear fold, no ++ accumulation (decision-001)
-- [ ] #3 Forward and backward references both resolve from one symbol table
-- [ ] #4 PC-relative base is tested explicitly: branch and jal offsets are relative to the branch instruction's own address, and an off-by-one-instruction bug is caught by a test
-- [ ] #5 Branch out of range (beyond +-4 KiB) either relaxes to jal or throws with a clear message; whichever is chosen is tested
-- [ ] #6 lui/addi constant materialisation is one tested helper, not re-derived per call site, with cases at 0x7ff, 0x800, 0xfffff800, -1 and 0x80000000
-- [ ] #7 Differential test: assembled output matches riscv32-none-elf-as for a program using labels
+- [x] #1 Items are data: insn, label, data bytes, align
+- [x] #2 Address assignment is a linear fold, no ++ accumulation (decision-001)
+- [x] #3 Forward and backward references both resolve from one symbol table
+- [x] #4 PC-relative base is tested explicitly: branch and jal offsets are relative to the branch instruction's own address, and an off-by-one-instruction bug is caught by a test
+- [x] #5 Branch out of range (beyond +-4 KiB) either relaxes to jal or throws with a clear message; whichever is chosen is tested
+- [x] #6 lui/addi constant materialisation is one tested helper, not re-derived per call site, with cases at 0x7ff, 0x800, 0xfffff800, -1 and 0x80000000
+- [x] #7 Differential test: assembled output matches riscv32-none-elf-as for a program using labels
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -83,4 +83,131 @@ forward-carried from task-003, and this one is a trap rather than a fact: poc/03
 Reading the cursor where the maximum was meant produced a function that wrote a callee-saved register, held it across a call, and neither saved nor restored it -- assembly that assembles, runs, and quietly corrupts its caller. poc/03-matcher/ir/save.c is the regression pin; check.nix's savedCheck catches it by scanning the emitted prologue rather than the frame record, which is the only reason it can see it at all.
 
 If this task grows emit.nix, or moves the prologue into an assembler layer, keep that distinction. The general form: any state threaded through a walk that resets at a control-flow boundary cannot also serve as a whole-function total.
+
+IMPLEMENTATION (poc/04-assembler)
+
+Shape, and the two things it is worth knowing before touching it:
+
+  asm.nix     items -> { bytes; symbols; placements; words; ... }. Pass one is
+              ONE builtins.genericClosure carrying the running per-section
+              offset and emitting one placement per item; the operator deepSeqs
+              the state it returns. Pass two is a plain map, because by then
+              every label address is known -- which is why a forward reference
+              and a backward one are the same code path, with no fixup list and
+              no second symbol table. Nothing is ever appended to with ++.
+  parse.nix   assembly TEXT -> items. A front end, not the assembler. It exists
+              only because poc/03-matcher already emits .s text; a code
+              generator should build items and skip it.
+
+Operand types are NOT guessed from how a token looks. asm.nix's table declares
+each mnemonic's operand SHAPE and parse.nix reads the same table, so `beq
+a0,a1,.L3' is (reg, reg, label) because `beq' says so. A label named `a1' in a
+branch target therefore resolves as a label, and cases.nix's hand-built item
+list has exactly that case so a future shortcut ('strings that look like
+registers are registers') fails a test rather than miscompiling.
+
+DECISIONS TAKEN, with the reasons:
+
+  * Branch out of range: THROW, not relax (AC #5). GNU as does the same, which
+    is what keeps the differential exact. Relaxation is a layout fixpoint, and
+    poc/03-matcher already paid once for an unasserted fixpoint. Filed as
+    task-021 and the throw site names it.
+  * No relocations. Every symbol resolves at layout time; one undefined symbol
+    is a throw naming it. Filed as task-022, along with .bss/.rodata and
+    .align beyond 2^4.
+  * jal/jalr accept both their spellings (`jal target' and `jal rd,target');
+    the operand table holds a list of shapes rather than one.
+
+GOTCHAS, all of them measured rather than reasoned:
+
+  * An unforced check is no check. `measure' sized an instruction as
+    4 * spec.n args, and `n' for a fixed-length instruction IGNORES its
+    argument -- so checkOps was never forced and `beq' with two operands
+    reached the encoder and died on elemAt. It needs builtins.seq. The
+    must-fail suite found this on its first run.
+  * GNU as does NOT zero-fill alignment padding in a code section. Measured
+    (.byte xN then .align 3, N = 1..7): zeros until the offset is even, then a
+    2-byte c.nop if that lands the rest on a 4-byte boundary, then 4-byte
+    nops. It emits c.nop even for -march=rv32i. It also pads the SECTION out
+    to the widest alignment any .align in it asked for. Both are needed for a
+    byte-for-byte match.
+  * GNU ld's -Tdata reads a bare number as HEX. Passing 66048 put .data at
+    0x66048 and made a 516-byte image come back as 344 kB.
+  * An empty .data must contribute nothing to the image, not even the
+    alignment gap -- four zero bytes after the last instruction that ld does
+    not produce. The differential caught it.
+  * The +0x800 correction can carry out of 20 bits: for 0xfffff800 the
+    unmasked hi is 0x100000, outside lui's field. The mask is load-bearing,
+    not hygiene, and hiLoCases pins it.
+  * Reporting EVERY mismatch made two different bugs indistinguishable in the
+    mutation test (a wrong PC base and a wrong auipc delta both make the `la'
+    words wrong). Every verdict in check.nix now reports its first failure and
+    a count of the rest.
+  * Guard order matters twice over: hiLo/liParts are checked before any
+    program-level encoding, because a broken split makes `call' and `la' wrong
+    everywhere and reporting THAT sends the reader to the wrong file; and the
+    corpus-shape checks (does progs/ still reach every mnemonic, does pcrel.s
+    still have a forward and a backward reference) sit with the floors,
+    because deleting one instruction moves every address after it and the
+    report was a branch encoding rather than 'you deleted a case'.
+
+One more, and it is the gate catching me rather than me catching it: the scale
+ladder's smallest point was 250 blocks, which measured 0.132 s CPU against a
+0.035 s evaluator start-up baseline. poc/lib's shared rule is that a point must
+cost at least three times the baseline NET of it, and 0.097 s is under the
+0.105 s that needs -- so `just e2e' refused the ladder as unmeasurable, exit 2,
+after several standalone `just poc-assembler' runs had scraped past it. Sized
+to 500/1000/2000/4000 blocks, which leaves about 7x. Anyone adding a ladder
+here should size its smallest point against `nix eval' of an empty expression,
+not against how long it feels.
+
+Landed as ce02ad3, on a green gate: `nix develop --command just e2e' EXIT=0,
+5m42, 4 PoCs passed, lint clean. What poc/04-assembler reported in that run:
+
+  5 programs in progs/, 110 instruction words, 8664 bytes
+  24 encodings pinned, 9 label addresses, 5 section layouts
+  12 li expansions, 9 hiLo splits, every value the task names
+  65 mnemonics implemented, all of them reached by progs/
+  99 instruction placements agree with what they encoded to, 11 wider than a word
+  16 hand-built items assembled with no assembly text involved
+  24 reject cases, 17 control cases, 24 diagnostics checked for their text
+  5 progs + 7 of poc/03-matcher's real functions identical to GNU as, 11584 bytes
+  7 of those executed in the Nix RV32I emulator, each returning what
+    poc/03-matcher/cases.nix expects (72, 119, 29, -2, 14, 55, 37)
+  18 mutations, each with its own distinct failure
+  ladder: 19355-20916 items/s, 8.4-8.5 kB/item net, 366 MB at 40004 items,
+    linear over 8x
+
+Per criterion:
+  #1 items are data -- insn, label, bytes, align, plus section/global/zero and
+     an explicit 'ignored' for the directives that carry no layout. cases.nix's
+     handBuilt assembles 16 of them with no text anywhere.
+  #2 address assignment is one genericClosure, deepSeq per step, nothing
+     appended to; measured linear over 8x.
+  #3 one listToAttrs symbol table answers both directions, and check.nix
+     asserts pcrel.s really does reference one label before defining it and
+     another after -- so the claim cannot go stale.
+  #4 pinned at offset 0 (a branch to itself), +8 and -4, and at delta 0 for an
+     auipc pair; the pc+4 mutation is caught with the self-branch's own note.
+  #5 THROWS, naming the label, the distance and the remedy. -4096 and +4092
+     assemble; -4100 and +4096 are refused; messages.sh holds the text.
+  #6 hiLo/liParts are one helper used by li, la and call, with 0x7ff, 0x800,
+     0xfffff800, -1 and 0x80000000 among 12 li and 9 hiLo cases, and a floor
+     that fails if any of those five leaves the table.
+  #7 differential against riscv32-none-elf-as on twelve label-using programs,
+     whole images including padding.
+
+HONEST LIMITS, none of them papered over:
+  * A branch beyond +-4 KiB stops the compiler. task-021.
+  * One translation unit. No relocations, no .bss, no .rodata, .align <= 2^4.
+    task-022.
+  * The range guards are about the MESSAGE; encode.beq's own `fits' is the
+    safety net, and removing the guards is caught by messages.sh, not by
+    must-fail.nix. Said plainly in asm.nix rather than claimed as a second
+    line of defence.
+  * The GNU-as differential passes ld our own dataBase with -Tdata, so a wrong
+    .data base would be fed to both sides and agree. The emulator stage is
+    what covers that.
+  * 8.5 kB of peak RSS per item is the number to plan with: 366 MB for 40004
+    items, and a byte list is four live Nix integers per instruction.
 <!-- SECTION:NOTES:END -->

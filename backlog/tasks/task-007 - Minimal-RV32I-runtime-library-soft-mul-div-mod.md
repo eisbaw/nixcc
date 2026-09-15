@@ -4,7 +4,7 @@ title: Minimal RV32I runtime library (soft mul/div/mod)
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:47'
-updated_date: '2026-09-14 20:58'
+updated_date: '2026-09-15 01:41'
 labels:
   - backend
   - runtime
@@ -38,4 +38,25 @@ poc/03-matcher/runtime.s already contains a naive RV32I __mulsi3 (shift-and-add)
 Gaps in those stubs, all deliberate: division by zero is not handled at all; __divsi3 always runs 32 iterations rather than skipping leading zeros; there is no __udivsi3, __umodsi3 or any 64-bit helper. The signs are the part worth testing hardest -- C requires truncation toward zero, and decision-001 records that Nix's own builtins.div already truncates that way, so a Nix-side reference implementation is one line.
 
 The name to keep an eye on: decision-004 says the oracle runs with mulops_calls=0, so MULI4/DIVI4/MODI4 arrive as ordinary nodes and the LOWERING lives in the rule table, not in the DAG. Nothing else in the compiler knows these are calls.
+
+forward-carried from task-006: the runtime library will be assembled by
+poc/04-assembler, and poc/03-matcher/runtime.s already goes through it
+unchanged -- block comments, numeric local labels (1:, 2f, 3b), .data, and all.
+So a runtime written in the same style needs no new assembler work.
+
+What is available: RV32I plus the usual pseudo-instructions -- mv, li, la, j,
+jr, ret, call, tail, nop, neg, not, seqz, snez, sltz, sgtz, beqz/bnez/blez/
+bgez/bltz/bgtz, and bgt/ble/bgtu/bleu (which are blt/bge/bltu/bgeu with the
+operands SWAPPED -- the swap is the whole content of those four, and getting it
+backwards still assembles). 65 mnemonics in all; `asm.mnemonics' is the list.
+
+What it refuses, and why it matters here: a branch further than +-4 KiB throws
+rather than relaxing (task-021). __divsi3-style loops are small, but a runtime
+that grows a long function will hit it, and the throw names the label and the
+distance. Write the branch-heavy parts as short blocks, or take task-021 first.
+
+Also: there are no relocations. Every symbol resolves at layout time, so the
+runtime and its callers must be assembled as ONE item list (task-022 if that
+ever changes). And there is no .bss -- zero-initialised data is .zero bytes in
+.data and costs image space.
 <!-- SECTION:NOTES:END -->
