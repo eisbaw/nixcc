@@ -342,7 +342,10 @@ rec {
               n = newnode f.s (cmpop flip.${g}) a.v c.v f.v;
             in
             { s = listN n.s n.v; }
-          else { inherit (c) s; };
+          # dag.c asserts here. A comparison with neither label is a tree lcc
+          # would never have built, and listing it would emit a node no rule
+          # can select.
+          else sy.refuse c.s "dag: a comparison reached listnodes with neither a true nor a false label";
         last = forestLast r.s;
         s1 =
           if last != null && b.elemAt (getnode r.s last).syms 0 != null
@@ -407,13 +410,13 @@ rec {
       in
       if ty.isvolatile kty then newnode a.s op a.v null null
       else node a.s op a.v null null
-    else if g == "FIELD" then throw "dag: bit fields are outside slice 1"
+    else if g == "FIELD" then sy.refuse s0 "dag: bit fields are outside slice 1"
     else if g == "ADDRG" || g == "ADDRF" then
       node s0 (ops.sized t.op ty.voidptype.size) null null t.sym
     else if g == "ADDRL" then
       let s1 = if (sy.getsym s0 t.sym).generated then addlocal s0 t.sym else s0; in
       node s1 (ops.sized t.op ty.voidptype.size) null null t.sym
-    else throw "dag: listnodes has no rule for `${g}'";
+    else sy.refuse s0 "dag: listnodes has no rule for `${g}'";
 
   # --- walk --------------------------------------------------------------
   walk = s0: tp: tlab: flab:

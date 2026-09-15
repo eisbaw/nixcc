@@ -34,8 +34,6 @@ rec {
     in
     st.${c}.${k} or (throw "store: no ${what} #${k}");
 
-  has = st: id: st.${bucketOf id} ? ${toString id};
-
   set = st: id: v:
     let c = bucketOf id; in
     st // { ${c} = (st.${c} or { }) // { ${toString id} = v; }; };

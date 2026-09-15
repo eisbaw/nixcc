@@ -36,16 +36,18 @@ rec {
 
   roundup = x: n: if n <= 1 then x else ((x + n - 1) / n) * n;
 
+  # c.h's `enum { CODE = 1, BSS, DATA, LIT }', and symbolic.c's names for them.
   segName = { "1" = "text"; "2" = "bss"; "3" = "data"; "4" = "lit"; };
 
   swtoseg = s: seg:
+    let
+      name = segName.${toString seg} or (throw "listing: there is no segment ${toString seg}");
+    in
     if s.curseg == seg then s
-    else (emit s "segment ${segName.${toString seg}}") // { curseg = seg; };
+    else (emit s "segment ${name}") // { curseg = seg; };
 
   export = s: p: emit s "export ${(sy.getsym s p).name}";
   importSym = s: p: emit s "import ${(sy.getsym s p).name}";
-  globalSym = s: p: emit s "global ${symbolText s p}";
-  space = s: n: emit s "space ${toString n}";
   progend = s: emit s "progend";
 
   # symbolic.c's emitSymbol: name, then one `field=value' per attribute, each
@@ -70,7 +72,7 @@ rec {
         (if q.generated then "generated" else null)
       ];
       flags = if flagNames == [ ] then "0" else b.concatStringsSep "|" flagNames;
-      offset = if q.scope >= sy.PARAM && q.sclass != "static" then " offset=${toString q.offset}" else "";
+      offset = if q.scope >= sy.PARAM && q.sclass != sy.sclasses.static then " offset=${toString q.offset}" else "";
     in
     "${q.name} type=${ty.outtype q.type} sclass=${q.sclass} scope=${scope}"
     + " flags=${flags}${offset} ref=${toString (q.ref + 0.0)}";
@@ -170,7 +172,12 @@ rec {
             g = dag.genForest s1 cp.forest;
           in
           acc // { inherit (g) s; gens = acc.gens ++ [ g.v ]; }
-        else acc;
+        # sym.kindOrder declares ten kinds and gencode handles five. The two
+        # below carry nothing this slice emits; anything else is a hole, and a
+        # hole that fell through to `acc' would drop a whole code item in
+        # silence.
+        else if cp.kind == "Defpoint" || cp.kind == "Start" then acc
+        else throw "listing: gencode has no rule for a `${cp.kind}' code item";
       r = b.foldl' step
         { s = spliced; off = 0; maxoff = 0; saved = [ ]; gens = [ ]; }
         spliced.code;
@@ -220,9 +227,9 @@ rec {
 
   doglobal = s: p:
     let q = sy.getsym s p; in
-    if !q.defined && (q.sclass == "extern" || (ty.isfunc q.type && q.sclass == "auto"))
+    if !q.defined && (q.sclass == sy.sclasses.extern || (ty.isfunc q.type && q.sclass == sy.sclasses.auto))
     then importSym s p
-    else if !q.defined && !(ty.isfunc q.type) && (q.sclass == "auto" || q.sclass == "static")
-    then throw "listing: tentative global `${q.name}' needs slice 3 (task-029)"
+    else if !q.defined && !(ty.isfunc q.type) && (q.sclass == sy.sclasses.auto || q.sclass == sy.sclasses.static)
+    then sy.refuse s "listing: tentative global `${q.name}' needs slice 3 (task-029)"
     else s;
 }

@@ -19,38 +19,54 @@ let
   b = builtins;
 in
 rec {
-  # The IR corpus. Every file is a whole translation unit and is compiled by
-  # both frontends; the count is asserted, not counted, so a file that stops
-  # being listed here shows up as a failure.
-  corpus = [
-    "arith" # every integer binary operator
-    "unary" # - ~ + !
-    "incr" # ++ and -- , prefix and postfix, used and discarded
-    "cmp" # the six comparisons, inverted by the false-label branch
-    "logic" # && || and short-circuit labels
-    "ternary" # ?: , including a nested one
-    "whileloop" # while with break and continue
-    "forloop" # for, and the entry test foldcond removes
-    "dowhile" # do/while
-    "calls" # nested call, discarded result, void call
-    "folds" # the identities and folds simp.c applies
-    "unsig" # unsigned arithmetic and the constant comparisons
-    "scopes" # nested blocks, shadowing, an explicit register
-    "layout" # locals ordered by reference count, not by declaration
-    "inits" # local initialisers, which reset the reference count
-    "longs" # long, which shares every opcode with int
-    "quals" # const and volatile, both of which change the IR
-    "empty" # a void function and an empty statement
-    "warns" # the forms lcc diagnoses, for criterion #7's stderr diff
-  ];
-  corpusCount = 19;
+  # The IR corpus is DERIVED from the directory, not listed. A hand-written
+  # list catches a file deleted from it and never a file added to c/ and
+  # forgotten -- which is this project's own recurring lesson, and which would
+  # mean a new case compared by nothing. `notes' documents what each file is
+  # for, and the two are checked against each other in both directions below,
+  # so a file without a note and a note without a file are both failures.
+  corpus = b.sort (x: y: x < y) (map (n: b.substring 0 (b.stringLength n - 2) n)
+    (b.filter (n: b.match ".*\\.c" n != null) (b.attrNames (b.readDir ./c))));
 
-  # The three programs of criterion #4, with the argument the driver passes.
-  programs = [
-    { name = "sumto"; arg = 10; }
-    { name = "gcd"; arg = 10; }
-    { name = "primes"; arg = 10; }
-  ];
+  notes = {
+    arith = "every integer binary operator";
+    arrays = "array TYPES, whose printing collapses nested dimensions";
+    calls = "nested call, discarded result, void call";
+    cmp = "the six comparisons, inverted by the false-label branch";
+    dowhile = "do/while";
+    empty = "a void function and an empty statement";
+    folds = "the identities and folds simp.c applies";
+    forloop = "for, and the entry test foldcond removes";
+    incr = "++ and --, prefix and postfix, used and discarded";
+    inits = "local initialisers, which reset the reference count";
+    layout = "locals ordered by reference count, not by declaration";
+    linkage = "the DECLARATION diagnostics, which no IR diff can see";
+    logic = "&& || and short-circuit labels";
+    longs = "long, which shares every opcode with int";
+    quals = "const and volatile, both of which change the IR";
+    scopes = "nested blocks, shadowing, an explicit register";
+    ternary = "?:, including a nested one";
+    unary = "- ~ + !";
+    unsig = "unsigned arithmetic and the constant comparisons";
+    warns = "the expression forms lcc diagnoses, for criterion #7";
+    whileloop = "while with break and continue";
+  };
+
+  # Declared and checked for EQUALITY, so the number cannot drift from the
+  # directory in silence.
+  corpusCount = 21;
+
+  # The three programs of criterion #4, also derived from their directory,
+  # with the argument the driver passes each. `programCount' is what makes
+  # "three programs RUN" a claim the suite checks rather than one it states:
+  # without it, deleting a program leaves every stage green.
+  programNames = b.sort (x: y: x < y) (map (n: b.substring 0 (b.stringLength n - 2) n)
+    (b.filter (n: b.match ".*\\.c" n != null) (b.attrNames (b.readDir ./run))));
+  args = { gcd = 10; primes = 10; sumto = 10; };
+  programs = map (n: { name = n; arg = args.${n} or (throw
+    "cases: run/${n}.c has no argument in `args'; add one rather than letting it default"); })
+    programNames;
+  programCount = 3;
 
   # --- the expected output, derived --------------------------------------
   # A second implementation of what each program computes. Written in Nix over
@@ -72,10 +88,16 @@ rec {
 
   countPrimes = n: b.length (b.filter isPrime (b.genList (i: i) n));
 
+  # The arguments come from `args' above rather than being restated, so that
+  # changing what the driver passes cannot leave the expectation quietly
+  # describing a different run. The arithmetic mirrors the C: `n << 3' is
+  # `n * 8', and Nix's application-binds-tightest makes the last line
+  # `((countPrimes args.primes) * 100) / 7', which is what primes.c computes.
   expectedStdout = {
-    sumto = "${toString (sumTo 10)}\n";
-    gcd = "${toString (gcd 1071 462)} ${toString (fib 10)}\n";
-    primes = "${toString (countPrimes (10 * 8))} ${toString (countPrimes 10 * 100 / 7)}\n";
+    sumto = "${toString (sumTo args.sumto)}\n";
+    gcd = "${toString (gcd 1071 462)} ${toString (fib args.gcd)}\n";
+    primes = "${toString (countPrimes (args.primes * 8))} ${
+      toString (countPrimes args.primes * 100 / 7)}\n";
   };
 
   # --- the opcode population ---------------------------------------------
@@ -153,5 +175,23 @@ rec {
         }
       '')
       n);
-  syntheticLines = 13; # lines per generated function, including the blank
+  # ONE function of `n' statements, against `synthetic' n functions of ten.
+  # The two shapes cost very differently: a finished function's trees and dag
+  # nodes are released, so a file of many small functions peaks far below one
+  # whose peak is a single large function. Measuring only the first would
+  # report a per-line figure the second does not obey.
+  syntheticOne = n: ''
+    int big(int a, int b)
+    {
+        int x;
+        int y;
+
+        x = a;
+        y = b;
+    ${b.concatStringsSep "\n" (b.genList
+      (i: "    x = x + y * ${toString (i + 1)};\n    y = y + x / ${toString (i + 2)};") n)}
+        return x + y;
+    }
+  '';
+
 }

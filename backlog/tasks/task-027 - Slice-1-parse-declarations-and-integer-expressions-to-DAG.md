@@ -4,7 +4,7 @@ title: 'Slice 1: parse declarations and integer expressions to DAG'
 status: In Progress
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 19:12'
+updated_date: '2026-09-15 21:54'
 labels:
   - frontend
   - parser
@@ -137,4 +137,26 @@ WHY #7 EXISTS. `evalICON'/`evalSCON' return a `warnings' list that nothing print
 FLOAT'S REFUSAL HAS NO SOURCE POSITION, and that is this task's problem to solve rather than task-011's. `evalFCON' THROWS, and a Nix throw cannot be caught and re-thrown with file:line -- tryEval discards the message, which is why poc/06-constants has a messages.sh at all. So as things stand the one diagnostic decision-006 cares most about reaches the user without a position. If that matters (task-012 is about source coordinates), the parser should do the throwing at the site that knows where the token was, and const.nix should hand over the reason rather than raise it. Settle it before wiring float rejection in, not after.
 
 THE NUL RULE EXISTS TWICE ONCE YOU WRITE IT. poc/06-constants/oracle.nix's `answerFor' does `r.units ++ [ 0 ]' -- the one-literal special case of the real rule, and the only copy that is currently diffed against lcc. When this task implements the general rule (join adjacent, then append one 0), there will be two, and only the parser's will be on the critical path. Mixed-width joins have no rule at all yet: task-047.
+
+PROGRESS (implementation landed, review pending). Commits d64d382 (the slice) and 88d91cd (two filed tasks).
+
+WHAT RUNS. `just poc-parser'. 22 translation units and 35 functions compiled by a Nix frontend and diffed against rcc-rv32 BYTE FOR BYTE -- 958 numbered node lines, 820 `#n' back-references, and all 8 lines lcc prints on stderr. Three programs (poc/07-parser/run/{sumto,gcd,primes}.c) compile from .c and RUN on nix-riscv inside one nix eval, printing 55, 21 55 and 22 57; re-run at four different arguments and checked against a second implementation of each algorithm written in Nix in cases.nix.
+
+BEYOND THE HARNESS, as private evidence: 460 randomly generated programs in the subset (seeded generator, expressions to depth 4, boundary constants, all ten binary operators, compound assignment, ++/--, ?:, &&/||, if/while/for/do, calls) diffed clean on BOTH the listing and stderr. Plus ~75 hand-written adversarial cases. Zero differences. Pointer LOCALS, `&', unary `*', function pointers through a typedef, `static' functions and `const'/`volatile' all turned out to work and are diffed too -- only pointer ARITHMETIC and subscripting are refused.
+
+MEASURED, not estimated: 176 kB of peak RSS per source line with tokens, trees, dag nodes and symbols all live, flat from 104 to 1664 lines. It was NOT flat at first: flat attrsets for the symbol/tree/node tables were quadratic (62/101/224/574 MB at 104/208/416/832 lines) and poc/07-parser/store.nix chunks them; the listing accumulated a line at a time and was worth another 75 MB. Scale: 8000 statements in one function and 2000 functions in one file both compile; ONE expression caps at about 1300 operands (task-052).
+
+REVIEW ROUND. Two reviewers (mped-architect, qa-test-runner) read the committed slice. Both found real defects; all of them are fixed and each is now mutation-covered. What they found, and what changed:
+
+ONE MISCOMPILE. `-1 << 31' folded where lcc leaves it alone. simp.c guards the shift fold with `muli(l, 1<<r, ...)' where the literal 1 is an `int', so at a count of 31 the multiplier is INT_MIN and SIGN-EXTENDS; passing the mathematical 2^31 lands in a different arm of muli. One cell of a 5x5x10 table. The random generator's probability of reaching it is about 1e-6 per node and three extra seeds did not. The answer was not more seeds: poc/07-parser/fuzz.py now also generates an EXHAUSTIVE boundary cross-product -- every pair from {INT_MIN,-1,0,1,INT_MAX} and {0u,1u,2^31,2^32-1} crossed with all ten binary operators and all six comparisons, plus every shift count from -1 to 32 -- and the mutation that reintroduces the bug is caught there and nowhere else.
+
+TWO PLACES THE FRONTEND ACCEPTED WHAT lcc REJECTS, both now refused with lcc's own wording: `short float' (decl.c's type-combination check, which this port omitted -- we were giving the declaration a DIFFERENT TYPE and compiling it), and a function defined twice, too many arguments for a prototype, a parameter with no name in a definition, an empty declaration, and an array size that is not positive once cast to int.
+
+DECISION-006 WAS BEING VIOLATED, and the oracle could not see it. Float and double DECLARATIONS were accepted; only the conversions were refused. `int f(void){ double x; double y; x = y; return 1; }' compiled -- byte-identically to lcc, because lcc accepts it, so the IR diff is structurally blind. decision-006 says in as many words that the frontend must reject float declarations. It now does, in specifier(), and the must-fail case for it is that exact program.
+
+FOUR DIAGNOSTICS lcc PRINTS THAT WE DID NOT, on programs both frontends compile identically: inconsistent linkage, a local extern that does not match, a register declaration ignored, and an implicit declaration that does not match. All four are criterion #7 failures that no IR diff can reach. poc/07-parser/c/linkage.c is the corpus case. Getting the last one right needed types.c's eqtype() ported properly -- `int f()' and `int f(int)' are COMPATIBLE, and structural equality invents a warning lcc does not print, which is a criterion #7 failure pointing the other way.
+
+MEMORY. A finished function's trees and dag nodes were never released where lcc frees its FUNC arena: 38% of peak RSS for one line, output verified byte-identical. sym.reachable built and filtered a full index of the code list on every code() call where lcc walks back from the tail: the largest single term on a 1600-statement function. And the ladder itself measured the wrong shape -- 8/32/128 FUNCTIONS of ten lines hides the cost of one LARGE function, which is 2.3x per line. Both shapes are now measured, and memory.py states the wall in source lines rather than leaving it to be inferred.
+
+HARNESS. oracle.py's floors carried 69-76% slack, against poc/lib/mutant.sh's own argument that a floor can be spent downward in silence; they are declared counts checked for equality now, and four of the five had no mutation aimed at them. must-fail.nix's "every reject paired with a control" was a comment, not code (17 rejects, 14 controls, one unpaired); the pairing is one table now and every `expect' fragment is asserted distinct. Criterion #4's "three programs RUN" was asserted nowhere -- deleting one left every stage green. The corpus and the run programs are derived from their directories rather than listed. messages.sh matched against nix's whole trace including echoed source. 42 mutations now, up from 26.
 <!-- SECTION:NOTES:END -->

@@ -1,11 +1,17 @@
 # The entry point: C source text in, lcc's `-target=symbolic' listing out.
 #
-# The modules are tied together with one recursive `let', because lcc's
-# frontend is not a layered stack -- dag.c calls expr.c's idtree() and stmt.c's
-# jump(), expr.c calls simp.c, simp.c calls enode.c -- and pretending otherwise
-# would mean duplicating something. Nix's laziness makes the knot legal: each
-# `import ... self' returns an attrset whose fields only look at `self' when
-# they are forced.
+# The modules are tied together with one recursive `let'. The dependency graph
+# is very nearly a DAG -- ops depends on types; sym on types and store; dag on
+# trees, sym, ops, types and store; listing on dag; parse on everything -- and
+# exactly ONE back-edge makes it a knot: trees <-> simp. enode.c's constructors
+# call simplify() and simp.c calls cnsttree(), root(), cond(), bittree() and
+# eqtree(). That one is irreducible and is what the fixpoint is for.
+#
+# It is worth being precise about this rather than saying "lcc's call graph is
+# cyclic", which an earlier version of this comment did: dag.c's calls to
+# idtree() and jump() are NOT a cycle here, because jump lives in dag.nix and
+# dag -> trees is a forward edge. A reader told the graph is worse than it is
+# will not bother to cut the layers that are already cut.
 #
 # WHY THE LISTING TEXT IS THE INTERFACE, rather than handing the backend an
 # attrset directly. poc/03-matcher/parse.nix already reads this format, and it
@@ -61,13 +67,24 @@ rec {
   # trailing newline.
   listingOf = src: linesOf (run src);
 
-  linesOf = s: b.concatStringsSep "\n" (b.concatLists s.out ++ s.buf) + "\n";
+  # `buf' must be empty here: listing.nix flushes it at the end of every
+  # function and once more in finalize. Appending it anyway would have hidden a
+  # missing flush -- and did, until a mutation that deleted the append changed
+  # nothing at all.
+  linesOf = s:
+    if s.buf != [ ]
+    then throw "compile: ${toString (b.length s.buf)} listing line(s) were never flushed out of the buffer; a stage returned without calling listing.flush"
+    else b.concatStringsSep "\n" (b.concatLists s.out) + "\n";
 
   # rcc's stderr, in rcc's own format (`LINE: warning: TEXT'), so criterion
-  # #7's comparison is a string diff rather than a judgement call.
-  diagnosticsOf = src:
-    let s = run src; in
-    b.concatStringsSep "" (map (d: "${toString d.line}: ${d.text}") s.diags);
+  # #7's comparison is a string diff rather than a judgement call. `diagsOf'
+  # takes a finished state so that oracle.nix and fuzz.nix can render the
+  # diagnostics off the SAME `run' that produced the listing; they each had
+  # their own copy of this one-liner, which is one copy too many for a format
+  # the whole differential rests on.
+  diagsOf = s: b.concatStringsSep "" (map (d: "${toString d.line}: ${d.text}") s.diags);
+
+  diagnosticsOf = src: diagsOf (run src);
 
   # Everything the front end held live at the end of a translation unit,
   # forced. Criterion #5 asks for memory "with tokens/AST/DAG live
@@ -77,8 +94,17 @@ rec {
     let s = run src; in
     b.deepSeq s {
       tokens = b.length s.toks;
-      trees = s.nexttree - 1;
-      nodes = s.nextnode - 1;
+      # BUILT is every tree and node the whole translation unit ever made;
+      # LIVE is what is still reachable at the end. funcdefn releases a
+      # finished function's trees and nodes, so the two differ and the PEAK
+      # sits in the middle -- during the largest single function, not here.
+      # That is why memory.py's ladder has a one-big-function point as well as
+      # a many-small-functions one: the second measures the wrong thing on its
+      # own.
+      treesBuilt = s.nexttree - 1;
+      nodesBuilt = s.nextnode - 1;
+      treesLive = b.length (self.store.values s.trees);
+      nodesLive = b.length (self.store.values s.nodes);
       symbols = s.nextsym - 1;
       lines = b.length (b.filter b.isString (b.split "\n" src));
       out = b.length (b.concatLists s.out);

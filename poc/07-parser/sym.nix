@@ -2,10 +2,14 @@
 #
 # lcc's frontend is a pile of globals: symbol tables, the code list, the dag's
 # hash buckets, three counters and `refinc'. None of that transliterates, so
-# every function below takes the state `s' FIRST and returns `{ s; v; }'. The
-# convention is uniform even where a function cannot change the state, because
-# a caller that has to remember which functions thread and which do not is a
-# caller that will eventually drop an update on the floor.
+# every function that can change the state takes it FIRST.
+#
+# THE RETURN CONVENTION IS NOT UNIFORM, and pretending otherwise in this
+# paragraph is how a caller comes to write `(sy.warn s "x").s'. A function that
+# produces a VALUE as well as a new state returns `{ s; v; }'; a function that
+# only transforms the state returns the state itself. `warn', `setsym',
+# `modsym', `enterscope' and most of dag.nix are the second kind; `newsym',
+# `install', `genlabel', `findlabel' and `code' are the first.
 #
 # THE ONE THING THAT MAKES THIS WORK: symbols, trees and dag nodes are interned
 # to integer ids and stored in attrsets on the state. lcc compares symbol and
@@ -51,6 +55,20 @@ rec {
   };
   kindNum = k: kindOrder.${k} or (throw "sym: no such code kind `${k}'");
 
+  # The storage-class spellings symbolic.c prints (token.h's `%k'), declared
+  # once. They appear as bare string literals in about two dozen places across
+  # the parser, which is two dozen chances for a typo to become a `sclass='
+  # field nothing compares -- the oracle would catch it, but only because the
+  # oracle happens to exist.
+  sclasses = {
+    auto = "auto";
+    extern = "extern";
+    register = "register";
+    static = "static";
+    typedef = "typedef";
+    none = "";
+  };
+
   emptySymbol = {
     name = "";
     type = null;
@@ -64,6 +82,9 @@ rec {
     generated = false;
     structarg = false;
     offset = 0;
+    srcline = 0; # lcc's Symbol.src, reduced to a line (task-012)
+    ncalls = 0; # only meaningful on a function symbol
+    flabel = null; # the return label funcdefn allocates for a function
     alias = null; # EXTERN symbols point at the `externals' entry
     labelnum = null; # LABELS symbols carry their number
     equatedto = null; # u.l.equatedto
@@ -92,7 +113,6 @@ rec {
     externals = { };
     externalOrder = [ ];
     labels = { }; # per-function: label number -> symid
-    stmtlabs = { };
     constants = { }; # interned constant symbols: key -> symid
     out = [ ]; # the .sym listing, one CHUNK of lines per function
     buf = [ ]; # lines of the function being emitted; see listing.nix's `emit'
@@ -288,17 +308,26 @@ rec {
   # --- code list ---------------------------------------------------------
   # stmt.c's reachable(): scan back over the non-control items; if what you
   # land on is a Jump or a Switch, nothing can reach here.
+  # lcc walks BACK from the tail and stops at the first item that is Label or
+  # later, which is usually one step. Building the whole index list and
+  # filtering it gives the same answer and costs O(code length) on every
+  # code() call -- and code() is called two or three times per statement, so
+  # that is quadratic in the size of a function. Measured on a 1600-statement
+  # function it was the single largest term.
   reachable = s: kind:
     if kindNum kind <= kindNum "Start" then true
     else
       let
-        idx = b.genList (i: b.length s.code - 1 - i) (b.length s.code);
-        rest = b.filter (i: kindNum (b.elemAt s.code i).kind >= kindNum "Label") idx;
+        go = i:
+          if i < 0 then null
+          else if kindNum (b.elemAt s.code i).kind >= kindNum "Label" then i
+          else go (i - 1);
+        hit = go (b.length s.code - 1);
       in
-      if rest == [ ] then true
-      else
-        let k = (b.elemAt s.code (b.head rest)).kind; in
-        !(k == "Jump" || k == "Switch");
+      hit == null || (
+        let k = (b.elemAt s.code hit).kind; in
+        !(k == "Jump" || k == "Switch")
+      );
 
   # code(kind) in stmt.c, including its unreachable-code warning.
   code = s: kind: item:
@@ -320,4 +349,13 @@ rec {
   # error TEXT is therefore not part of what criterion #7 compares, and any
   # future slice that wants error recovery has to undo this first.
   err = s: text: throw "line ${toString s.line}: ${text}";
+
+  # Every REFUSAL carries the line it happened on, for the reason task-011
+  # handed this slice as an open question: a Nix throw cannot be caught and
+  # re-thrown with a position -- builtins.tryEval discards the message
+  # entirely -- so the position has to be attached where the token is still in
+  # scope. That is why this takes the state rather than being a free function,
+  # and why `const.nix' is never asked to raise a diagnostic of its own: the
+  # parser raises it, at the site that knows which token it was looking at.
+  refuse = s: text: throw "line ${toString s.line}: ${text}";
 }

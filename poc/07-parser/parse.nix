@@ -49,6 +49,14 @@ rec {
   statementStarters = [ ";" "BREAK" "CASE" "CONTINUE" "DEFAULT" "DO" "ELSE" "FOR" "GOTO" "IF" "RETURN" "SWITCH" "WHILE" "{" ];
   exprStarters = [ "ID" "!" "FCON" "ICON" "SCON" "&" "INCR" "(" "*" "+" "-" "DECR" "SIZEOF" "~" "TYPECODE" "FIRSTARG" ];
 
+  # Every token kind this file names, so that check.nix can hold them against
+  # the set poc/02-lexer can actually produce. A typo in one of the lists above
+  # does not fail: `kindOf' simply returns the token, the case never matches,
+  # and the construct is quietly unreachable.
+  namedKinds = typeSpecifiers ++ storageSpecifiers ++ statementStarters
+    ++ exprStarters ++ b.attrNames binops
+    ++ [ "ELSE" "WHILE" ":" ")" "]" "}" "?" "EOI" "DEREF" ];
+
   kindOf = k:
     if b.elem k typeSpecifiers then "CHAR"
     else if b.elem k storageSpecifiers then "STATIC"
@@ -80,6 +88,13 @@ rec {
     "," = { prec = 1; gen = null; ctor = null; };
   };
   precOf = k: (binops.${k} or { prec = 0; }).prec;
+
+  # EVERY TABLE LOOKUP IN THIS FILE CARRIES `or (throw ...)', including the
+  # ones that are provably safe today. builtins.tryEval does NOT catch an
+  # attribute-missing error (task-037): it propagates through and takes the
+  # whole must-fail suite down rather than being reported, so a refusal spelled
+  # as a bare select is a refusal no test can see. The proof that a lookup is
+  # safe is exactly the kind that rots.
   ctorOf = name: {
     inherit (tr) bittree;
     inherit (tr) multree;
@@ -90,7 +105,9 @@ rec {
     inherit (tr) eqtree;
     inherit (tr) shtree;
     inherit (tr) asgntree;
-  }.${name};
+  }.${name} or (throw "parse: `${name}' is not one of enode.c's tree constructors");
+  infoOf = k: binops.${k} or (throw
+    "parse: `${k}' has no entry in the operator table, so its precedence and its tree constructor are unknown");
 
   apply2 = name: s: gname: l: r: (ctorOf name) s (ops.bare gname) l r;
 
@@ -107,16 +124,27 @@ rec {
     if i >= b.length s.toks then s // { ti = i - 1; }
     else s // { ti = i; inherit (next) line; };
 
+  # The token after the current one, bound-checked. The lexer always ends the
+  # stream with EOI so running off is only reachable at the very end -- but
+  # three sites indexed `ti + 1' raw while `nextIsEq' bound-checked, which is
+  # the same class of bug guarded in one place out of four.
+  peek = s:
+    let i = s.ti + 1; in
+    if i < b.length s.toks then b.elemAt s.toks i
+    else b.elemAt s.toks (b.length s.toks - 1);
+
   # expr3's `*cp != '='': the raw character after the current token.
   nextIsEq = s:
-    let i = s.ti + 1; in
-    i < b.length s.toks
-    && (b.elemAt s.toks i).ws == ""
-    && b.substring 0 1 (b.elemAt s.toks i).text == "=";
+    let n = peek s; in
+    n.ws == "" && b.substring 0 1 n.text == "=";
+
+  # `found `''' on a truncated file is not a diagnostic. EOI carries no text,
+  # so it is named rather than quoted.
+  found = s: if tk s == "EOI" then "end of input" else "`${text s}'";
 
   expect = s: k:
     if tk s == k then advance s
-    else sy.err s "syntax error; found `${text s}' expecting `${k}'\n";
+    else sy.err s "syntax error; found ${found s} expecting `${k}'\n";
 
   # --- expressions -------------------------------------------------------
   expr = s0: tok:
@@ -147,7 +175,7 @@ rec {
       r =
         if k == "=" || (p >= 6 && p <= 8) || (p >= 11 && p <= 13) then
           let
-            info = binops.${k};
+            info = infoOf k;
             s1 = advance e.s;
           in
           if info.gen == "ASGN" then
@@ -195,7 +223,7 @@ rec {
         if !(precOf (tk st) == k1 && !(nextIsEq st)) then { s = st; v = p; }
         else
           let
-            info = binops.${tk st};
+            info = infoOf (tk st);
             opk = tk st;
             s1 = advance st;
             a = tr.pointer s1 p;
@@ -208,6 +236,66 @@ rec {
           sameLevel d.s d.v k1;
     in
     levels u.s u.v (precOf (tk u.s));
+
+  # expr.c's four arithmetic prefix operators share one skeleton, and lcc
+  # shares it too -- `p = unary(); p = pointer(p); if (PRED) BODY else
+  # typeerror(OP, p, NULL)'. As four copies it was forty-five lines in which
+  # the only differences were a predicate and a body; as a table it is four
+  # rows you can read beside expr.c's four cases.
+  prefixOps = {
+    "+" = {
+      gen = "ADD";
+      pred = ty.isarith;
+      # Unary `+' is not a no-op: it promotes.
+      body = s: p: t: tr.cast s p (ty.promote t);
+    };
+    "-" = {
+      gen = "SUB";
+      pred = ty.isarith;
+      # On an unsigned operand lcc says so and rewrites `-x' as `~x + 1',
+      # because NEG has no unsigned form in ops.h.
+      body = s: p: t0:
+        let
+          t = ty.promote t0;
+          d = tr.cast s p t;
+        in
+        if ty.isunsigned t then
+          let
+            s1 = sy.warn d.s "unsigned operand of unary -\n";
+            n = simp.simplify s1 (ops.bare "BCOM") t d.v null;
+            one = tr.cnsttree n.s t 1;
+          in
+          simp.simplify one.s (ops.bare "ADD") t n.v one.v
+        else simp.simplify d.s (ops.bare "NEG") t d.v null;
+    };
+    "~" = {
+      gen = "BCOM";
+      pred = ty.isint;
+      body = s: p: t0:
+        let
+          t = ty.promote t0;
+          d = tr.cast s p t;
+        in
+        simp.simplify d.s (ops.bare "BCOM") t d.v null;
+    };
+    "!" = {
+      gen = "NOT";
+      pred = ty.isscalar;
+      # `!e' is a CONDITION, so it goes through cond() and comes out typed int
+      # whatever the operand was.
+      body = s: p: _t: let d = tr.cond s p; in simp.simplify d.s (ops.bare "NOT") ty.inttype d.v null;
+    };
+  };
+
+  prefix = s0: k:
+    let
+      info = prefixOps.${k} or (throw "parse: `${k}' is not a prefix operator");
+      a = unary (advance s0);
+      c = tr.pointer a.s a.v;
+      t = (tr.get c.s c.v).type;
+    in
+    if info.pred t then info.body c.s c.v t
+    else { s = tr.typeerror c.s info.gen c.v null; inherit (c) v; };
 
   unary = s0:
     let k = tk s0; in
@@ -229,61 +317,12 @@ rec {
       in
       if ops.isaddrop (tr.get c.s c.v).op then
         (
-          if (sy.getsym c.s sym).sclass == "register"
+          if (sy.getsym c.s sym).sclass == sy.sclasses.register
           then { s = sy.err c.s "invalid operand of unary &; `${(sy.getsym c.s sym).name}' is declared register\n"; inherit (c) v; }
           else { s = sy.modsym c.s sym (q: q // { addressed = true; }); inherit (c) v; }
         )
       else c
-    else if k == "+" then
-      let
-        a = unary (advance s0);
-        c = tr.pointer a.s a.v;
-      in
-      if ty.isarith (tr.get c.s c.v).type
-      then tr.cast c.s c.v (ty.promote (tr.get c.s c.v).type)
-      else { s = tr.typeerror c.s "+" c.v null; inherit (c) v; }
-    else if k == "-" then
-      let
-        a = unary (advance s0);
-        c = tr.pointer a.s a.v;
-        t0 = (tr.get c.s c.v).type;
-      in
-      if ty.isarith t0 then
-        let
-          t = ty.promote t0;
-          d = tr.cast c.s c.v t;
-        in
-        if ty.isunsigned t then
-          let
-            s1 = sy.warn d.s "unsigned operand of unary -\n";
-            n = simp.simplify s1 (ops.bare "BCOM") t d.v null;
-            one = tr.cnsttree n.s t 1;
-          in
-          simp.simplify one.s (ops.bare "ADD") t n.v one.v
-        else simp.simplify d.s (ops.bare "NEG") t d.v null
-      else { s = tr.typeerror c.s "-" c.v null; inherit (c) v; }
-    else if k == "~" then
-      let
-        a = unary (advance s0);
-        c = tr.pointer a.s a.v;
-        t0 = (tr.get c.s c.v).type;
-      in
-      if ty.isint t0 then
-        let
-          t = ty.promote t0;
-          d = tr.cast c.s c.v t;
-        in
-        simp.simplify d.s (ops.bare "BCOM") t d.v null
-      else { s = tr.typeerror c.s "~" c.v null; inherit (c) v; }
-    else if k == "!" then
-      let
-        a = unary (advance s0);
-        c = tr.pointer a.s a.v;
-      in
-      if ty.isscalar (tr.get c.s c.v).type then
-        let d = tr.cond c.s c.v; in
-        simp.simplify d.s (ops.bare "NOT") ty.inttype d.v null
-      else { s = tr.typeerror c.s "!" c.v null; inherit (c) v; }
+    else if prefixOps ? ${k} then prefix s0 k
     else if k == "INCR" || k == "DECR" then
       let
         a = unary (advance s0);
@@ -314,31 +353,34 @@ rec {
       if ty.isfunc r.t || r.t.size == 0
       then { s = sy.err r.s "invalid type argument `${ty.outtype r.t}' to `sizeof'\n"; v = null; }
       else tr.cnsttree r.s ty.unsignedlong r.t.size
-    else if k == "(" && isTypename (advance s0) then
-      let
-        n = typename (advance s0);
-        s1 = expect n.s ")";
-        t1 = n.v;
-        t = ty.unqual t1;
-        u = unary s1;
-        pu = tr.pointer u.s u.v;
-        pty = (tr.get pu.s pu.v).type;
-        c =
-          if (ty.isarith pty && ty.isarith t) || (ty.isptr pty && ty.isptr t)
-          then
-            let x = tr.cast (pu.s // { explicitCast = pu.s.explicitCast + 1; }) pu.v t; in
-            { s = x.s // { inherit (pu.s) explicitCast; }; inherit (x) v; }
-          else if (ty.isptr pty && ty.isint t) || (ty.isint pty && ty.isptr t)
-          then tr.cast pu.s pu.v t
-          else if t != ty.voidtype
-          then { s = sy.err pu.s "cast from `${ty.outtype pty}' to `${ty.outtype t1}' is illegal\n"; inherit (pu) v; }
-          else { inherit (pu) s; inherit (pu) v; };
-      in
-      if tr.gen c.s c.v == "INDIR" || t.size == 0
-      then tr.tree c.s (ops.bare "RIGHT") t1 null c.v
-      else tr.retype c.s c.v t1
+    # ONE `(' arm, as expr.c has one `case ...('. Splitting it in two ran
+    # `advance s0' three times and re-did isTypename's symbol lookup with it.
     else if k == "(" then
-      let e = expr (advance s0) ")"; in postfix e.s e.v
+      let s1 = advance s0; in
+      if !(isTypename s1) then (let e = expr s1 ")"; in postfix e.s e.v)
+      else
+        let
+          n = typename s1;
+          s2 = expect n.s ")";
+          t1 = n.v;
+          t = ty.unqual t1;
+          u = unary s2;
+          pu = tr.pointer u.s u.v;
+          pty = (tr.get pu.s pu.v).type;
+          c =
+            if (ty.isarith pty && ty.isarith t) || (ty.isptr pty && ty.isptr t)
+            then
+              let x = tr.cast (pu.s // { explicitCast = pu.s.explicitCast + 1; }) pu.v t; in
+              { s = x.s // { inherit (pu.s) explicitCast; }; inherit (x) v; }
+            else if (ty.isptr pty && ty.isint t) || (ty.isint pty && ty.isptr t)
+            then tr.cast pu.s pu.v t
+            else if t != ty.voidtype
+            then { s = sy.err pu.s "cast from `${ty.outtype pty}' to `${ty.outtype t1}' is illegal\n"; inherit (pu) v; }
+            else { inherit (pu) s; inherit (pu) v; };
+        in
+        if tr.gen c.s c.v == "INDIR" || t.size == 0
+        then tr.tree c.s (ops.bare "RIGHT") t1 null c.v
+        else tr.retype c.s c.v t1
     else
       let p = primary s0; in postfix p.s p.v;
 
@@ -355,8 +397,8 @@ rec {
             outer = tr.tree inner.s (ops.bare "RIGHT") (tr.get inner.s p).type inner.v p;
           in
           loop (advance outer.s) outer.v
-        else if k == "[" then throw "parse: subscripting belongs to slice 2/3 (task-028, task-029)"
-        else if k == "." || k == "DEREF" then throw "parse: struct members are outside slice 1"
+        else if k == "[" then sy.refuse s "parse: subscripting belongs to slice 2/3 (task-028, task-029)"
+        else if k == "." || k == "DEREF" then sy.refuse s "parse: struct members are outside slice 1"
         else if k == "(" then
           let
             pp = tr.pointer s p;
@@ -365,7 +407,7 @@ rec {
           if ty.isptr t && ty.isfunc (ty.unqual t).type then
             let c = call (advance pp.s) pp.v (ty.unqual t).type; in
             loop c.s c.v
-          else throw "parse: `${ty.outtype t}' is not a function"
+          else sy.refuse pp.s "parse: `${ty.outtype t}' is not a function"
         else { inherit s; v = p; };
     in
     loop s0 p0;
@@ -375,13 +417,22 @@ rec {
     if k == "ICON" then
       let
         r = const.evalICON (text s0);
-        t = {
-          "int" = ty.inttype;
-          "long" = ty.longtype;
-          "unsigned int" = ty.unsignedtype;
-          "unsigned long" = ty.unsignedlong;
-          "unsigned short" = ty.widechar;
-        }.${r.type} or (throw "parse: the constant evaluator returned an unknown type `${r.type}'");
+        # task-011's evaluator names the type as a STRING, and the strings
+        # are lcc's spellings -- which types.nix already carries, in the `name'
+        # field it uses to keep `int' and `long int' distinct. Building the
+        # table from the types rather than restating their names means the two
+        # cannot drift.
+        #
+        # `long' is the one exception: the evaluator says `long' where
+        # types.nix (and lcc) say `long int'.
+        constTypes = b.listToAttrs (map (x: { inherit (x) name; value = x; }) [
+          ty.inttype
+          ty.unsignedtype
+          ty.unsignedlong
+          ty.widechar
+        ]) // { "long" = ty.longtype; };
+        t = constTypes.${r.type} or (sy.refuse s0
+          "parse: the constant evaluator returned the type `${r.type}', which is not one this frontend knows");
         # task-011's evaluator RECORDS its warnings and prints nothing. Dropping
         # them here would compile a silently clamped constant, which is the
         # regression criterion #7 exists to catch -- so they are replayed at the
@@ -391,10 +442,9 @@ rec {
       in
       { s = advance c.s; inherit (c) v; }
     else if k == "FCON" then
-      throw "parse: floating-point constant `${text s0}' on line ${
-        toString (cur s0).line}: float support is deferred (decision-006, task-015)"
+      sy.refuse s0 "parse: floating-point constant `${text s0}': float support is deferred (decision-006, task-015)"
     else if k == "SCON" then
-      throw "parse: string literal on line ${toString (cur s0).line}: string constants belong to slice 2 (task-028)"
+      sy.refuse s0 "parse: string literals belong to slice 2 (task-028)"
     else if k == "ID" then
       let
         name = text s0;
@@ -407,25 +457,30 @@ rec {
           let c = tr.consttree s0 q.value ty.inttype; in { s = advance c.s; inherit (c) v; }
         else
           let i = tr.idtree s0 found; in { s = advance i.s; inherit (i) v; }
-    else throw "parse: illegal expression at `${text s0}' on line ${toString (cur s0).line}";
+    else sy.refuse s0 "parse: illegal expression at ${found s0}";
 
   # An undeclared identifier. lcc guesses `int f()' when a `(' follows and
   # errors otherwise; both paths install a symbol so the rest of the parse has
   # something to hang on.
   implicitId = s0: name:
-    if (b.elemAt s0.toks (s0.ti + 1)).kind == "(" then
+    if (peek s0).kind == "(" then
       let
         fty = ty.func ty.inttype null 1;
-        p = sy.install s0 name s0.level { type = fty; sclass = "extern"; };
+        p = sy.install s0 name s0.level { type = fty; sclass = sy.sclasses.extern; srcline = s0.line; };
         q = sy.lookupExternal p.s name;
+        warned =
+          if q != null && !(ty.eqtype (sy.getsym p.s q).type fty true)
+          then sy.warn p.s "implicit declaration of `${name}' does not match previous declaration at ${
+            toString (sy.getsym p.s q).srcline}\n"
+          else p.s;
         e =
-          if q != null then { inherit (p) s; v = q; }
-          else sy.installExternal p.s name { type = fty; sclass = "extern"; };
+          if q != null then { s = warned; v = q; }
+          else sy.installExternal warned name { type = fty; sclass = sy.sclasses.extern; srcline = s0.line; };
         s1 = sy.modsym e.s p.v (x: x // { alias = e.v; });
         i = tr.idtree s1 p.v;
       in
       { s = advance i.s; inherit (i) v; }
-    else throw "parse: undeclared identifier `${name}' on line ${toString (cur s0).line}";
+    else sy.refuse s0 "parse: undeclared identifier `${name}'";
 
   # --- enode.c's call(), which reads tokens and so lives here -------------
   call = s0: f: fty:
@@ -439,8 +494,12 @@ rec {
           q0 = expr1 s null;
           q1 = tr.pointer q0.s q0.v;
           hasProtoArg = proto != null && n < b.length proto && b.elemAt proto n != ty.voidtype;
+          tooMany = proto != null && n >= b.length proto;
           conv =
-            if hasProtoArg then
+            if tooMany then
+              sy.refuse q1.s "parse: too many arguments; the prototype takes ${
+                toString (b.length proto)}"
+            else if hasProtoArg then
               let
                 v = tr.value q1.s q1.v;
                 aty = tr.assignType v.s (b.elemAt proto n) v.v;
@@ -485,7 +544,7 @@ rec {
   isTypename = s:
     let k = tk s; in
     kindOf k == "CHAR"
-    || (k == "ID" && (let p = sy.lookup s (text s); in p != null && (sy.getsym s p).sclass == "typedef"));
+    || (k == "ID" && (let p = sy.lookup s (text s); in p != null && (sy.getsym s p).sclass == sy.sclasses.typedef));
 
   specifier = s0: wantSclass:
     let
@@ -504,7 +563,7 @@ rec {
         else if k == "VOID" || k == "CHAR" || k == "INT" || k == "FLOAT" || k == "DOUBLE"
         then set st (acc // { base = basicOf k; }) "type" k
         else if k == "STRUCT" || k == "UNION" || k == "ENUM"
-        then throw "parse: struct, union and enum types are outside slice 1"
+        then sy.refuse st "parse: struct, union and enum types are outside slice 1"
         else if k == "ID" && isTypename st && acc.type == null && acc.sign == null && acc.size == null
         then
           let p = sy.lookup st (text st); in
@@ -512,7 +571,8 @@ rec {
         else { s = st; inherit acc; };
       set = st: acc: field: v:
         if acc.${field} != null
-        then throw "parse: invalid use of `${v}' on line ${toString (cur st).line}"
+        then sy.refuse st "parse: invalid use of `${v}'"
+        else if !(acc ? ${field}) then throw "parse: the specifier accumulator has no `${field}' slot"
         else loop (advance st) (acc // { ${field} = v; });
       r = loop s0 {
         cls = if wantSclass then null else "AUTO";
@@ -529,12 +589,32 @@ rec {
       # them looking like `unsigned int' -- otherwise it comes out as `int'.
       a = if a0.type == null then a0 // { type = "INT"; } else a0;
       base = if a0.type == null then ty.inttype else a.base;
+      # decl.c's combination check, which this port omitted. Without it
+      # `short float x;' is not an error, it is a `short' -- lcc REJECTS the
+      # declaration and we were giving it a different type and compiling it.
+      illegal =
+        (a.size == "SHORT" && a.type != "INT")
+        || (a.size == "LONGLONG" && a.type != "INT")
+        || (a.size == "LONG" && a.type != "INT" && a.type != "DOUBLE")
+        || (a.sign != null && a.type != "INT" && a.type != "CHAR");
       t0 =
-        if a.type == "CHAR" && a.sign != null
+        if illegal then sy.refuse r.s "parse: invalid type specification"
+        # decision-006 in as many words: "the frontend must REJECT float
+        # declarations with a clear diagnostic rather than silently
+        # miscompiling them". Refusing only the CONVERSIONS, which is where
+        # this port first stopped, leaves `double x; double y; x = y;'
+        # compiling -- and compiling byte-identically to lcc, so the oracle
+        # diff is structurally blind to it. The declaration is the surface
+        # decision-006 names, so the declaration is where the refusal goes.
+        else if a.type == "FLOAT" || a.type == "DOUBLE" || ty.isfloat base
+        then sy.refuse r.s "parse: `${
+          if a.size == "LONG" then "long double" else lowerName a.type
+        }' declarations are deferred (decision-006, task-015)"
+        else if a.type == "CHAR" && a.sign != null
         then (if a.sign == "UNSIGNED" then ty.unsignedchar else ty.signedchar)
         else if a.size == "SHORT" then (if a.sign == "UNSIGNED" then ty.unsignedshort else ty.shorttype)
         else if a.size == "LONG" && a.type == "DOUBLE" then ty.longdouble
-        else if a.size == "LONGLONG" then throw "parse: `long long' is outside slice 1"
+        else if a.size == "LONGLONG" then sy.refuse r.s "parse: `long long' is outside slice 1"
         else if a.size == "LONG" then (if a.sign == "UNSIGNED" then ty.unsignedlong else ty.longtype)
         else if a.sign == "UNSIGNED" && a.type == "INT" then ty.unsignedtype
         else base;
@@ -544,13 +624,25 @@ rec {
     {
       inherit (r) s;
       v = t2;
-      sclass = if a.cls == null then "" else sclassName.${a.cls};
+      sclass = if a.cls == null then sy.sclasses.none
+      else sclassName.${a.cls} or (throw "parse: `${a.cls}' is not a storage class");
     };
 
-  # token.h's `%k' spelling for the storage classes symbolic.c prints.
+  # Nix's builtins have no case conversion, and the one place that needs it
+  # is a diagnostic naming the type keyword the user wrote.
+  lowerName = k: b.replaceStrings
+    [ "A" "B" "C" "D" "E" "F" "G" "H" "I" "J" "K" "L" "M" "N" "O" "P" "Q" "R" "S" "T" "U" "V" "W" "X" "Y" "Z" ]
+    [ "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z" ]
+    k;
+
+  # The token spelling of each storage class, mapping onto sym.nix's single
+  # declaration of what symbolic.c prints.
   sclassName = {
-    AUTO = "auto"; EXTERN = "extern"; REGISTER = "register";
-    STATIC = "static"; TYPEDEF = "typedef";
+    AUTO = sy.sclasses.auto;
+    EXTERN = sy.sclasses.extern;
+    REGISTER = sy.sclasses.register;
+    STATIC = sy.sclasses.static;
+    TYPEDEF = sy.sclasses.typedef;
   };
 
   basicOf = k: {
@@ -559,7 +651,7 @@ rec {
     INT = ty.inttype;
     FLOAT = ty.floattype;
     DOUBLE = ty.doubletype;
-  }.${k};
+  }.${k} or (throw "parse: `${k}' is not a basic type specifier");
 
   qualify = q: t:
     if t.op == "CONST" && q == "VOLATILE" then t // { op = "CONST+VOLATILE"; }
@@ -569,18 +661,39 @@ rec {
   # dclr1 builds the declarator's type CHAIN, outermost first; dclr then folds
   # the chain onto the base type. Kept as two functions because that split is
   # what makes `int *f(void)' and `int (*f)(void)' come out different.
-  dclr1 = s0: wantId: wantParams: abstract:
+  #
+  # A chain link is NOT a type. lcc's tnode() reuses the Type struct for these
+  # skeletons, which is fine in C where the two are distinguished by where they
+  # are; here they would be two different things wearing one shape, and a
+  # skeleton that leaked into type code would fail as an attribute miss --
+  # which builtins.tryEval cannot catch (task-037). So a link is tagged `link'
+  # and carries no size or align at all.
+  link = kind: attrs: attrs // { link = kind; };
+
+  dclr1 = s0: wantId: wantParams:
     let
       k = tk s0;
       head =
         if k == "ID" then
           (if wantId then { s = advance s0; id = text s0; t = null; params = null; }
-          else throw "parse: extraneous identifier `${text s0}'")
+          else sy.refuse s0 "parse: extraneous identifier `${text s0}'")
         else if k == "*" then
-          let inner = dclr1 (advance s0) wantId wantParams abstract; in
-          inner // { t = { op = "POINTER"; type = inner.t; }; }
+          # dclr1's `*' case collects the CONST/VOLATILE run that may follow
+          # the star before recursing. Dropping it makes `int * const p;' --
+          # ordinary C that lcc compiles -- die as "missing identifier", which
+          # names the wrong thing entirely.
+          let
+            quals = st: acc:
+              if tk st == "CONST" || tk st == "VOLATILE"
+              then quals (advance st) (acc ++ [ (tk st) ])
+              else { s = st; v = acc; };
+            q = quals (advance s0) [ ];
+            inner = dclr1 q.s wantId wantParams;
+            qualified = b.foldl' (t: name: link name { type = t; }) inner.t q.v;
+          in
+          inner // { t = link "POINTER" { type = qualified; }; }
         else if k == "(" then
-          let inner = dclr1 (advance s0) wantId wantParams abstract; in
+          let inner = dclr1 (advance s0) wantId wantParams; in
           inner // { s = expect inner.s ")"; }
         else { s = s0; id = null; t = null; params = null; };
       suffix = st: t: id: params:
@@ -590,7 +703,7 @@ rec {
             e = sy.enterscope (advance st);
             e2 = if e.level > sy.PARAM then sy.enterscope e else e;
             ps = parameters e2;
-            t2 = { op = "FUNCTION"; type = t; inherit (ps) proto; inherit (ps) oldstyle; };
+            t2 = link "FUNCTION" { type = t; inherit (ps) proto oldstyle; };
           in
           if wantParams && params == null
           then suffix ps.s t2 id ps.v
@@ -603,7 +716,13 @@ rec {
               then intexpr s1 "]"
               else { s = expect s1 "]"; v = 0; };
           in
-          suffix n.s { op = "ARRAY"; type = t; count = n.v; } id params
+          # dclr1 rejects a non-positive size, and intexpr has already cast the
+          # constant to `int' -- so `int a[4000000000u]' is diagnosed as the
+          # negative size it becomes, exactly as lcc diagnoses it, rather than
+          # silently accepted.
+          if kindOf (tk s1) == "ID" && n.v <= 0
+          then sy.refuse n.s "parse: `${toString n.v}' is an illegal array size"
+          else suffix n.s (link "ARRAY" { type = t; count = n.v; }) id params
         else { s = st; inherit t id params; };
     in
     suffix head.s head.t head.id head.params;
@@ -612,16 +731,17 @@ rec {
 
   dclr = s0: basety: wantId: wantParams:
     let
-      r = dclr1 s0 wantId wantParams false;
+      r = dclr1 s0 wantId wantParams;
       # The chain runs outermost-first, so it is applied innermost-first.
       apply = base: chain:
         if chain == null then base
         else apply (step base chain) chain.type;
       step = base: chain:
-        if chain.op == "POINTER" then ty.ptr base
-        else if chain.op == "FUNCTION" then ty.func base chain.proto chain.oldstyle
-        else if chain.op == "ARRAY" then ty.array base chain.count 0
-        else qualify chain.op base;
+        if chain.link == "POINTER" then ty.ptr base
+        else if chain.link == "FUNCTION" then ty.func base chain.proto chain.oldstyle
+        else if chain.link == "ARRAY" then ty.array base chain.count 0
+        else if chain.link == "CONST" || chain.link == "VOLATILE" then qualify chain.link base
+        else throw "parse: `${chain.link}' is not a declarator chain link";
     in
     r // { t = apply basety r.t; };
 
@@ -639,11 +759,11 @@ rec {
         in
         if tk p.s != "," then { inherit (p) s; v = acc'; }
         else if tk (advance p.s) == "ELLIPSIS"
-        then throw "parse: variadic functions are outside slice 1"
+        then sy.refuse p.s "parse: variadic functions are outside slice 1"
         else loop (advance p.s) (n + 1) acc';
       r =
         if prototyped then loop s0 0 [ ]
-        else if tk s0 == "ID" then throw "parse: old-style parameter lists are outside slice 1"
+        else if tk s0 == "ID" then sy.refuse s0 "parse: old-style parameter lists are outside slice 1"
         else { s = s0; v = [ ]; };
       s1 = if tk r.s == ")" then advance r.s else expect r.s ")";
     in
@@ -654,28 +774,43 @@ rec {
       oldstyle = !prototyped;
     };
 
-  dclparam = s0: sclass: id: t0:
+  dclparam = s00: sclass0: id: t0:
     let
       t = if ty.isfunc t0 then ty.ptr t0 else if ty.isarray t0 then ty.atop t0 else t0;
-      cls = if sclass == "" then "auto" else sclass;
+      ignoreRegister = sclass0 == sy.sclasses.register && ty.isvolatile t;
+      s0 = if ignoreRegister
+      then sy.warn s00 "register declaration ignored for `${ty.outtype t} ${id}'\n"
+      else s00;
+      sclass = if ignoreRegister then "" else sclass0;
+      cls = if sclass == "" then sy.sclasses.auto else sclass;
       dup = sy.lookupIn s0 id s0.level;
       r =
-        if dup != null then throw "parse: duplicate declaration for `${id}'"
+        if dup != null then sy.refuse s0 "parse: duplicate declaration for `${id}'"
         else sy.install s0 id s0.level { };
-      s1 = sy.modsym r.s r.v (q: q // { sclass = cls; type = t; defined = true; });
-      s2 = if cls == "register" then s1 // { regcount = s1.regcount + 1; } else s1;
+      s1 = sy.modsym r.s r.v (q: q // {
+        sclass = cls;
+        type = t;
+        defined = true;
+        srcline = s0.line;
+      });
+      s2 = if cls == sy.sclasses.register then s1 // { regcount = s1.regcount + 1; } else s1;
     in
     { s = s2; inherit (r) v; };
 
+  # decl.c's intexpr(): the value is CAST TO INT before it is used, which is
+  # what turns `4000000000u' into a negative array size and makes lcc warn
+  # about the conversion on the way. Reading the unsigned magnitude straight
+  # out of the constant skips both the warning and the diagnosis.
   intexpr = s0: tok:
     let
       s1 = s0 // { needconst = s0.needconst + 1; };
       e = expr1 s1 tok;
       g = tr.get e.s e.v;
+      c = tr.cast e.s e.v ty.inttype;
     in
     if g.op.gen == "CNST" && (g.op.kind == "I" || g.op.kind == "U")
-    then { s = e.s // { inherit (s0) needconst; }; v = g.value; }
-    else throw "parse: integer expression must be constant";
+    then { s = c.s // { inherit (s0) needconst; }; v = (tr.get c.s c.v).value; }
+    else sy.refuse e.s "parse: integer expression must be constant";
 
   typename = s0:
     let
@@ -717,7 +852,7 @@ rec {
           in
           expect (advance s2) ";"
         else if k == "SWITCH" || k == "CASE" || k == "DEFAULT" || k == "GOTO"
-        then throw "parse: `${k}' statements are outside slice 1"
+        then sy.refuse s0 "parse: `${k}' statements are outside slice 1"
         else if k == "RETURN" then
           let
             rty = ty.freturn (ty.unqual (sy.getsym s0 s0.cfunc).type);
@@ -725,7 +860,7 @@ rec {
             a =
               if tk s1 != ";" then
                 (if rty == ty.voidtype
-                then throw "parse: extraneous return value on line ${toString (cur s1).line}"
+                then sy.refuse s1 "parse: extraneous return value"
                 else let e = expr s1 null; in retcode e.s e.v)
               else if rty != ty.voidtype
               then
@@ -740,8 +875,8 @@ rec {
           expect s2 ";"
         else if k == "{" then compound s0 loop (lev + 1)
         else if k == ";" then advance (definept s0)
-        else if k == "ID" && (b.elemAt s0.toks (s0.ti + 1)).kind == ":"
-        then throw "parse: statement labels are outside slice 1"
+        else if k == "ID" && (peek s0).kind == ":"
+        then sy.refuse s0 "parse: statement labels are outside slice 1"
         else
           let
             s1 = definept s0;
@@ -890,7 +1025,7 @@ rec {
       s5 = s4 // { autos = [ ]; registers = [ ]; };
       declLoop = s:
         if kindOf (tk s) == "CHAR" || kindOf (tk s) == "STATIC"
-          || (isTypename s && (b.elemAt s.toks (s.ti + 1)).kind != ":")
+          || (isTypename s && (peek s).kind != ":")
         then declLoop (decl s "local")
         else s;
       s6 = declLoop s5;
@@ -945,18 +1080,24 @@ rec {
   # order.
   sortByRef = s: xs: from:
     let
-      refOf = p: (sy.getsym s p).ref;
+      # The reference counts are read ONCE, not once per comparison: they go
+      # through the chunked store, and an insertion sort that looks each one up
+      # again for every element it steps over measured n^1.6 rather than n^2 in
+      # the worst case but with a constant nobody wants -- 800 locals in one
+      # block cost 2.14 s and 317 MB.
+      withRef = map (p: let q = sy.getsym s p; in { id = p; inherit (q) ref; }) xs;
+      # decl.c's inner loop STOPS at the first element that is not smaller.
       insert = acc: p:
         let
           n = b.length acc;
-          js = b.filter (j: j >= from && refOf (b.elemAt acc j) < refOf p) (b.genList (i: i) n);
-          at = if js == [ ] then n else b.head js;
+          go = j: if j > from && (b.elemAt acc (j - 1)).ref < p.ref then go (j - 1) else j;
+          at = go n;
         in
         b.genList (i: if i < at then b.elemAt acc i else if i == at then p else b.elemAt acc (i - 1)) (n + 1);
-      head = b.genList (i: b.elemAt xs i) from;
-      rest = b.genList (i: b.elemAt xs (from + i)) (b.length xs - from);
+      head = b.genList (i: b.elemAt withRef i) from;
+      rest = b.genList (i: b.elemAt withRef (from + i)) (b.length withRef - from);
     in
-    b.foldl' insert head rest;
+    map (x: x.id) (b.foldl' insert head rest);
 
   checkrefScope = s: lev:
     let
@@ -972,10 +1113,10 @@ rec {
       then sy.modsym s p (x: x // { addressed = true; }) else s;
       r = sy.getsym s1 p;
     in
-    if r.sclass == "auto"
+    if r.sclass == sy.sclasses.auto
       && ((r.scope == sy.PARAM && s1.regcount == 0) || r.scope >= sy.LOCAL)
       && !r.addressed && ty.isscalar r.type && r.ref >= 3.0
-    then sy.modsym s1 p (x: x // { sclass = "register"; })
+    then sy.modsym s1 p (x: x // { sclass = sy.sclasses.register; })
     else s1;
 
   # --- declarations at file and block scope ------------------------------
@@ -987,20 +1128,26 @@ rec {
     if k == "ID" || k == "*" || k == "(" || k == "[" then
       let
         atGlobal = where == "global";
+        # decl.c takes `pos = src' here, BEFORE the declarator is parsed, so a
+        # diagnostic about this declaration names the line the declarator
+        # started on rather than the line the parser happened to reach.
+        pos = (cur sp.s).line;
         d = dclr sp.s sp.v true atGlobal;
         isDefn = atGlobal && d.params != null && d.id != null && ty.isfunc d.t
           && (tk d.s == "{" || isTypename d.s || (kindOf (tk d.s) == "STATIC" && tk d.s != "TYPEDEF"));
       in
-      if isDefn then funcdefn d.s sp.sclass d.id d.t d.params
+      if isDefn then funcdefn d.s sp.sclass d.id d.t d.params pos
       else
         let
           s1 = if d.params != null then exitparams d.s else d.s;
           loop = s: id: t:
             let
               s2 =
-                if id == null then throw "parse: missing identifier"
-                else if sp.sclass == "typedef" then installTypedef s id t
-                else (if where == "global" then dclglobal s sp.sclass id t else dcllocal s sp.sclass id t).s;
+                if id == null then sy.refuse s "parse: missing identifier"
+                else if sp.sclass == sy.sclasses.typedef then installTypedef s id t
+                else (if where == "global"
+                then dclglobal s sp.sclass id t pos
+                else dcllocal s sp.sclass id t pos).s;
             in
             if tk s2 != "," then s2
             else
@@ -1009,72 +1156,111 @@ rec {
           s3 = loop s1 d.id d.t;
         in
         expect s3 ";"
-    else expect sp.s ";";
+    # decl.c: a specifier with no declarator after it is an error unless it
+    # declared a struct, union or enum tag -- none of which slice 1 has. So
+    # here it is always one.
+    else sy.refuse sp.s "parse: empty declaration";
 
   installTypedef = s: id: t:
-    let r = sy.install s id s.level { type = t; sclass = "typedef"; }; in r.s;
+    let r = sy.install s id s.level { type = t; sclass = sy.sclasses.typedef; }; in r.s;
 
-  dclglobal = s0: sclass0: id: t:
+  dclglobal = s0: sclass0: id: t: pos:
     let
-      sclass = if sclass0 == "" then "auto" else sclass0;
+      sclass = if sclass0 == "" then sy.sclasses.auto else sclass0;
       existing = sy.lookupIn s0 id sy.GLOBAL;
+      # decl.c warns when a name's linkage changes between declarations.
+      # These programs COMPILE -- both frontends accept them and emit the same
+      # IR -- so the only way the difference is visible is lcc's stderr, which
+      # is precisely what criterion #7 compares.
+      sAfterLinkage =
+        if existing != null then
+          let prev = (sy.getsym s0 existing).sclass; in
+          if (prev == sy.sclasses.extern && sclass == sy.sclasses.static)
+            || (prev == sy.sclasses.static && sclass == sy.sclasses.auto)
+            || (prev == sy.sclasses.auto && sclass == sy.sclasses.static)
+          then sy.warn s0 "inconsistent linkage for `${id}' previously declared at ${
+            toString (sy.getsym s0 existing).srcline}\n"
+          else s0
+        else s0;
       r =
-        if existing != null then { s = s0; v = existing; }
+        if existing != null then { s = sAfterLinkage; v = existing; }
         else
-          let q = sy.lookupExternal s0 id; in
+          let q = sy.lookupExternal sAfterLinkage id; in
           if q != null then
             # relocate(): the symbol moves from `externals' to `globals'.
+            let
+              qs = sy.getsym sAfterLinkage q;
+              warned =
+                if sclass == sy.sclasses.static || !(ty.eqtype qs.type t true)
+                then sy.warn sAfterLinkage "declaration of `${id}' does not match previous declaration at ${
+                  toString qs.srcline}\n"
+                else sAfterLinkage;
+            in
             {
-              s = s0 // {
-                externals = b.removeAttrs s0.externals [ id ];
-                globals = s0.globals // { ${id} = q; };
-                globalOrder = s0.globalOrder ++ [ q ];
-                externalOrder = b.filter (x: x != q) s0.externalOrder;
+              s = warned // {
+                externals = b.removeAttrs warned.externals [ id ];
+                globals = warned.globals // { ${id} = q; };
+                globalOrder = warned.globalOrder ++ [ q ];
+                externalOrder = b.filter (x: x != q) warned.externalOrder;
               };
               v = q;
             }
-          else sy.install s0 id sy.GLOBAL { };
+          else sy.install sAfterLinkage id sy.GLOBAL { };
       s1 = sy.modsym r.s r.v (x: x // {
-        sclass = if existing != null && x.sclass == "extern" then sclass
+        sclass = if existing != null && x.sclass == sy.sclasses.extern then sclass
         else if existing != null then x.sclass
         else sclass;
         type = t;
         scope = sy.GLOBAL;
+        srcline = pos;
       });
     in
-    if tk s1 == "=" then throw "parse: global initialisers belong to slice 3 (task-029)"
+    if tk s1 == "=" then sy.refuse s1 "parse: global initialisers belong to slice 3 (task-029)"
     else { s = s1; inherit (r) v; };
 
-  dcllocal = s0: sclass0: id: t:
+  dcllocal = s00: sclass00: id: t: pos:
     let
+      # decl.c: `register' on a volatile, struct or array object is IGNORED,
+      # with a warning. Both frontends then compile the same thing, so the
+      # warning is the only trace it leaves -- criterion #7's territory.
+      ignoreRegister = sclass00 == sy.sclasses.register && (ty.isvolatile t || ty.isarray t);
+      s0 = if ignoreRegister
+      then sy.warn s00 "register declaration ignored for `${ty.outtype t} ${id}'\n"
+      else s00;
+      sclass0 = if ignoreRegister then "" else sclass00;
       sclass =
-        if sclass0 == "" then (if ty.isfunc t then "extern" else "auto")
+        if sclass0 == "" then (if ty.isfunc t then sy.sclasses.extern else sy.sclasses.auto)
         else sclass0;
       dup = sy.lookupIn s0 id s0.level;
       dupParam = if s0.level == sy.LOCAL then sy.lookupIn s0 id sy.PARAM else null;
       r =
         if dup != null || dupParam != null
-        then throw "parse: redeclaration of `${id}'"
+        then sy.refuse s0 "parse: redeclaration of `${id}'"
         else sy.install s0 id s0.level { };
-      s1 = sy.modsym r.s r.v (x: x // { inherit sclass; type = t; });
+      s1 = sy.modsym r.s r.v (x: x // { inherit sclass; type = t; srcline = pos; });
       s2 =
-        if sclass == "extern" then
+        if sclass == sy.sclasses.extern then
           let
             q = sy.lookupExternal s1 id;
             g = sy.lookupIn s1 id sy.GLOBAL;
             e =
-              if g != null && (sy.getsym s1 g).sclass != "typedef" then { s = s1; v = g; }
+              if g != null && (sy.getsym s1 g).sclass != sy.sclasses.typedef then { s = s1; v = g; }
               else if q != null then { s = s1; v = q; }
-              else sy.installExternal s1 id { type = t; sclass = "extern"; };
+              else sy.installExternal s1 id { type = t; sclass = sy.sclasses.extern; srcline = pos; };
+            es = sy.getsym e.s e.v;
+            warned = if !(ty.eqtype es.type t true)
+            then sy.warn e.s "declaration of `${id}' does not match previous declaration at ${
+              toString es.srcline}\n"
+            else e.s;
           in
-          sy.modsym e.s r.v (x: x // { alias = e.v; })
-        else if sclass == "static" then throw "parse: local statics belong to slice 3 (task-029)"
-        else if sclass == "register" then
+          sy.modsym warned r.v (x: x // { alias = e.v; })
+        else if sclass == sy.sclasses.static then sy.refuse s1 "parse: local statics belong to slice 3 (task-029)"
+        else if sclass == sy.sclasses.register then
           s1 // { registers = s1.registers ++ [ r.v ]; regcount = s1.regcount + 1; }
         else s1;
       s3 =
-        if sclass == "register" then sy.modsym s2 r.v (x: x // { defined = true; })
-        else if sclass == "auto" then
+        if sclass == sy.sclasses.register then sy.modsym s2 r.v (x: x // { defined = true; })
+        else if sclass == sy.sclasses.auto then
           sy.modsym (s2 // { autos = s2.autos ++ [ r.v ]; }) r.v
             (x: x // { defined = true; addressed = ty.isarray t || x.addressed; })
         else s2;
@@ -1093,7 +1279,7 @@ rec {
     { s = s4; inherit (r) v; };
 
   # --- funcdefn ----------------------------------------------------------
-  funcdefn = s0: sclass: id: fty: params:
+  funcdefn = s0: sclass: id: fty: params: pos:
     let
       callee = params;
       # The caller symbols are COPIES: same name, sclass AUTO, integer types
@@ -1103,19 +1289,37 @@ rec {
         let
           q = sy.getsym st.s p;
           r = sy.newsym st.s (q // {
-            sclass = "auto";
+            sclass = sy.sclasses.auto;
             type = if ty.isint q.type then ty.promote q.type else q.type;
           });
         in
         { inherit (r) s; v = st.v ++ [ r.v ]; };
       cs = b.foldl' mkcaller { s = s0; v = [ ]; } callee;
-      g = dclglobal cs.s sclass id fty;
+      # decl.c names this: a parameter whose declarator had no identifier gets
+      # the position number as its name, and a DEFINITION may not do that.
+      # Without the check we install a parameter literally called `1' and print
+      # `caller 1 type=int'.
+      unnamed = b.filter
+        (p: let n = (sy.getsym cs.s p).name; in n != "" && b.match "[1-9][0-9]*" n != null)
+        callee;
+      # decl.c checks for a previous DEFINITION before dclglobal installs this
+      # one, because dclglobal itself does not distinguish a declaration from a
+      # definition.
+      prior = sy.lookup cs.s id;
+      g =
+        if unnamed != [ ]
+        then sy.refuse cs.s "parse: missing name for a parameter of function `${id}'"
+        else if prior != null && ty.isfunc ((sy.getsym cs.s prior).type or ty.inttype)
+          && (sy.getsym cs.s prior).defined
+        then sy.refuse cs.s "parse: redefinition of `${id}'"
+        else dclglobal cs.s sclass id fty pos;
       lab = sy.genlabel g.s 1;
       s1 = sy.modsym lab.s g.v (x: x // {
         flabel = lab.v;
         defined = true;
         ncalls = 0;
       });
+
       s2 = s1 // {
         cfunc = g.v;
         labels = { };
@@ -1128,12 +1332,29 @@ rec {
       s5 = dag.walk s4 null 0 0;
       s6 = sy.exitscope s5;
       s7 = checkrefScope s6 s6.level;
-      s8 = if (sy.getsym s7 g.v).sclass != "static" then self.listing.export s7 g.v else s7;
+      s8 = if (sy.getsym s7 g.v).sclass != sy.sclasses.static then self.listing.export s7 g.v else s7;
       s9 = self.listing.swtoseg s8 1;
       s10 = self.listing.emitFunction s9 g.v cs.v callee;
       s11 = sy.exitscope s10;
+      # lcc frees its FUNC arena here, and this is the equivalent: by the time
+      # emitFunction has returned, the function's listing text is in `buf' and
+      # nothing reads its trees or dag nodes again. Without the release they
+      # accumulate for the whole translation unit -- measured at 763 MB against
+      # 472 MB for a hundred functions, a 38% difference in peak RSS for one
+      # line, and the only lever of that size available. The SYMBOLS stay:
+      # globals, externals and interned constants outlive the function.
+      #
+      # The id counters are NOT reset. Reusing ids would be correct, since the
+      # tables are empty, and it would also make two nodes from two functions
+      # compare equal in any future check that held both.
+      s12 = s11 // {
+        trees = self.store.empty;
+        nodes = self.store.empty;
+        buckets = { };
+        nodecount = 0;
+      };
     in
-    expect (s11 // { cfunc = null; }) "}";
+    expect (s12 // { cfunc = null; }) "}";
 
   # --- decl.c's program() ------------------------------------------------
   program = s0:
@@ -1145,7 +1366,9 @@ rec {
           if kindOf k == "CHAR" || kindOf k == "STATIC" || k == "ID" || k == "*" || k == "("
           then loop (decl s "global") (n + 1)
           else if k == ";" then loop (advance (sy.warn s "empty declaration\n")) (n + 1)
-          else throw "parse: unrecognised declaration at `${text s}' on line ${toString (cur s).line}";
+          else if tk s == "#"
+          then sy.refuse s "parse: `#' -- this frontend is fed raw C and has no preprocessor yet; decision-005 chose to write one in Nix and task-013 is where it lives"
+          else sy.refuse s "parse: unrecognised declaration at ${found s}";
       r = loop s0 0;
     in
     if r.n == 0 then sy.warn r.s "empty input file\n" else r.s;

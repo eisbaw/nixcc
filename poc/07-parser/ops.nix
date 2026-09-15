@@ -40,16 +40,27 @@ rec {
     if op.kind == "" then op.gen
     else op.gen + op.kind + (if (op.size or 0) > 0 then toString op.size else "");
 
-  # The opcodes this slice knows how to emit. Anything else is a hole in the
-  # port rather than a valid opcode we happen not to use, so name it.
-  known = [
+  # TWO SETS, not one. `irOps' is lcc's closed IR operator set (ops.h) -- the
+  # thing a dag node may be, and the thing decision-002 calls closed.
+  # `treeOps' are the six that exist only in the tree and are gone by the time
+  # listnodes is done with them. Conflating them means `check' cannot catch a
+  # COND reaching the DAG, which is the seam where it matters.
+  irOps = [
     "CNST" "ARG" "ASGN" "INDIR" "CVF" "CVI" "CVP" "CVU" "NEG" "CALL" "RET"
     "ADDRG" "ADDRF" "ADDRL" "ADD" "SUB" "LSH" "MOD" "RSH" "BAND" "BCOM" "BOR"
     "BXOR" "DIV" "MUL" "EQ" "GE" "GT" "LE" "LT" "NE" "JUMP" "LABEL"
-    "AND" "NOT" "OR" "COND" "RIGHT" "FIELD"
   ];
+  treeOps = [ "AND" "NOT" "OR" "COND" "RIGHT" "FIELD" ];
 
+  # For a TREE op, which may be either.
   check = op:
-    if b.elem op.gen known then op
+    if b.elem op.gen irOps || b.elem op.gen treeOps then op
+    else throw "ops: `${op.gen}' is not an opcode this frontend knows";
+
+  # For a DAG NODE op, which may only be an IR one.
+  checkIR = op:
+    if b.elem op.gen irOps then op
+    else if b.elem op.gen treeOps
+    then throw "ops: `${op.gen}' is a tree-only operator and cannot be a dag node; listnodes was supposed to have consumed it"
     else throw "ops: `${op.gen}' is not an opcode this frontend knows";
 }

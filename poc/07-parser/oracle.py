@@ -39,20 +39,30 @@ import sys
 
 ORACLE = "rcc-rv32"
 
-# Floors on what was compared, not on what matched. A differential that
-# compared an empty corpus, or listings with no node lines in them, would
-# otherwise report the same clean line as one that compared everything.
-MIN_FILES = 22
-MIN_FUNCTIONS = 10
-MIN_NODE_LINES = 300
-MIN_BACKREFS = 200
+# DECLARED counts, checked for EQUALITY, not floors. poc/lib/mutant.sh makes
+# this argument about mutation counts and it is just as true here: a floor can
+# be spent downward in silence. These began as floors with 70% slack, which
+# meant two thirds of the corpus could stop being compared without either
+# number moving -- review demonstrated exactly that failure on this project's
+# sibling suite, where a floor of 80 stayed green after ten diagnosed forms
+# were deleted.
+#
+# The cost is that adding a corpus file means editing these. That edit is the
+# one that was wanted anyway: it is where you notice what the new file brought.
+#
+# The FILE count is not here: cases.nix declares it (corpusCount plus
+# programCount) and oracle.nix hands it over, because a Python restatement of
+# a Nix number had already gone stale twice.
+FUNCTIONS = 41
+NODE_LINES = 990
+BACKREFS = 841
 # lcc diagnoses this corpus in several places -- an unsigned comparison whose
-# answer is constant, an expression with no effect, a shift by too many bits.
-# A floor on how many of its stderr LINES came back is what makes "the oracle
-# stopped reading lcc's stderr" a failure: with nothing read, the comparison
-# below would find nothing to disagree with and report the cleanest line it
-# has.
-MIN_DIAGS = 6
+# answer is constant, an expression with no effect, a shift by too many bits,
+# a linkage that changed between declarations. Counting its stderr LINES is
+# what makes "the oracle stopped reading lcc's stderr" a failure: with nothing
+# read, the comparison below would find nothing to disagree with and report the
+# cleanest line it has.
+DIAGS = 12
 
 NODE_LINE = re.compile(r"^ ?(\d+)([.'])\s")
 BACKREF = re.compile(r"#(\d+)")
@@ -91,18 +101,26 @@ def main(argv):
         print("our own frontend refused to compile the corpus:", file=sys.stderr)
         print(proc.stderr, file=sys.stderr)
         sys.exit(1)
-    ours = json.loads(proc.stdout)
+    answer = json.loads(proc.stdout)
+    ours, expected = answer["answers"], answer["expected"]
 
-    if len(ours) < MIN_FILES:
-        fault(f"the corpus offered {len(ours)} files to compare, under the "
-              f"{MIN_FILES} this differential declares")
+    if len(ours) != expected:
+        fault(f"the corpus offered {len(ours)} files to compare, against the "
+              f"{expected} cases.nix declares")
 
     sources = {}
     for name in ours:
-        for sub in ("c", "run"):
-            p = poc / sub / f"{name}.c"
-            if p.exists():
-                sources[name] = p
+        # A basename present in BOTH directories would silently compare one
+        # file's listing against the other file's lcc output, because
+        # oracle.nix's listToAttrs keeps the first of a duplicate name. The
+        # sets are disjoint today; nothing else enforces it.
+        found = [poc / sub / f"{name}.c" for sub in ("c", "run")
+                 if (poc / sub / f"{name}.c").exists()]
+        if len(found) > 1:
+            fault(f"{name}.c exists in both c/ and run/; the differential "
+                  f"cannot tell which listing belongs to which source")
+        if found:
+            sources[name] = found[0]
     missing = sorted(set(ours) - set(sources))
     if missing:
         fault(f"no source file found for {', '.join(missing)}")
@@ -111,8 +129,18 @@ def main(argv):
     nodes = refs = functions = diags = 0
 
     for name in sorted(ours):
-        run = subprocess.run([ORACLE], stdin=sources[name].open("rb"),
-                             capture_output=True, text=True)
+        try:
+            run = subprocess.run([ORACLE], stdin=sources[name].open("rb"),
+                                 capture_output=True, text=True)
+        except FileNotFoundError:
+            fault(f"no `{ORACLE}' on PATH; the flake builds it, so run this "
+                  f"inside nix develop")
+        # An oracle that exits non-zero has emitted a TRUNCATED listing, and
+        # comparing against it would report our frontend as the thing that
+        # disagrees. Misattribution is worse than a failure here.
+        if run.returncode != 0:
+            fault(f"{ORACLE} exited {run.returncode} on {name}.c, so its listing "
+                  f"is not a listing:\n{run.stderr}")
         want, want_err = run.stdout, run.stderr
         got, got_err = ours[name]["listing"], ours[name]["diags"]
 
@@ -134,19 +162,19 @@ def main(argv):
         if got_err != want_err:
             err_bad.append((name, want_err, got_err))
 
-    if functions < MIN_FUNCTIONS:
-        fault(f"only {functions} functions were compared, under the "
-              f"{MIN_FUNCTIONS} criterion #2 asks for")
-    if nodes < MIN_NODE_LINES:
-        fault(f"only {nodes} numbered node lines were compared, under the "
-              f"{MIN_NODE_LINES} this differential declares")
-    if diags < MIN_DIAGS:
-        fault(f"only {diags} of lcc's diagnostic lines were compared, under the "
-              f"{MIN_DIAGS} this differential declares; criterion #7 rests on "
+    if functions != FUNCTIONS:
+        fault(f"{functions} functions were compared, against the {FUNCTIONS} this "
+              f"differential declares (criterion #2 asks for at least 10)")
+    if nodes != NODE_LINES:
+        fault(f"{nodes} numbered node lines were compared, against the "
+              f"{NODE_LINES} this differential declares")
+    if diags != DIAGS:
+        fault(f"{diags} of lcc's diagnostic lines were compared, against the "
+              f"{DIAGS} this differential declares; criterion #7 rests on "
               f"lcc's stderr being read at all")
-    if refs < MIN_BACKREFS:
-        fault(f"only {refs} `#n' back-references were compared, under the "
-              f"{MIN_BACKREFS} this differential declares; criterion #3 rests "
+    if refs != BACKREFS:
+        fault(f"{refs} `#n' back-references were compared, against the "
+              f"{BACKREFS} this differential declares; criterion #3 rests "
               f"on these being in the comparison")
 
     # The floors come FIRST, before any diff is reported. They say "this

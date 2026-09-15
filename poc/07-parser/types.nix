@@ -87,7 +87,6 @@ rec {
   atop = ty: if isarray ty then ptr (unqual ty).type else throw "types: array expected";
 
   voidptype = ptr voidtype;
-  charptype = ptr chartype;
   funcptype = ptr (func voidtype null 1);
 
   # lcc picks the first unsigned/signed basic type whose size AND align match a
@@ -209,15 +208,61 @@ rec {
         else ""
       )
     else if ty.op == "ARRAY" then
-      (if ty.size > 0 && ty.type != null && ty.type.size > 0
-      then "array ${toString (ty.size / ty.type.size)}"
-      else "incomplete array") + " of ${outtype ty.type}"
+      # lcc COLLAPSES nested arrays into one dimension list -- `array 2,3 of
+      # int', not `array 2 of array 3 of int' -- and then names the innermost
+      # element type. Printing the obvious recursive form diverges from the
+      # oracle on the first two-dimensional array anyone declares.
+      (
+        let
+          dims = t: if t.type != null && isarray t.type && t.type.type.size > 0
+          then [ (t.size / t.type.size) ] ++ dims t.type
+          else [ (t.size / t.type.size) ];
+          inner = t: if t.type != null && isarray t.type && t.type.type.size > 0
+          then inner t.type else t;
+        in
+        if ty.size > 0 && ty.type != null && ty.type.size > 0
+        then "array ${b.concatStringsSep "," (map toString (dims ty))} of ${
+          outtype (inner ty).type}"
+        else "incomplete array" + (if ty.type != null then " of ${outtype ty.type}" else "")
+      )
     else ty.name or (throw "types: outtype has no spelling for `${ty.op}'");
 
-  # eqtype for the cases slice 1 can reach. lcc's version walks structures and
-  # composes prototypes; with no struct, no enum and no old-style/new-style
-  # mixing in the corpus, structural equality is the whole of it -- but a
-  # FUNCTION type reaches here from `assign', so the two prototype shapes that
-  # do differ are handled rather than assumed away.
-  eqtype = ty1: ty2: _ret: ty1 == ty2;
+  # types.c's eqtype(), ported rather than approximated. Structural equality is
+  # NOT the same relation: `int f()' and `int f(int)' are structurally
+  # different and eqtype-compatible, because an unprototyped declaration
+  # matches any prototype whose parameters are already promoted. Getting that
+  # wrong produces a diagnostic lcc does not print, on a program both
+  # frontends compile -- a criterion #7 failure in the other direction.
+  #
+  # `ret' is what an incomplete array or a prototype mismatch is worth: the
+  # caller decides whether "compatible enough to compose" counts.
+  eqtype = ty1: ty2: ret:
+    if ty1 == ty2 then true
+    else if ty1.op != ty2.op then false
+    else if ty1.op == "POINTER" || isqual ty1 then eqtype ty1.type ty2.type true
+    else if ty1.op == "ARRAY" then
+      (if eqtype ty1.type ty2.type true then
+        (if ty1.size == ty2.size then true
+        else if ty1.size == 0 || ty2.size == 0 then ret
+        else false)
+      else false)
+    else if ty1.op == "FUNCTION" then
+      (if !(eqtype ty1.type ty2.type true) then false
+      else
+        let
+          p1 = ty1.proto;
+          p2 = ty2.proto;
+          promoted = ps: b.all (t: promote (unqual t) == unqual t) ps;
+        in
+        if p1 == p2 then true
+        else if p1 != null && p2 != null then
+          (b.length p1 == b.length p2
+          && b.all (i: eqtype (unqual (b.elemAt p1 i)) (unqual (b.elemAt p2 i)) true)
+            (b.genList (i: i) (b.length p1)))
+        else
+          # One side is unprototyped. lcc accepts the pair when the prototyped
+          # side is not variadic and every parameter is already its own
+          # promoted type -- a `char' parameter would not be.
+          promoted (if p1 == null then p2 else p1))
+    else false;
 }

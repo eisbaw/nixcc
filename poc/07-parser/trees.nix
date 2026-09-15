@@ -90,7 +90,7 @@ rec {
       val =
         if u.op == "INT" then v
         else if u.op == "UNSIGNED" then b.bitAnd v (ty.ones (8 * u.size))
-        else throw "trees: cnsttree cannot hold a `${u.op}' value (decision-006 defers float)";
+        else sy.refuse s "trees: a `${u.op}' constant needs float support, which is deferred (decision-006, task-015)";
       r = tree s (ops.mkop "CNST" t) t null null;
     in
     { s = r.s // { trees = st.set r.s.trees r.v ((get r.s r.v) // { value = val; }); }; inherit (r) v; };
@@ -98,7 +98,7 @@ rec {
   consttree = s: n: t:
     if ty.isarray t then cnsttree s (ty.atop t) n
     else if ty.isint t then cnsttree s t n
-    else throw "trees: consttree wants an integer or array type, got `${ty.outtype t}'";
+    else sy.refuse s "trees: consttree wants an integer or array type, got `${ty.outtype t}'";
 
   # --- tree.c's root / root1 ---------------------------------------------
   # "expression with no effect elided" is warned at most ONCE per root(), which
@@ -180,9 +180,9 @@ rec {
           then elide s else s;
         in
         root1 s1 k0
-      else if g == "CVF" then throw "trees: float conversions are deferred (decision-006, task-015)"
+      else if g == "CVF" then sy.refuse s "trees: float conversions are deferred (decision-006, task-015)"
       else if b.elem g [ "ARG" "ASGN" "CALL" "JUMP" "LABEL" ] then { inherit s; v = p; }
-      else throw "trees: root1 has no rule for `${g}'";
+      else sy.refuse s "trees: root1 has no rule for `${g}'";
 
   # --- expr.c's lvalue / rvalue / pointer / cond / value ------------------
   rvalue = s: p:
@@ -252,7 +252,7 @@ rec {
                 else if src0.op == "POINTER" then
                   simp.simplify v0.s (ops.bare "CVP") (ty.super src0) v0.v null
                 else if src0.op == "FLOAT" then v0
-                else throw "trees: cast has no rule for source `${src0.op}'";
+                else sy.refuse v0.s "trees: cast has no rule for source `${src0.op}'";
               src1 = ty.unqual (get a.s a.v).type;
               dst1 = ty.super dst0;
             in
@@ -260,8 +260,8 @@ rec {
             else if src1.op == "INT" then simp.simplify a.s (ops.bare "CVI") dst1 a.v null
             else if src1.op == "UNSIGNED" then simp.simplify a.s (ops.bare "CVU") dst1 a.v null
             else if src1.op == "FLOAT" then
-              throw "trees: float conversions are deferred (decision-006, task-015)"
-            else throw "trees: cast has no widening rule for `${src1.op}'";
+              sy.refuse a.s "trees: float conversions are deferred (decision-006, task-015)"
+            else sy.refuse a.s "trees: cast has no widening rule for `${src1.op}'";
 
         dst = ty.unqual t;
         src = ty.unqual (get step1.s step1.v).type;
@@ -273,11 +273,11 @@ rec {
             (if src.op != dst.op || src.size != dst.size
             then simp.simplify step1.s (ops.bare "CVU") dst step1.v null else step1)
           else if src.op == "FLOAT" then
-            throw "trees: float conversions are deferred (decision-006, task-015)"
+            sy.refuse step1.s "trees: float conversions are deferred (decision-006, task-015)"
           else if src.op == "POINTER" then
             (if src.op != dst.op || src.size != dst.size
             then simp.simplify step1.s (ops.bare "CVP") dst step1.v null else step1)
-          else throw "trees: cast has no narrowing rule for `${src.op}'";
+          else sy.refuse step1.s "trees: cast has no narrowing rule for `${src.op}'";
       in
       retype step2.s step2.v t;
 
@@ -319,7 +319,15 @@ rec {
     then xty
     else null;
 
-  typeerror = s: opname: l: r:
+  # enode.c's typeerror() takes the OP, not its spelling, and looks the
+  # spelling up itself. Taking the spelling meant every caller wrote a string
+  # literal, so the table below had a dozen shadow copies scattered across two
+  # files -- and each `opText.${g}' was a bare select that builtins.tryEval
+  # cannot catch (task-037).
+  typeerror = s: g: l: r:
+    let
+      opname = opText.${g} or (throw "trees: typeerror has no spelling for `${g}'");
+    in
     if r == null
     then sy.err s "operand of unary ${opname} has illegal type `${ty.outtype (get s l).type}'\n"
     else sy.err s "operands of ${opname} have illegal types `${ty.outtype (get s l).type}' and `${
@@ -340,7 +348,7 @@ rec {
         if at != null then cast a.s a.v at
         else
           let
-            e = typeerror a.s "=" l0 a.v;
+            e = typeerror a.s "ASGN" l0 a.v;
             f = if (get e a.v).type == ty.voidtype then retype e a.v ty.inttype else { s = e; inherit (a) v; };
           in
           f;
@@ -358,7 +366,7 @@ rec {
           else sy.err lv.s "assignment to const location\n")
         else lv.s;
     in
-    if gen s1 l0 == "FIELD" then throw "trees: bit-field assignment is outside slice 1"
+    if gen s1 l0 == "FIELD" then sy.refuse s1 "trees: bit-field assignment is outside slice 1"
     else tree s1 (ops.mkop op.gen t) t lv.v c.v;
 
   # enode.c's asgn(). The qualifier dance is not decoration: lcc temporarily
@@ -374,7 +382,7 @@ rec {
       i = idtree s1 p;
       a = asgntree i.s (ops.bare "ASGN") i.v e;
     in
-    if ty.isarray psym.type then throw "trees: array assignment is slice 2/3 (task-028)"
+    if ty.isarray psym.type then sy.refuse s0 "trees: array assignment is slice 2/3 (task-028)"
     else { s = sy.modsym a.s p (q: q // { inherit (psym) type; }); inherit (a) v; };
 
   condtree = s0: e: l: r:
@@ -390,13 +398,13 @@ rec {
       eg = get s0 e;
     in
     if t == null then
-      let s1 = typeerror s0 "?:" l r; in consttree s1 0 ty.inttype
+      let s1 = typeerror s0 "COND" l r; in consttree s1 0 ty.inttype
     else if eg.op.gen == "CNST" && (eg.op.kind == "I" || eg.op.kind == "U")
     then cast s0 (if eg.value != 0 then l else r) t
     else
       let
         g = if t != ty.voidtype && t.size > 0
-          then sy.genident s0 "register" (ty.unqual t) s0.level
+          then sy.genident s0 sy.sclasses.register (ty.unqual t) s0.level
           else { s = s0; v = null; };
         la = if g.v == null then { inherit (g) s; v = l; } else asgn g.s g.v l;
         ra = if g.v == null then { inherit (la) s; v = r; } else asgn la.s g.v r;
@@ -422,18 +430,18 @@ rec {
       in
       simp.simplify c.s op t a.v c.v
     else
-      let s1 = typeerror s0 opText.${gname} l0 r0; in
+      let s1 = typeerror s0 gname l0 r0; in
       simp.simplify s1 op ty.inttype l0 r0;
 
   addtree = s: op: l: r:
     let lt = (get s l).type; rt = (get s r).type; in
     if ty.isarith lt && ty.isarith rt then arith2 "ADD" s op l r
-    else throw "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
+    else sy.refuse s "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
 
   subtree = s: op: l: r:
     let lt = (get s l).type; rt = (get s r).type; in
     if ty.isarith lt && ty.isarith rt then arith2 "SUB" s op l r
-    else throw "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
+    else sy.refuse s "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
 
   multree = s: op: l: r: arith2 op.gen s op l r;
 
@@ -447,7 +455,7 @@ rec {
       in
       simp.simplify c.s op t a.v c.v
     else
-      let s1 = typeerror s0 opText.${op.gen} l0 r0; in
+      let s1 = typeerror s0 op.gen l0 r0; in
       simp.simplify s1 op ty.inttype l0 r0;
 
   shtree = s0: op: l0: r0:
@@ -460,7 +468,7 @@ rec {
       in
       simp.simplify c.s op t a.v c.v
     else
-      let s1 = typeerror s0 opText.${op.gen} l0 r0; in
+      let s1 = typeerror s0 op.gen l0 r0; in
       simp.simplify s1 op ty.inttype l0 r0;
 
   cmptree = s0: op: l0: r0:
@@ -480,7 +488,7 @@ rec {
       in
       simp.simplify c.s (ops.mkop op.gen t) ty.inttype a.v c.v
     else
-      let s1 = typeerror s0 opText.${op.gen} l0 r0; in
+      let s1 = typeerror s0 op.gen l0 r0; in
       simp.simplify s1 (ops.mkop op.gen ty.unsignedtype) ty.inttype l0 r0;
 
   eqtree = s0: op: l0: r0:
@@ -508,7 +516,7 @@ rec {
       lt = (get s0 l0).type;
       rt = (get s0 r0).type;
       s1 = if !(ty.isscalar lt) || !(ty.isscalar rt)
-        then typeerror s0 opText.${op.gen} l0 r0 else s0;
+        then typeerror s0 op.gen l0 r0 else s0;
       a = cond s1 l0;
       c = cond a.s r0;
     in
@@ -539,12 +547,12 @@ rec {
       # lcc's chain, in order, because only the EXTERN arm substitutes the
       # alias and only that arm is reached when the first three miss.
       chosen =
-        if sym0.scope == sy.GLOBAL || sym0.sclass == "static" then { op = "ADDRG"; sym = p0; }
+        if sym0.scope == sy.GLOBAL || sym0.sclass == sy.sclasses.static then { op = "ADDRG"; sym = p0; }
         else if sym0.scope == sy.PARAM then { op = "ADDRF"; sym = p0; }
-        else if sym0.sclass == "extern" then {
+        else if sym0.sclass == sy.sclasses.extern then {
           op = "ADDRG";
           sym = if sym0.alias == null
-          then throw "trees: extern `${sym0.name}' has no alias in the externals table"
+          then sy.refuse s0 "trees: extern `${sym0.name}' has no alias in the externals table"
           else sym0.alias;
         }
         else { op = "ADDRL"; sym = p0; };

@@ -417,4 +417,17 @@ in
   # (decision-001), and a second copy of it is a second place for the
   # single-byte assertion above to go missing from.
   inherit explode;
+
+  # Every `kind' this lexer can produce, DERIVED from the tables above rather
+  # than listed. poc/07-parser classifies tokens by kind and has its own lists
+  # of which kinds start a statement, a declaration or an expression; a typo in
+  # one of those degrades silently into "this token is its own kind", so the
+  # parser checks its names against this set. Deriving it is the point: a
+  # keyword added here appears here too, with nothing to remember.
+  tokenKinds =
+    b.attrValues keywords
+    ++ b.attrValues punct3
+    ++ b.attrValues punct2
+    ++ b.attrNames punct1
+    ++ [ "ID" "ICON" "FCON" "SCON" "EOI" ];
 }

@@ -20,8 +20,14 @@ let
       inherit (f) name;
       value = {
         listing = cc.linesOf s;
-        diags = b.concatStringsSep "" (map (d: "${toString d.line}: ${d.text}") s.diags);
+        diags = cc.diagsOf s;
       };
     };
 in
-b.listToAttrs (map answer files)
+{
+  answers = b.listToAttrs (map answer files);
+  # How many files there SHOULD be, from cases.nix's own declared counts.
+  # oracle.py used to restate the sum as a Python constant, which had already
+  # gone stale twice in one afternoon.
+  expected = cases.corpusCount + cases.programCount;
+}

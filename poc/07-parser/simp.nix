@@ -15,8 +15,12 @@
 # load-bearing luck: rewriting them would be a second chance to get the
 # boundary cases wrong, and lcc's are already right.
 #
-# WHAT IS NOT HERE. Every float case throws, naming decision-006. Bit-field
-# folding (simp.c's zerofield) throws. simp.c's addrtree -- the rewrite that
+# WHAT IS NOT HERE. Every float case throws, naming decision-006. simp.c's
+# zerofield -- the bit-field rewrite in the EQ and NE cases -- is ABSENT rather
+# than throwing, because a bit field cannot reach simplify() at all: parse.nix
+# refuses `struct' before a field can be declared, and trees.nix refuses a
+# FIELD tree in asgntree. Saying it "throws" was wrong, and an inventory that
+# is wrong about itself is worse than no inventory. simp.c's addrtree -- the rewrite that
 # turns `msg[2]' into `ADDRGP4 msg+8' -- throws naming the slice that owns it.
 # A missing case is a throw rather than a fallthrough to `tree(op,...)',
 # because a silently unsimplified tree is a node-for-node diff failure whose
@@ -95,16 +99,13 @@ rec {
     let
       op = if op0.kind == "" then ops.mkop op0.gen t else op0;
       key = "${op.gen}+${op.kind}";
-      fn = cases.${key} or (throw
+      fn = cases.${key} or (sy.refuse s
         "simp: no rule for `${key}'; ${
           if op.kind == "F" || op.kind == "D"
           then "floating-point support is deferred (decision-006, task-015)"
           else "this opcode is outside slice 1"}");
     in
     fn s t l r;
-
-  # Fallback: build the tree unsimplified.
-  keep = op: s: t: l: r: tr.tree s op t l r;
 
   # --- helpers over tree ids ---------------------------------------------
   isCnst = s: p: k: p != null && (tr.get s p).op.gen == "CNST" && (tr.get s p).op.kind == k;
@@ -170,6 +171,9 @@ rec {
         if c.l == l then null else { inherit s; swap = true; inherit (c) l r; };
 
       idR = k: v: s: _t: l: r: let x = identity s r l k v; in if x == null then null else { inherit s; v = x; };
+      # `identity(r, l, T, v, ones(8*ty->size))' -- the all-ones mask, whose
+      # width comes from the type rather than from a constant.
+      idI = k: s: t: l: r: idR k (ty.ones (8 * (ty.unqual t).size)) s t l r;
 
       lift = f: s: t: l: r: f s t l r;
 
@@ -181,7 +185,7 @@ rec {
         in
         tr.tree c.s (ops.bare "RIGHT") t rt.v c.v;
 
-      unsupported = what: _s: _t: _l: _r: throw "simp: ${what}";
+      unsupported = what: s: _t: _l: _r: sy.refuse s "simp: ${what}";
     in
     {
       # ---- ADD ----
@@ -302,7 +306,13 @@ rec {
           then
             let
               lim = ty.limits t;
-              g = muli s (cval s l) (pow2 (cval s r)) lim.min lim.max;
+              # simp.c's guard is `muli(l, 1<<r, ...)' where the literal 1 is an
+              # `int', so at a shift of 31 the multiplier is INT_MIN and
+              # SIGN-EXTENDS to -2147483648L. Passing the mathematical 2^31
+              # instead lands in a different arm of muli and folds `-1 << 31'
+              # that lcc leaves alone. The VALUE is still computed with the
+              # mathematical power, because lcc computes it as a long.
+              g = muli s (cval s l) (ty.extend (pow2 (cval s r)) ty.inttype) lim.min lim.max;
             in
             if g.v then tr.cnsttree g.s t (cval s l * pow2 (cval s r)) else { inherit (g) s; v = null; }
           else null))
@@ -337,14 +347,17 @@ rec {
       ];
 
       # ---- bitwise ----
+      # `ones(8*ty->size)', not a fixed 32: BCOM two cases down already writes
+      # it that way, and the two disagreeing is how a sub-int type would pick
+      # up the wrong identity if `binary' ever returned one.
       "BAND+I" = chain (ops.mk "BAND" "I") [
-        (fold2 "I" b.bitAnd) swapRight (idR "I" (ty.ones 32))
+        (fold2 "I" b.bitAnd) swapRight (idI "I")
         (lift (s: t: l: r:
           if isCnst s r "I" && cval s r == 0
           then (rightConst (st: tt: tr.cnsttree st tt 0)) s t l r else null))
       ];
       "BAND+U" = chain (ops.mk "BAND" "U") [
-        (fold2 "U" b.bitAnd) swapRight (idR "U" (ty.ones 32))
+        (fold2 "U" b.bitAnd) swapRight (idI "U")
         (lift (s: t: l: r:
           if isCnst s r "U" && cval s r == 0
           then (rightConst (st: tt: tr.cnsttree st tt 0)) s t l r else null))
