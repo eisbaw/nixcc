@@ -105,6 +105,12 @@ poc-assembler:
 poc-loop:
     nix develop --command bash poc/05-loop/run.sh
 
+# Exercise the C89 constant evaluator: value tables, reject paths, the loops
+# at a size where a Nix traversal breaks, a form-by-form differential against
+# lcc's own frontend, mutation test
+poc-constants:
+    nix develop --command bash poc/06-constants/run.sh
+
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:
     #!/usr/bin/env bash

@@ -140,6 +140,8 @@ tests — lives in `just poc`.
     poc/03-matcher/   lburg-style instruction selector, + real lcc DAGs to run it on
     poc/04-assembler/ items -> bytes: layout, labels, pseudo-instructions
     poc/05-loop/      the whole chain in one nix eval, and the faults beside it
+    poc/06-constants/ C89 constant lexemes -> values and byte lists, diffed
+                      against lcc form by form
     poc/lib/          what the timing ladders share: how they measure, and the
                       contention guard that says when a reading means nothing
     backlog/          tasks (managed with the backlog CLI, not edited by hand)

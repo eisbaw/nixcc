@@ -412,4 +412,9 @@ let
 in
 {
   inherit lex render brief;
+  # Exported because poc/06-constants needs the same one. Cutting text out of a
+  # character list rather than out of a string is a rule this whole tree obeys
+  # (decision-001), and a second copy of it is a second place for the
+  # single-byte assertion above to go missing from.
+  inherit explode;
 }
