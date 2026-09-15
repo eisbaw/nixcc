@@ -22,14 +22,15 @@ let
   parse = import ./parse.nix;
   table = import ./rules.nix;
 
-  minRejects = 32;
-  minControls = 17;
+  minRejects = 33;
+  minControls = 18;
 
   # --- rule-table surgery --------------------------------------------------
   edit = id: f: table // {
     rules = map (r: if r.id == id then f r else r) table.rules;
   };
   without = id: table // { rules = b.filter (r: r.id != id) table.rules; };
+  withoutAll = ids: table // { rules = b.filter (r: !(b.elem r.id ids)) table.rules; };
 
   build = args: file:
     let e = import ./emit.nix args; in
@@ -38,6 +39,7 @@ let
   expr = ./ir/expr.sym;
   field = ./ir/field.sym;
   chars = ./ir/chars.sym;
+  voidcall = ./ir/voidcall.sym;
 
   rejects = [
     # --- the rule table is data, so it is also data that can be wrong -------
@@ -130,6 +132,19 @@ let
       what = "a statement template asking for a destination register";
       expect = "uses %c outside an instruction";
       run = build { table = edit "stmt_asgni" (r: r // { tmpl = "sw %c,%0\n"; }); } expr;
+    }
+    {
+      # The table exactly as it was before task-025. The chain rule
+      # `stmt: reg' takes the listed call, hands a null destination down to a
+      # template saying `mv %c,a0', and the refusal has to name the C rather
+      # than the template -- which is what this pins.
+      #
+      # BOTH rows have to go. Remove only the direct one and the indirect row
+      # takes the node instead, materialising the callee's address and
+      # jalr-ing through it: correct code, dearer, and not this case.
+      what = "a discarded call result with no statement rule to take it";
+      expect = "CALLI4 is a call whose result is discarded here";
+      run = build { table = withoutAll [ "stmt_calli_direct" "stmt_calli_indirect" ]; } voidcall;
     }
     {
       what = "a template asking for an argument register outside an argument";
@@ -242,6 +257,7 @@ let
   controls = [
     { what = "the real table compiles the arithmetic case"; run = build { } expr; }
     { what = "the real table compiles the addressing case"; run = build { } field; }
+    { what = "the real table compiles the discarded-call case"; run = build { } voidcall; }
     {
       what = "the real table compiles the case with both source widths in it";
       run = build { } chars;

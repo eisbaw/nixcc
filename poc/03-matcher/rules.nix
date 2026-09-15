@@ -333,11 +333,40 @@ in
 
     # --- calls ------------------------------------------------------------
     # A call to a known symbol beats materialising its address and jalr-ing
-    # through it: 4 against 2 + 5. Cost, not rule order, decides that.
-    { id = "reg_calli_direct"; nt = "reg"; op = "CALLI4"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\nmv %c,a0\n"; }
-    { id = "reg_calli_indirect"; nt = "reg"; op = "CALLI4"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\nmv %c,a0\n"; }
+    # through it. Cost, not rule order, decides that.
+    #
+    # THE UNITS: `callCost' is the call itself, and every further instruction
+    # a rule emits costs one more. So a value-producing call is callCost + 1
+    # because it also moves a0, and an indirect one is one dearer again
+    # because the address has to be in a register first. Nothing here is
+    # cheaper for being in a statement position -- the statement rows below
+    # are cheaper because they emit less.
+    { id = "reg_calli_direct"; nt = "reg"; op = "CALLI4"; kids = [ "acon" ]; cost = callCost + 1; tmpl = "call %0\nmv %c,a0\n"; }
+    { id = "reg_calli_indirect"; nt = "reg"; op = "CALLI4"; kids = [ "reg" ]; cost = callCost + 2; tmpl = "jalr %0\nmv %c,a0\n"; }
     { id = "stmt_callv_direct"; nt = "stmt"; op = "CALLV"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\n"; }
     { id = "stmt_callv_indirect"; nt = "stmt"; op = "CALLV"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\n"; }
+    # A call whose int result is DISCARDED -- `wr(1, buf, 11);' as a
+    # statement. lcc lists it as a root nothing references, so it reduces to
+    # `stmt' and not to `reg'. Without these two rows the chain rule
+    # `stmt: reg' took it instead and handed a null destination to a template
+    # saying `mv %c,a0', which refused while naming the template rather than
+    # the discarded return value (task-025).
+    #
+    # They are the `reg' rules with the result move dropped, and cost one less
+    # for exactly that reason -- not because a statement is cheaper.
+    #
+    # THAT DIFFERENCE IS LOAD-BEARING, and not only tidy. `stmt: reg' can
+    # also take this node, at the `reg' rule's cost plus nothing, so the
+    # statement row wins by exactly the instruction it does not emit. Price
+    # these the same as the `reg' rows and the choice becomes a tie decided
+    # by the order the labeller happens to seed its map in; price them dearer
+    # and the chain wins, the destination is null, and the whole thing
+    # refuses. Measured both ways.
+    #
+    # CALLP4 and CALLD4 get no rows: nothing in the corpus produces either,
+    # and neither has a `reg' rule to pair with, so both refuse (task-036).
+    { id = "stmt_calli_direct"; nt = "stmt"; op = "CALLI4"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\n"; }
+    { id = "stmt_calli_indirect"; nt = "stmt"; op = "CALLI4"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\n"; }
     { id = "stmt_argi"; nt = "stmt"; op = "ARGI4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
     { id = "stmt_argp"; nt = "stmt"; op = "ARGP4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
 

@@ -38,11 +38,12 @@ int hello(int *v, int n, int *out)
      * a byte list can, which is the whole reason this loop closes in Nix. */
     out[2] = (s / 10 + 48) + ((s % 10 + 48) << 8) + (10 << 16);
 
-    /* The result is USED, and not only because checking write()'s return
-     * value is what a C program should do: a call whose int result is
-     * discarded has no rule in the matcher's table yet and is refused rather
-     * than miscompiled (task-025). Exit status 0 therefore means "the write
-     * syscall reported all eleven bytes written". */
+    /* The result is USED because checking write()'s return value is what a
+     * C program should do. It was not a free choice when this was written --
+     * a discarded int result had no rule in the matcher's table and was
+     * refused -- but task-025 has since added one, so the contortion is gone
+     * and only the good reason is left. Exit status 0 therefore means "the
+     * write syscall reported all eleven bytes written". */
     if (wr(1, out, 11) == 11)
         return 0;
     return 1;

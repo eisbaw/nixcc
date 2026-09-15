@@ -210,7 +210,21 @@ let
               toString (b.length kidTexts)} kid(s)"
             else b.elemAt kidTexts i
           else if c == "c" then
-            (if dst == null then throw "burg: template `${tmpl}' uses %c outside an instruction" else dst)
+            # The old message named the TEMPLATE and nothing else, so a
+            # discarded return value -- `wr(1, buf, 11);' as a statement --
+            # was reported as `mv %c,a0' using %c outside an instruction, and
+            # a reader had to know this file to see what the C had done. Name
+            # the node and the position too; the fragment stays so the
+            # must-fail suite still holds this to its text.
+            #
+            # It DESCRIBES rather than prescribes: a table with a `stmt' rule
+            # whose own template asks for %c reaches here too, and being told
+            # to add a rule that is already there sends the reader nowhere.
+            (if dst == null then throw "burg: template `${tmpl}' uses %c outside an instruction, reducing ${
+              node.op} at a position with no destination register${
+              if isCall node
+              then " -- ${node.op} is a call whose result is discarded here, so either the table has no `${table.start}' rule for it or the rule that won produces a value (task-036)"
+              else ""}" else dst)
           else if c == "a" then target.operand node
           else if c == "A" then
             (if argReg == null then throw "burg: template `${tmpl}' uses %A outside an argument" else argReg)

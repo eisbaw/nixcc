@@ -22,6 +22,7 @@
     { name = "argcall"; fn = "nested"; what = "a libcall inside a call's FIRST argument, which is legal"; }
     { name = "gsym"; fn = "pick"; what = "a global at a constant index, which lcc folds into one ADDRGP4 sym+N"; }
     { name = "chars"; fn = "scan"; what = "char and short: byte and halfword loads and stores, and the conversions over them"; }
+    { name = "voidcall"; fn = "emit"; what = "an int-returning function called for its effect, beside a void call"; }
   ];
 
   # Acceptance criterion 4 and 9: these opcodes must appear in the corpus DAGs
@@ -30,7 +31,7 @@
   requiredOps = [
     "CNSTI4" "ADDRLP4" "ADDRGP4" "ADDRFP4" "INDIRI4" "INDIRP4" "ASGNI4" "ASGNP4"
     "ADDI4" "ADDP4" "SUBI4" "LSHI4" "MULI4" "DIVI4" "MODI4"
-    "CALLI4" "RETI4" "ARGI4" "JUMPV"
+    "CALLI4" "CALLV" "RETI4" "ARGI4" "JUMPV"
     "LEI4" "LTI4" "GEI4" "EQI4"
     # task-024: the narrow accesses, the word forms lcc emits for unsigned
     # int, and the conversions it wraps every one of them in.
@@ -150,7 +151,7 @@
     }
     {
       what = "a call to a known symbol";
-      file = "expr"; forest = 2; node = "7"; nt = "reg"; rule = "reg_calli_direct"; cost = 4;
+      file = "expr"; forest = 2; node = "7"; nt = "reg"; rule = "reg_calli_direct"; cost = 5;
     }
     {
       what = "the return moves to a0 and jumps to the epilogue";
@@ -259,6 +260,31 @@
       # shift. The pair beside it above does need one.
       what = "narrowing an int to a signed char needs no source width at all";
       file = "chars"; forest = 7; node = "17"; nt = "reg"; rule = "reg_cvii1"; cost = 3;
+    }
+    {
+      # The same node, two nonterminals, two rules and two costs. This is the
+      # whole of task-025: what lcc listed and nothing referenced reduces to
+      # `stmt', and the `reg' rule is still there for a caller that wants the
+      # value, one instruction dearer because it also moves a0.
+      what = "a call whose result is discarded reduces to a statement, not a value";
+      file = "voidcall"; forest = 1; node = "4"; nt = "stmt"; rule = "stmt_calli_direct"; cost = 4;
+    }
+    {
+      # The margin the statement row wins by, and it is exactly the
+      # instruction it does not emit -- `stmt: reg' over this same rule would
+      # cost 5 and produce a value with nowhere to put it.
+      what = "and the same node still produces a value, for one more instruction";
+      file = "voidcall"; forest = 1; node = "4"; nt = "reg"; rule = "reg_calli_direct"; cost = 5;
+    }
+    {
+      # Through a function pointer, which is the only way C reaches the
+      # indirect row: the callee's address is loaded rather than named.
+      what = "a discarded call through a function pointer is the indirect statement rule";
+      file = "voidcall"; forest = 3; node = "6"; nt = "stmt"; rule = "stmt_calli_indirect"; cost = 8;
+    }
+    {
+      what = "a void call was always a statement, and is priced as the call it is";
+      file = "voidcall"; forest = 4; node = "1"; nt = "stmt"; rule = "stmt_callv_direct"; cost = 4;
     }
     {
       what = "pointer + constant field offset IS an addressing mode, and free";
@@ -435,6 +461,16 @@
       instructions = 91;
       follows = [ ];
     }
+    {
+      file = "voidcall";
+      present = [ "call put" "call done" "jalr s1" "mv a0,s1" "addi s1,s1,2" ];
+      absent = [ "%" ];
+      # 19, and the count is what guards the SHAPE here: `present' is
+      # membership, so it cannot see that put() is called twice, and a rule
+      # that grew a result move would emit it with no %c to refuse over.
+      instructions = 19;
+      follows = [ ];
+    }
   ];
 
   # --- execution (run.sh) --------------------------------------------------
@@ -473,6 +509,20 @@
       # sign is checked in `narrowLoads' above, against the table, for
       # exactly that reason.
       why = "scan(4): 480 from the byte pairs, 2 from the halfword pair, then 482+7-30+482+226+482";
+    }
+    {
+      file = "voidcall";
+      expect = 70;
+      # The exit status is what put() ACCUMULATED, not what emit() returned:
+      # emit() throws every result away, so the side effects are the only
+      # evidence the calls happened.
+      #
+      # acc starts at 7, which is what makes the case discriminate. With 0,
+      # put(n) would return exactly n and a compiler that used the discarded
+      # result where the argument belongs would get the right answer by luck;
+      # with 7 it computes 7+20=27, then 27+28=55, then 55+57=112. Dropping
+      # either put() gives 48 or 49, and dropping the indirect call gives 48.
+      why = "emit(20): acc 7 + 20 = 27, + 21 = 48, then hook(22) through the pointer = 70";
     }
   ];
 }

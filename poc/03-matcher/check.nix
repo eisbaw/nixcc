@@ -31,13 +31,14 @@ let
   # last three in cases.nix and emptying every list AND zeroing every floor was
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
-  minFunctions = 9;
-  minSelections = 34;
+  minFunctions = 10;
+  minSelections = 40;
   minDuels = 4;
-  minRules = 60;
-  minNodes = 250;
-  minRequiredOps = 38;
+  minRules = 65;
+  minNodes = 315;
+  minRequiredOps = 41;
   minLibcalls = 3;
+  minCallRules = 6;
   minLowerings = 13;
   minForbidden = 5;
   minFollows = 2;
@@ -78,6 +79,29 @@ let
       let r = ruleById.${l.rule} or null; in
       r == null || r.op != l.op || firstToken r.tmpl != l.mnemonic)
     cases.lowerings;
+  # Whether the table's own `callMarkers' recognise every rule for a CALL
+  # opcode. burg.nix decides "this calls something, so the argument registers
+  # are gone" by matching those markers against the EMITTED CODE, which is
+  # right -- and it means a call rule whose text the markers happen not to
+  # match looks to it like code that leaves a0 alone. For the rules no corpus
+  # case exercises, nothing else here would notice.
+  #
+  # THE POPULATION IS DERIVED, not listed. A hand-written list of call rules
+  # catches a row deleted from it and never a row ADDED to the table and
+  # forgotten -- which is the mistake that actually happens, and which the
+  # first version of this check claimed to catch and did not: a new
+  # `stmt: CALLP4' emitting `jal' passed it clean. Only the `CALL.*' opcode
+  # convention is shared with burg.nix, which spells the same thing `isCall';
+  # the marker test is reimplemented, because a check sharing the
+  # implementation would agree with it however wrong it was.
+  #
+  # The multiply/divide libcalls are not CALL opcodes and are covered by
+  # `badLibcall' below, which asks for `call __mulsi3' and so subsumes this.
+  callRules = b.filter (r: r ? op && b.match "CALL.*" r.op != null) table.rules;
+  uncalled = b.filter
+    (r: !(b.any (m: contains m r.tmpl) table.callMarkers))
+    callRules;
+
   badLibcall = b.filter
     (l:
       let r = ruleById.${l.rule} or null; in
@@ -279,6 +303,9 @@ else if b.length cases.duels < minDuels then
 else if b.length cases.requiredOps < minRequiredOps then
   fault "cases.nix requires only ${toString (b.length cases.requiredOps)} opcodes to be covered, fewer than the ${
     toString minRequiredOps} floor -- emptying that list turns the opcode-coverage check into a no-op"
+else if b.length callRules < minCallRules then
+  fault "the rule table has ${toString (b.length callRules)} rules for CALL opcodes, fewer than the ${
+    toString minCallRules} floor -- with none of them the check that burg.nix can still see a call is vacuous"
 else if b.length cases.libcalls < minLibcalls then
   fault "cases.nix names only ${toString (b.length cases.libcalls)} libcall lowerings, fewer than the ${
     toString minLibcalls} floor"
@@ -306,6 +333,8 @@ else if forbidden != [ ] then
 else if badLowering != [ ] then
   throw "matcher: ${(b.head badLowering).op} must be lowered by rule `${(b.head badLowering).rule}' to `${
     (b.head badLowering).mnemonic}', and is not -- most of these lowerings are invisible to any executed answer, so this table is the only thing checking them (task-024)"
+else if uncalled != [ ] then
+  throw "matcher: rule `${(b.head uncalled).id}' is a rule for ${(b.head uncalled).op}, but none of the table's callMarkers matches what it emits -- burg.nix reads call-ness off the emitted code, so this rule would look to it like code that leaves the argument registers alone (task-025)"
 else if badLibcall != [ ] then
   throw "matcher: ${(b.head badLibcall).op} must be lowered by rule `${(b.head badLibcall).rule}' to a call on ${
     (b.head badLibcall).symbol}, and is not (decision-003)"

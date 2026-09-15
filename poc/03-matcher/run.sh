@@ -442,6 +442,38 @@ mutate "matcher: a fragment rule may hand its users the register its kid used" \
        "sed -i 's@^else if aliasing != \[ \] then@else if false then@' burg.nix" \
        "$must_fail"
 
+# --- a discarded call result (task-025) ---
+# burg.nix decides "this calls something" by matching the table's own
+# callMarkers against the emitted TEXT. A call rule the markers do not match
+# looks to it like code that leaves the argument registers alone.
+#
+# Aimed at `stmt_callv_indirect', which NOTHING else in the suite covers: no
+# corpus case calls a void function through a pointer, so with this guard
+# switched off the same mutation passes clean. Mutating a rule the corpus
+# exercises would have been caught by the emitted-assembly check instead, and
+# would have proved nothing about this guard.
+mutate "matcher: a call rule's emitted text stops looking like a call" \
+       "rule \`stmt_callv_indirect' is a rule for CALLV" \
+       "sed -i '/stmt_callv_indirect/ s@\"jalr %0@\"jr %0@' rules.nix" \
+       "$matcher_check"
+
+# Criterion 4's own guard: when a discarded result STILL cannot be compiled --
+# take both `stmt' rows away and `stmt: reg' takes the node -- the refusal has
+# to name the C and not the template. Only messages.sh can see that it stopped.
+mutate "matcher: a refused discarded call names the template and not the call" \
+       "'a discarded call result with no statement rule to take it' threw, but the message does not contain" \
+       "sed -i 's@              if isCall node@              if false@' burg.nix" \
+       "bash $mut/messages.sh $mut"
+
+# The population of call rules is DERIVED from the opcode, and this is what
+# says so: a row added to the table and mentioned nowhere else is still
+# checked. The hand-written list this replaced could not do it -- it was
+# exactly this rule, added and forgotten, that passed the first version clean.
+mutate "matcher: a call rule is added to the table and forgotten everywhere else" \
+       "rule \`stmt_callp_direct' is a rule for CALLP4" \
+       "sed -i '/stmt_calli_indirect/a\\    { id = \"stmt_callp_direct\"; nt = \"stmt\"; op = \"CALLP4\"; kids = [ \"acon\" ]; cost = 4; tmpl = \"jal %0\\n\"; }' rules.nix" \
+       "$matcher_check"
+
 mutate "harness: the opcode-lowering table is emptied" \
        "opcode lowerings, fewer than the" \
        "sed -i 's@^  lowerings = \[@  lowerings = [ ]; unusedLowerings = [@' cases.nix" \

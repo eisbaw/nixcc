@@ -1,10 +1,10 @@
 ---
 id: TASK-025
 title: A call whose result is discarded has no rule
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 04:40'
+updated_date: '2026-09-15 07:54'
 labels:
   - poc
   - matcher
@@ -40,3 +40,14 @@ Found by TASK-004: poc/05-loop/hello.c checks write()'s return value instead, wh
 - [ ] #3 A case in poc/03-matcher's corpus covers it, taken from real lcc output rather than hand-written IR
 - [ ] #4 If a discarded result still cannot be compiled in some position, the diagnostic names the C-level cause rather than the template
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Plan (implementer):
+- Two rows in poc/03-matcher/rules.nix: `stmt: CALLI4(acon)' and `stmt: CALLI4(reg)', which is exactly what the task predicted, and therefore also a small test of the table's own claim that adding an instruction means adding a row.
+- Criterion 2 wants the new templates matched by callMarkers. That is currently derived and asserted nowhere, so cases.nix gains a `callRules' table naming every rule that CALLS something, checked against the table's OWN callMarkers -- a new call rule the markers do not match would keep a value in a0 across a call, silently.
+- Criterion 4 wants a diagnostic naming the C-level cause. burg.nix's `%c outside an instruction' message names the template and not the node; it gains the opcode and the position, keeping the existing fragment so must-fail still holds.
+- New corpus case ir/voidcall.c: an int-returning function called twice for its effect beside a void call, taken from real lcc output, run in the emulator against the host compiler.
+- CALLP4 and CALLD4 are NOT added: nothing in the corpus produces them and there is no `reg' rule for either either, so they refuse loudly. Filed rather than guessed at.
+<!-- SECTION:NOTES:END -->

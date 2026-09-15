@@ -1,0 +1,42 @@
+export emit
+segment text
+function emit type=int function(int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=4
+caller n type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+callee n type=int sclass=register scope=PARAM flags=0 offset=0 ref=4.000000
+blockbeg off=0
+blockend off=0
+ 2. ADDRFP4 n
+4. ADDRFP4 n
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 3. ADDRFP4 n
+2. INDIRI4 #3
+1' ARGI4 #2 4 4
+5. ADDRGP4 put
+4' CALLI4 #5 {int function(int)}
+ 4. ADDRFP4 n
+3. INDIRI4 #4
+5. CNSTI4 1
+2. ADDI4 #3 #5
+1' ARGI4 #2 4 4
+7. ADDRGP4 put
+6' CALLI4 #7 {int function(int)}
+ 4. ADDRFP4 n
+3. INDIRI4 #4
+5. CNSTI4 2
+2. ADDI4 #3 #5
+1' ARGI4 #2 4 4
+8. ADDRGP4 hook
+7. INDIRP4 #8
+6' CALLI4 #7 {int function(int)}
+ 2. ADDRGP4 done
+1' CALLV #2 {void function(void)}
+ 3. ADDRFP4 n
+2. INDIRI4 #3
+1' RETI4 #2
+ 1:
+maxoff=0
+import hook
+import done
+import put
+progend
