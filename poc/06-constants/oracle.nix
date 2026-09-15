@@ -179,7 +179,13 @@ let
     if form.kind == "scalar" then
       let
         r = c.evalICON form.lexeme;
-        signed = b.elem r.type c.target.signedTypes || r.type == "unsigned short";
+        # C89 6.2.1.1: unsigned short promotes to int, because int holds every
+        # value it has, so a wide character constant reaches the comparison as
+        # a SIGNED int. Every other type here is already of int rank and keeps
+        # its own signedness, which comes from const.nix's own table rather
+        # than from a list restated here -- an unknown type name throws there
+        # instead of quietly reading as unsigned.
+        signed = if r.type == "unsigned short" then true else c.signedOf r.type;
       in
       {
         kind = "scalar";

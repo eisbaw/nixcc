@@ -9,19 +9,28 @@
 # success while verifying nothing.
 #
 # The guards are ordered so that a HARNESS FAULT can never pre-empt a real
-# diagnosis: the floors come first, then the evaluator's own verdicts, then
-# the elementwise check that the comparison happened at all.
+# diagnosis: the declared-count checks come first, then the evaluator's own
+# verdicts. There is deliberately NOTHING after the verdicts -- two totals
+# used to be compared there and review showed both were unreachable, since
+# `bad == [ ]' already means every case's whole expected list was matched.
+# The anti-truncation property they were meant to give comes from comparing
+# whole lists per case, which is what `have != want' does.
 let
   b = builtins;
   c = import ./const.nix;
   l = import ../02-lexer/lex.nix;
   cases = import ./cases.nix;
 
-  # Floors, not targets. If the tables legitimately grow, raise these.
-  minScalars = 45;
-  minStrings = 12;
-  minLexed = 3;
-  minLexedConstants = 8;
+  # DECLARED counts, checked for EQUALITY rather than floors. A floor with
+  # slack in it can be spent downward in silence: review demonstrated exactly
+  # that on oracle.nix, deleting ten diagnosed forms and watching the diff
+  # stay green against a floor with fourteen forms of slack in it. The
+  # argument is poc/lib/mutant.sh's, made there about mutation counts and just
+  # as true of a case table.
+  declaredScalars = 51;
+  declaredStrings = 14;
+  declaredLexed = 3;
+  declaredLexedConstants = 8;
 
   showInts = xs: "[${b.concatStringsSep " " (map toString xs)}]";
   showStrs = xs: b.concatStringsSep " " (map (x: "`${x}'") xs);
@@ -83,8 +92,8 @@ let
   lexedResults = map lexedResult cases.lexed;
 
   bad = b.filter (r: r.bad) (scalarResults ++ stringResults ++ lexedResults);
+  # Counted from the work, for the summary line -- not guards. See the header.
   decodedUnits = b.foldl' (a: r: a + r.units) 0 stringResults;
-  expectedUnits = b.foldl' (a: cs: a + b.length cs.units) 0 cases.strings;
   foundConstants = b.foldl' (a: r: a + r.constants) 0 lexedResults;
   expectedConstants = b.foldl' (a: cs: a + b.length cs.expect) 0 cases.lexed;
 
@@ -95,30 +104,24 @@ let
 
   fault = msg: throw "HARNESS FAULT: ${msg}";
 in
-if b.length scalarResults < minScalars then
-  fault "only ${toString (b.length scalarResults)} scalar cases, expected at least ${
-    toString minScalars} -- did cases.nix shrink?"
-else if b.length stringResults < minStrings then
-  fault "only ${toString (b.length stringResults)} string cases, expected at least ${
-    toString minStrings}"
-else if b.length lexedResults < minLexed then
-  fault "only ${toString (b.length lexedResults)} lexed cases, expected at least ${
-    toString minLexed}"
-else if expectedConstants < minLexedConstants then
-  fault "the lexed table expects only ${toString expectedConstants} constants in total, fewer than the ${
-    toString minLexedConstants} floor -- were the `expect' lists emptied?"
+if b.length scalarResults != declaredScalars then
+  fault "${toString (b.length scalarResults)} scalar cases, against the ${
+    toString declaredScalars} this file declares -- raise the declared number with the table"
+else if b.length stringResults != declaredStrings then
+  fault "${toString (b.length stringResults)} string cases, against the ${
+    toString declaredStrings} this file declares"
+else if b.length lexedResults != declaredLexed then
+  fault "${toString (b.length lexedResults)} lexed cases, against the ${
+    toString declaredLexed} this file declares"
+else if expectedConstants != declaredLexedConstants then
+  fault "the lexed table expects ${toString expectedConstants} constants in total, against the ${
+    toString declaredLexedConstants} this file declares -- were the `expect' lists emptied?"
 else if withNul == [ ] then
   fault "no string case decodes to a unit list containing a NUL, so the one property that forces unit lists rather than Nix strings is untested"
 else if bad != [ ] then
   throw "constants: ${toString (b.length bad)} of ${
     toString (b.length scalarResults + b.length stringResults + b.length lexedResults)} cases failed\n  ${
     b.concatStringsSep "\n  " (map (r: r.why) bad)}"
-else if decodedUnits != expectedUnits then
-  fault "decoded ${toString decodedUnits} string units against ${
-    toString expectedUnits} expected ones; the comparison is not elementwise"
-else if foundConstants != expectedConstants then
-  fault "found ${toString foundConstants} constant tokens in the lexed sources against ${
-    toString expectedConstants} expected ones; the comparison is not elementwise"
 else
   "${toString (b.length scalarResults)} scalar cases, ${toString (b.length stringResults)} string cases (${
     toString decodedUnits} units decoded) and ${toString (b.length lexedResults)} lexed sources (${

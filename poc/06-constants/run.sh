@@ -103,7 +103,10 @@ mutate "evaluator: the long suffix stops choosing long" \
        "sed -i 's|else if suffix == \"l\" then|else if false then|' const.nix" \
        "$table_check"
 
-mutate "evaluator: an overflowing constant wraps instead of clamping" \
+# NOT "wraps": `accumulate' freezes its value at the last pre-overflow
+# partial, so the mutant reports 429496729 for 4294967296. The defect is that
+# the clamp is gone, which is what the name has to say.
+mutate "evaluator: an overflowing constant keeps its partial instead of clamping" \
        "\`4294967296' should be unsigned long 4294967295" \
        "sed -i 's|value = if blown then limit else n;|value = n;|' const.nix" \
        "$table_check"
@@ -118,18 +121,24 @@ mutate "evaluator: a character constant is not sign extended" \
        "sed -i 's|else if first >= CHAR_SIGN_BIT then first - CHAR_MODULUS|else if false then first - CHAR_MODULUS|' const.nix" \
        "$oracle_check"
 
+# The fragment names the CASE rather than the generic `why' prefix, which any
+# failing narrow-string case would produce.
 mutate "evaluator: a string constant drops its embedded NUL" \
-       "should decode to width 1" \
+       "an embedded NUL, which no Nix string could hold: " \
        "sed -i 's|      units = r.values;|      units = b.filter (v: v != 0) r.values;|' const.nix" \
        "$table_check"
 
+# The fragments below name a CASE, not a position in the list: the message is
+# "these should have been rejected but evaluated fine: <comma list>", and an
+# "evaluated fine: X" fragment silently depended on X being first. Inserting a
+# reject would have turned that into a gate failure with no defect behind it.
 mutate "evaluator: float is quietly accepted instead of refused" \
-       "evaluated fine: a floating constant" \
-       "sed -i 's|evalFCON = floatDeferred;|evalFCON = _: { value = 0; type = \"double\"; warnings = [ ]; };|' const.nix" \
+       "a floating constant names the rejection task too" \
+       "sed -i 's|^  evalFCON = lexeme: throw|  evalFCON = _: { value = 0; type = \"double\"; warnings = [ ]; }; unusedFCON = lexeme: throw|' const.nix" \
        "$must_fail"
 
 mutate "evaluator: a byte outside ASCII evaluates to an invented value" \
-       "evaluated fine: a byte outside ASCII" \
+       "a byte outside ASCII in a character constant" \
        "sed -i 's|or nonAsciiByte;|or 0;|' const.nix" \
        "$must_fail"
 
@@ -145,28 +154,32 @@ mutate "evaluator: a long literal is decoded only as far as its first unit" \
 
 # --- mutations of the harness ---
 mutate "harness: the scalar expectations are emptied" \
-       "only 0 scalar cases" \
+       "0 scalar cases, against the" \
        "sed -i 's|^  scalars = \[|  scalars = [ ]; unusedScalars = [|' cases.nix" \
        "$table_check"
 
 mutate "harness: the lexed expectations are emptied" \
-       "expects only 0 constants" \
+       "expects 0 constants in total" \
        "sed -i 's|      expect = \[|      expect = [ ]; unusedExpect = [|' cases.nix" \
        "$table_check"
 
 mutate "harness: the reject table is emptied" \
-       "must-fail tables shrank to 0 rejects" \
+       "tables hold 0 rejects" \
        "sed -i 's|^  rejects = \[|  rejects = [ ]; unusedRejects = [|' must-fail.nix" \
        "$must_fail"
 
 mutate "harness: the oracle's form table is emptied" \
-       "the oracle table shrank to 0 scalar" \
+       "the oracle table holds 0 scalar" \
        "sed -i 's|^  scalars = \[|  scalars = [ ]; unusedScalars = [|' oracle.nix" \
        "$oracle_check"
 
-mutate "harness: the oracle stops attributing lcc's warnings to forms" \
-       "lcc warns []" \
-       "sed -i 's|.append(m.group(3))|.clear()|' oracle.py" \
+# With the stderr parser silenced, every form reads as "lcc warned nothing".
+# The per-form comparison would catch that for the 21 forms we warn about; the
+# declared-diagnostics control catches it first and for the right reason, and
+# this is what proves that control is load-bearing.
+mutate "harness: the oracle stops reading lcc's diagnostics at all" \
+       "diagnostics were parsed out of the" \
+       "sed -i 's|        diagnostics\[index\].append(m.group(2))|        pass|' oracle.py" \
        "$oracle_check"
 
 # The one that matters most: with lcc replaced by `cat', the oracle's input
@@ -181,6 +194,42 @@ mutate "harness: the stress sizes are cut below where anything breaks" \
        "stress sizes were shrunk" \
        "sed -i 's|^  repeats = 20000;|  repeats = 10;|' stress.nix" \
        "$stress_check"
+
+# --- the checks review found nothing was aimed at ---
+# THE ONE CRITERION #2 RESTS ON. Take the pre-multiply guard out of
+# `accumulate' and a 5000-digit constant is no longer clamped at the target
+# ceiling -- the accumulation runs on until Nix itself raises "integer
+# overflow", which is the failure this whole design exists to avoid and the
+# one no other mutation reaches. stress.nix is the only stage large enough to
+# get there.
+mutate "evaluator: the overflow guard is removed, so Nix throws instead" \
+       "integer overflow" \
+       "sed -i 's|else if acc.value > (ULONG_MAX - d) / base then acc // { overflow = true; }|else if false then acc|' const.nix" \
+       "$stress_check"
+
+# The CONTROL half of must-fail.nix carries its headline claim -- that an
+# evaluator refusing everything could not pass it either -- and nothing
+# proved that branch ran.
+mutate "evaluator: every integer constant is refused, controls included" \
+       "should have evaluated but threw" \
+       "sed -i 's|^  evalICON = lexeme: if isCharLexeme|  evalICON = _: throw \"refused\"; unusedICON = lexeme: if isCharLexeme|' const.nix" \
+       "$must_fail"
+
+# The oracle's STRING comparison. The `cat' mutation proves the never-compared
+# path; this proves a wrong decoded literal is caught rather than waved past.
+mutate "harness: the oracle stops comparing decoded string units" \
+       "lcc says width 1" \
+       "sed -i 's|      units = r.values;|      units = b.filter (v: v != 0) r.values;|' const.nix" \
+       "$oracle_check"
+
+# And that the per-function constant-node assertion is evaluated at all. It is
+# what stops the oracle reading the relational's own CNSTI4 1 as the form's
+# value -- which is the right answer by accident for the forms `1' and
+# `'\\1'', and was a live fail-open before review found it.
+mutate "harness: the per-function constant-node count stops matching" \
+       "constant nodes, not 4" \
+       "sed -i 's|^CNSTS_PER_SCALAR = 3|CNSTS_PER_SCALAR = 4|' oracle.py" \
+       "$oracle_check"
 
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
@@ -201,7 +250,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=16
+declared=20
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

@@ -35,15 +35,25 @@ import re
 import subprocess
 import sys
 
-# A floor on the number of forms, checked against what oracle.nix actually
-# produced. A diff over an empty list prints its cleanest line after
-# comparing nothing, which is this tree's recurring failure; the floor is what
-# makes an emptied table a fault instead of a pass.
-MIN_FORMS = 100
-# And floors on the two halves separately, so that emptying one of them
-# cannot hide behind the other being long.
-MIN_SCALARS = 80
-MIN_STRINGS = 10
+# DECLARED counts, checked for EQUALITY rather than floors. A diff over an
+# empty list prints its cleanest line after comparing nothing, which is this
+# tree's recurring failure -- but a floor with slack in it is the same failure
+# on a smaller scale, and review demonstrated it here: deleting all ten
+# diagnosed overflow forms left this green against a floor of 80. The argument
+# for equality is poc/lib/mutant.sh's, made there about mutation counts.
+DECLARED_SCALARS = 94
+DECLARED_STRINGS = 17
+# And the diagnostics, because a form list can be intact while the stderr
+# parser silently stops matching anything. This is the positive control for
+# the warning half of the comparison: rcc must actually say this many things.
+DECLARED_DIAGNOSTICS = 22
+# Every form is asked as `int fN(int x) { return x < FORM; }', which lowers to
+# the form's own constant plus the relational's CNSTI4 1 and CNSTI4 0. If a
+# function ever holds a different number, the "first CNST node" rule below has
+# stopped selecting the form and would silently report the relational's own
+# 1 or 0 as the answer -- which is right by accident for the forms `1' and
+# `'\1''. Review found that; this is what closes it.
+CNSTS_PER_SCALAR = 3
 
 ORACLE = "rcc-rv32"
 
@@ -51,7 +61,12 @@ NODE = re.compile(r"\bCNST([IU])4\s+(\S+)")
 EXPORT = re.compile(r"^export (\w+)$")
 DEFSTRING = re.compile(r'^defstring "(.*)"$')
 DEFCONST = re.compile(r"^defconst unsigned\.2 (\d+)$")
-DIAGNOSTIC = re.compile(r"^(\d+): (warning|error): (.*)$")
+# rcc prefixes a warning with "LINE: warning: ". It does NOT tag an error the
+# same way -- `'\xg'' comes back as "1: ill-formed hexadecimal escape
+# sequence" with no marker and exit 1 -- so there is no error branch here. A
+# non-zero exit is caught before this function runs, which is the only way an
+# lcc error can reach us.
+DIAGNOSTIC = re.compile(r"^(\d+): warning: (.*)$")
 
 
 def nix_eval(poc):
@@ -105,6 +120,7 @@ def parse_oracle(stdout, stderr, count):
     the wrong expectation and could still come out green.
     """
     observed = {}
+    nodes = {}
     current = None
     for raw in stdout.splitlines():
         line = raw.strip()
@@ -118,12 +134,16 @@ def parse_oracle(stdout, stderr, count):
             node = NODE.search(line)
             # The FIRST constant node in the function is the form; the
             # CNSTI4 1 and CNSTI4 0 after it are the relational's own result.
-            if node and current not in observed:
-                observed[current] = {
-                    "kind": "scalar",
-                    "signedness": "signed" if node.group(1) == "I" else "unsigned",
-                    "value": int(node.group(2), 0),
-                }
+            # `nodes' counts them all, so that the assumption is checked
+            # rather than trusted -- see CNSTS_PER_SCALAR.
+            if node:
+                nodes[current] = nodes.get(current, 0) + 1
+                if current not in observed:
+                    observed[current] = {
+                        "kind": "scalar",
+                        "signedness": "signed" if node.group(1) == "I" else "unsigned",
+                        "value": int(node.group(2), 0),
+                    }
             continue
         m = DEFSTRING.match(line)
         if m:
@@ -143,15 +163,8 @@ def parse_oracle(stdout, stderr, count):
         index = int(m.group(1)) - 1
         if not 0 <= index < count:
             sys.exit(f"HARNESS FAULT: the oracle reported on line {m.group(1)}, which is not one of the {count} form lines:\n{raw}")
-        if m.group(2) == "error":
-            sys.exit(
-                f"HARNESS FAULT: the oracle ERRORED on form {index} "
-                f"({m.group(3)}). Forms that make lcc error belong in "
-                f"must-fail.nix, not here -- there is nothing to diff when the "
-                f"two sides fail in different ways."
-            )
-        diagnostics[index].append(m.group(3))
-    return observed, diagnostics
+        diagnostics[index].append(m.group(2))
+    return observed, diagnostics, nodes
 
 
 def main():
@@ -167,12 +180,12 @@ def main():
         sys.exit(f"HARNESS FAULT: oracle.nix declares {count} forms but gave {len(lexemes)} lexemes and {len(answers)} answers")
     scalars = sum(1 for a in answers if a["kind"] == "scalar")
     strings = count - scalars
-    if count < MIN_FORMS or scalars < MIN_SCALARS or strings < MIN_STRINGS:
+    if scalars != DECLARED_SCALARS or strings != DECLARED_STRINGS:
         sys.exit(
-            f"HARNESS FAULT: the oracle table shrank to {scalars} scalar and "
-            f"{strings} string forms, against the {MIN_SCALARS} and "
-            f"{MIN_STRINGS} this check declares. A diff over a table that "
-            f"short is not the differential criterion #6 asks for."
+            f"HARNESS FAULT: the oracle table holds {scalars} scalar and "
+            f"{strings} string forms, against the {DECLARED_SCALARS} and "
+            f"{DECLARED_STRINGS} this check declares. Raise the declared "
+            f"numbers with the table."
         )
 
     try:
@@ -184,7 +197,8 @@ def main():
     if run.returncode != 0:
         sys.exit(f"HARNESS FAULT: `{ORACLE}' exited {run.returncode}:\n{run.stderr}")
 
-    observed, diagnostics = parse_oracle(run.stdout, run.stderr, count)
+    observed, diagnostics, nodes = parse_oracle(run.stdout, run.stderr, count)
+    parsed = sum(len(d) for d in diagnostics)
 
     bad = []
     compared = 0
@@ -196,6 +210,13 @@ def main():
             continue
         compared += 1
         if ours["kind"] == "scalar":
+            if nodes.get(name) != CNSTS_PER_SCALAR:
+                bad.append(
+                    f"  {lexeme}: `{name}' holds {nodes.get(name)} constant "
+                    f"nodes, not {CNSTS_PER_SCALAR}, so the first one is no "
+                    f"longer certain to be the form rather than the "
+                    f"relational's own result"
+                )
             if (ours["signedness"], ours["value"]) != (theirs["signedness"], theirs["value"]):
                 bad.append(
                     f"  {lexeme}: we say {ours['signedness']} {ours['value']}, "
@@ -214,16 +235,32 @@ def main():
 
     if compared != count:
         bad.append(f"  only {compared} of {count} forms were compared at all")
+    elif parsed != DECLARED_DIAGNOSTICS:
+        # The positive control for the warning half: without it, a change to
+        # rcc's diagnostic format would stop DIAGNOSTIC matching, every form
+        # would read as "lcc warned nothing", and only the forms WE warn about
+        # would notice. It is checked only once every form was observed,
+        # because if lcc produced no output at all then "never compared" is
+        # the diagnosis and this is merely its consequence.
+        bad.append(
+            f"  {parsed} diagnostics were parsed out of the oracle's stderr, "
+            f"against the {DECLARED_DIAGNOSTICS} this check declares -- either "
+            f"the form table changed, or rcc's diagnostic format did and this "
+            f"stage has stopped reading it"
+        )
     if bad:
         print(f"the constant evaluator and lcc disagree on {len(bad)} point(s):", file=sys.stderr)
         print("\n".join(bad), file=sys.stderr)
         sys.exit(1)
 
-    warned = sum(1 for a in answers if a["warnings"])
+    # Counted from what LCC said, not from our own answers. The number is the
+    # point of the sentence it appears in, and a count taken from the table
+    # rather than from the work is the shape this file's header forbids.
+    warned = sum(1 for d in diagnostics if d)
     print(
         f"oracle: {count} constant forms ({scalars} scalar, {strings} string) "
-        f"agree with lcc on value, signedness and diagnostic text; "
-        f"{warned} of them are diagnosed by both"
+        f"agree with lcc on value, signedness and diagnostic text; lcc "
+        f"diagnosed {parsed} of them across {warned} forms, and so did we"
     )
 
 

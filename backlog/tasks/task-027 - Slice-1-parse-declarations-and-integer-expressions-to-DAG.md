@@ -4,7 +4,7 @@ title: 'Slice 1: parse declarations and integer expressions to DAG'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 18:27'
+updated_date: '2026-09-15 18:56'
 labels:
   - frontend
   - parser
@@ -33,6 +33,7 @@ Binding constraints: decision-001 (loop shape, accumulator, substring, deepSeq, 
 - [ ] #4 At least 3 programs in this subset compile from .c and RUN end to end in one nix eval, replacing .sym as the entry point
 - [ ] #5 Memory measured and recorded per source line, with tokens/AST/DAG live simultaneously
 - [ ] #6 Harness mutation-tested: breaking the parser and breaking the harness each fail distinctly
+- [ ] #7 The slice's oracle compares rcc's stderr, not only its IR, so a constant that is clamped or an escape that is diagnosed cannot be dropped silently by the parser
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -117,4 +118,12 @@ TWO TRAPS ALREADY PAID FOR, do not re-pay them. Integer overflow THROWS in Nix, 
 ONE LIMIT: a literal containing a byte above 127 throws (task-046). \xNN and \NNN reach every byte and lcc's own sources are ASCII, so nothing in the subset is blocked, but a corpus with UTF-8 in a string literal will stop you.
 
 HOW TO DIFF A CONSTANT'S SIGNEDNESS against the oracle, since criterion #2 here is a node-for-node diff and you will hit the same problem: an initializer CONVERTS the constant and shows the declared type, so `unsigned long u = 1;' tells you nothing. `int f(int x) { return x < FORM; }' keeps it -- CVIU4 + CNSTU4 + GEU4 against CNSTI4 + GEI4. poc/06-constants/oracle.nix explains it at length. And int against long is NOT observable in this IR at all: both are 4-byte signed and both print CNSTI4.
+
+REVIEW ROUND on task-011 added three things this task should know, and one acceptance criterion (#7).
+
+WHY #7 EXISTS. `evalICON'/`evalSCON' return a `warnings' list that nothing prints -- deliberately, because const.nix has no output channel and no source coordinates. Review's point was that a paragraph in these notes is not a gate: a parser that writes `(evalICON t.text).value' and drops the rest compiles a silently-clamped constant, and none of this task's other six criteria would go red. Criterion #7 is that gate. poc/06-constants/oracle.py already does exactly this for constants and is the worked example -- it parses `LINE: warning: TEXT' off rcc's stderr, attributes each to the form on that line, and compares the text.
+
+FLOAT'S REFUSAL HAS NO SOURCE POSITION, and that is this task's problem to solve rather than task-011's. `evalFCON' THROWS, and a Nix throw cannot be caught and re-thrown with file:line -- tryEval discards the message, which is why poc/06-constants has a messages.sh at all. So as things stand the one diagnostic decision-006 cares most about reaches the user without a position. If that matters (task-012 is about source coordinates), the parser should do the throwing at the site that knows where the token was, and const.nix should hand over the reason rather than raise it. Settle it before wiring float rejection in, not after.
+
+THE NUL RULE EXISTS TWICE ONCE YOU WRITE IT. poc/06-constants/oracle.nix's `answerFor' does `r.units ++ [ 0 ]' -- the one-literal special case of the real rule, and the only copy that is currently diffed against lcc. When this task implements the general rule (join adjacent, then append one 0), there will be two, and only the parser's will be on the critical path. Mixed-width joins have no rule at all yet: task-047.
 <!-- SECTION:NOTES:END -->

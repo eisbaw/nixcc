@@ -2,9 +2,9 @@
 # rather than recorded from the evaluator, so a wrong evaluator cannot bless
 # its own output.
 #
-# WHY THIS TABLE EXISTS AT ALL when oracle.py diffs 111 forms against lcc:
-# because the oracle cannot see everything. int and long are both 4-byte
-# signed on this target, so lcc prints CNSTI4 for both and no C construct in
+# WHY THIS TABLE EXISTS AT ALL when oracle.py diffs a long list of forms
+# against lcc: because the oracle cannot see everything. int and long are
+# both 4-byte signed on this target, so lcc prints CNSTI4 for both and no C construct in
 # this IR separates them. The TYPE NAME is what this table pins, and it is the
 # half of C89's type ladder the differential is blind to. Everything else here
 # is belt and braces, and cheap.
@@ -41,6 +41,16 @@ in
     (scalar "uppercase hexadecimal digits and prefix" "0X1E" "int" 30)
     (scalar "the largest hexadecimal int" "0x7fffffff" "int" 2147483647)
     (scalar "hexadecimal past the largest int" "0x80000000" "unsigned long" 2147483648)
+    # C89 6.1.3.2 says this one is UNSIGNED INT: an octal or hexadecimal
+    # constant walks int -> unsigned int -> long -> unsigned long. lcc's
+    # icon() tests `n > long max' before the unsigned-int rung, so it reaches
+    # unsigned long instead, and we match lcc rather than the standard -- see
+    # const.nix, which explains why and what it would cost on a target whose
+    # long is wider than its int. On RV32 the two answers have the same width,
+    # the same signedness and the same value, so nothing emitted can tell them
+    # apart; this row is here so the choice is written down rather than
+    # discovered.
+    (scalar "lcc reaches unsigned long where C89 says unsigned int" "0xFFFFFFFF" "unsigned long" 4294967295)
 
     # Suffixes. lcc reads at most one u and one l, in either order.
     (scalar "unsigned suffix, lower case" "7u" "unsigned int" 7)
@@ -115,6 +125,22 @@ in
     (str "bytes above 127 are stored as bytes, not sign extended" "\"\\377\\200\"" [ 255 128 ])
     (str "a digit after a three-digit octal escape is a separate byte" "\"\\1234\"" [ 83 52 ])
     (str "a non-hex character ends a hexadecimal escape" "\"\\x41g\"" [ 65 103 ])
+
+    # THE CHARACTER-CODE TABLE ITSELF. const.nix builds it from fromJSON of
+    # \u escapes rather than writing 127 entries out, so nothing else here
+    # would catch an entry landing on the wrong code -- the other cases use a
+    # handful of characters and would all still pass. The expectation is
+    # `genList (i: i + 32) 95' rather than 95 numbers typed out, and that is a
+    # SPECIFICATION and not a recording: printable ASCII is contiguous from 32
+    # to 126, which is a fact about ASCII, not about our evaluator. `"' and
+    # `\' appear as escapes because a C literal cannot hold them raw, which
+    # incidentally puts them through the escape path instead.
+    {
+      what = "every printable ASCII character, in order";
+      lexeme = "\" !\\\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\"";
+      units = builtins.genList (i: i + 32) 95;
+      width = 1;
+    }
     # The oracle covers the diagnosed ones too; they are here because a
     # string is the only place where several of them can appear at once.
     {

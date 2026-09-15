@@ -4,7 +4,7 @@ title: 'Slice 2: char, byte loads and stores, and string literals'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 18:27'
+updated_date: '2026-09-15 18:56'
 labels:
   - frontend
   - parser
@@ -102,4 +102,6 @@ THERE IS NO TERMINATING NUL IN `units'. Adjacent literals are joined by the PARS
 Verified against lcc's defstring for 17 string forms including an embedded NUL, escapes above 127, and wide literals; see poc/06-constants/oracle.py.
 
 A literal containing a source byte above 127 currently throws (task-046). \xNN and \NNN reach every byte, so it constrains the corpus rather than the feature.
+
+Mixed-width joins -- `"ab" L"cd"' -- have no rule yet and no case: task-047. Everything else about the join is settled in task-011's notes.
 <!-- SECTION:NOTES:END -->

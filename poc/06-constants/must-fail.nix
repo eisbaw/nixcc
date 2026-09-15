@@ -26,8 +26,15 @@ let
   b = builtins;
   c = import ./const.nix;
 
-  minRejects = 12;
-  minControls = 10;
+  # DECLARED counts, checked for EQUALITY rather than floors. A floor with
+  # slack in it can be spent downward in silence -- review demonstrated
+  # exactly that on this PoC's sibling table, deleting ten diagnosed forms
+  # from the oracle and watching it stay green against a floor of 80. The
+  # argument is poc/lib/mutant.sh's, made there about mutation counts and just
+  # as true here: `-eq' catches both directions, and the edit it forces when a
+  # case is added is the edit that was wanted anyway.
+  declaredRejects = 20;
+  declaredControls = 16;
 
   # A byte outside ASCII, built rather than typed: a Nix string literal
   # cannot carry one portably, and fromJSON of a non-ASCII code point yields
@@ -36,12 +43,23 @@ let
 
   # Each reject names the entry point it goes through, so that the refusals
   # are tested at the surface task-027 will actually call.
+  #
+  # A MISTYPED `fn' USED TO READ AS A CORRECT REFUSAL. `apply' ended in a
+  # HARNESS FAULT throw, `evaluates' wraps `apply' in tryEval, and tryEval
+  # catches a throw -- so `fn = "IOCN"' scored as "the evaluator rejected it"
+  # and the suite printed its cleanest line. Review demonstrated it. The
+  # entry-point name is therefore validated at TABLE level, outside the
+  # tryEval, where a fault can still be one.
+  entryPoints = [ "ICON" "SCON" "FCON" "token" "tokenNoKind" "tokenNoText" ];
+  badEntryPoints = b.filter (r: !(b.elem r.fn entryPoints)) (rejects ++ controls);
+
   apply = r:
     if r.fn == "ICON" then c.evalICON r.arg
     else if r.fn == "SCON" then c.evalSCON r.arg
     else if r.fn == "FCON" then c.evalFCON r.arg
-    else if r.fn == "token" then c.evalToken { kind = r.arg; text = r.text or "x"; }
-    else throw "HARNESS FAULT: `${r.fn}' is not one of this file's entry points";
+    else if r.fn == "tokenNoKind" then c.evalToken { text = r.arg; }
+    else if r.fn == "tokenNoText" then c.evalToken { kind = r.arg; }
+    else c.evalToken { kind = r.arg; text = r.text or "x"; };
 
   rejects = [
     # Float is deferred, and the refusal has to NAME the decision, because a
@@ -61,6 +79,15 @@ let
     { what = "a hexadecimal escape with no digits in a string"; fn = "SCON"; arg = "\"\\xz\""; expect = "ill-formed hexadecimal escape sequence"; }
     { what = "a literal ending in a bare backslash"; fn = "SCON"; arg = "\"a\\\""; expect = "ends in a backslash"; }
     { what = "an empty character constant"; fn = "ICON"; arg = "''"; expect = "empty character constant"; }
+    # builtins.substring reads a negative length as "to the end", so an
+    # unclosed lexeme would otherwise decode as an empty literal rather than
+    # fail.
+    { what = "a string lexeme with no closing quote"; fn = "SCON"; arg = "\""; expect = "is not a string literal"; }
+    { what = "a wide lexeme with nothing after the prefix"; fn = "SCON"; arg = "L\""; expect = "is not a string literal"; }
+    # A version of the quote check that merely required the first and last
+    # characters to MATCH accepted both of these.
+    { what = "a character lexeme handed to the string entry point"; fn = "SCON"; arg = "'a'"; expect = "is not a string literal"; }
+    { what = "a lexeme quoted with neither quote character"; fn = "SCON"; arg = "xax"; expect = "is not a string literal"; }
 
     # The documented ASCII limit. It must refuse, loudly and by name, rather
     # than invent a value -- and it must be a throw, not an attribute miss.
@@ -73,6 +100,13 @@ let
     { what = "a suffix lcc's icon() would not read"; fn = "ICON"; arg = "1lul"; expect = "is not a C89 integer suffix"; }
     { what = "a lexeme that is not an integer at all"; fn = "ICON"; arg = "abc"; expect = "is not an integer constant"; }
     { what = "an empty lexeme"; fn = "ICON"; arg = ""; expect = "is not an integer constant"; }
+
+    # The general entry point reads `kind' and `text' through `or (throw ...)'
+    # like every other lookup in const.nix. A bare `tok.text' here would be an
+    # attribute miss, which tryEval does not catch (task-037), at the one
+    # entry point task-027 is told to call.
+    { what = "a token with no kind field"; fn = "tokenNoKind"; arg = "42"; expect = "has no `kind' field"; }
+    { what = "a token with no text field"; fn = "tokenNoText"; arg = "ICON"; expect = "has no `text' field"; }
   ];
 
   controls = [
@@ -82,12 +116,20 @@ let
     { what = "a well-formed hexadecimal escape"; fn = "ICON"; arg = "'\\x41'"; }
     { what = "a well-formed hexadecimal escape in a string"; fn = "SCON"; arg = "\"\\x41\""; }
     { what = "a string with a backslash escape that is complete"; fn = "SCON"; arg = "\"a\\\\\""; }
-    { what = "every ASCII byte a source character can be"; fn = "SCON"; arg = "\"abc XYZ 0189 ~!@#\""; }
+    # Deliberately NOT named "every ASCII character": this is a control for
+    # the non-ASCII reject above and nothing more. The whole printable range
+    # is checked unit by unit in cases.nix, where a wrong answer is visible
+    # rather than merely a thrown one.
+    { what = "ordinary printable characters, against the non-ASCII case"; fn = "SCON"; arg = "\"abc XYZ 0189 ~!@#\""; }
     { what = "the suffixes lcc's icon() does read"; fn = "ICON"; arg = "1ul"; }
     { what = "an identifier-shaped lexeme that IS a valid hex constant"; fn = "ICON"; arg = "0xabc"; }
     { what = "an ICON token through the general entry point"; fn = "token"; arg = "ICON"; text = "42"; }
     { what = "an SCON token through the general entry point"; fn = "token"; arg = "SCON"; text = "\"hi\""; }
     { what = "a wide character constant"; fn = "ICON"; arg = "L'a'"; }
+    { what = "the shortest closed string, against the unclosed one"; fn = "SCON"; arg = "\"\""; }
+    { what = "the shortest closed wide string"; fn = "SCON"; arg = "L\"\""; }
+    { what = "a character lexeme through the entry point it belongs to"; fn = "ICON"; arg = "'z'"; }
+    { what = "a wide string lexeme through the entry point it belongs to"; fn = "SCON"; arg = "L\"a\""; }
   ];
 
   # deepSeq, because the evaluator is lazy: `tryEval (evalICON x)` alone
@@ -102,14 +144,18 @@ let
   names = rs: b.concatStringsSep ", " (map (r: r.what) rs);
 in
 {
-  # messages.sh reads these to check the thrown text, which Nix cannot see.
-  inherit rejects;
+  # messages.sh reads these to check the thrown text, which Nix cannot see,
+  # and reads the declared count rather than restating a floor of its own.
+  inherit rejects declaredRejects;
   forceReject = i: b.deepSeq (apply (b.elemAt rejects i)) 1;
 
   summary =
-    if b.length rejectResults < minRejects || b.length controlResults < minControls then
-      throw "HARNESS FAULT: must-fail tables shrank to ${toString (b.length rejectResults)} rejects and ${
-        toString (b.length controlResults)} controls"
+    if badEntryPoints != [ ] then
+      throw "HARNESS FAULT: these cases name an entry point this file has not got: ${names badEntryPoints}"
+    else if b.length rejectResults != declaredRejects || b.length controlResults != declaredControls then
+      throw "HARNESS FAULT: must-fail tables hold ${toString (b.length rejectResults)} rejects and ${
+        toString (b.length controlResults)} controls, against the ${toString declaredRejects} and ${
+        toString declaredControls} this file declares. Raise the declared numbers with the tables."
     else if wronglyAccepted != [ ] then
       throw "must-fail: these should have been rejected but evaluated fine: ${names wronglyAccepted}"
     else if wronglyRejected != [ ] then

@@ -21,8 +21,13 @@
 set -euo pipefail
 poc=${1:?usage: messages.sh POC_DIR}
 
+# The count and the floor both come from must-fail.nix, which declares one
+# number and asserts its own table against it. A second constant here was a
+# second thing to forget to raise, and it had already gone stale once.
 n=$(nix eval --impure --expr "builtins.length (import $poc/must-fail.nix).rejects")
-[ "$n" -ge 12 ] || { echo "only $n reject cases to check messages for" >&2; exit 1; }
+declared=$(nix eval --impure --expr "(import $poc/must-fail.nix).declaredRejects")
+[ "$n" = "$declared" ] || {
+  echo "must-fail.nix holds $n reject cases against the $declared it declares" >&2; exit 1; }
 
 for i in $(seq 0 $((n - 1))); do
   meta=$(nix eval --impure --raw --expr \

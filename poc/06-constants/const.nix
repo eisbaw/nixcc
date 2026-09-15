@@ -44,6 +44,32 @@
 # builtins.tryEval does NOT catch an attribute-missing error, it propagates
 # straight through and takes the must-fail suite with it (task-037). A lookup
 # that can miss has to miss as a `throw'.
+#
+# SOME OF THOSE THROWS ARE ASSERTIONS, NOT DIAGNOSTICS, and the difference is
+# worth stating because run.sh's standard is that every check proves it can
+# fail. The per-digit throws in `accumulate', `hexEscape' and `octEscape', and
+# `typeInfo''s, are unreachable: the regex or `scanWhile' that selected the
+# characters already established what they are. They are there so that a
+# future caller who bypasses that selection gets a message instead of a wrong
+# number, and no mutation is aimed at them because no input can reach them.
+# The throws in `bodyOf', `codeOf', `suffixKind', `intConst', `charConst',
+# `evalFCON', `evalToken' and the `\x'-with-no-digits path ARE reachable, and
+# must-fail.nix covers every one.
+#
+# THREE DELIBERATE DIVERGENCES FROM lcc, all in the direction of refusing
+# rather than continuing with an invented value:
+#
+#   * `'\xg'' is an lcc ERROR that continues with 0; we throw. The outcome is
+#     the same, since an lcc error makes rcc exit non-zero, but the 0 never
+#     propagates. It is therefore not in oracle.nix -- two sides failing in
+#     different ways have nothing to diff -- and lives in must-fail.nix.
+#   * `''' is rejected by our lexer, where lcc reads uninitialised buffer.
+#   * lcc's scon() TRUNCATES at BUFSIZE (4096, lcc/src/c.h) and errors with
+#     "string literal too long". We have no limit, and stress.nix decodes
+#     60000 units from one literal and calls that a pass -- a literal lcc
+#     would refuse outright. Ours is arguably the better behaviour, but it
+#     means the differential does not cover literals past 4096 units and
+#     never can.
 let
   b = builtins;
 
@@ -64,15 +90,25 @@ let
   CHAR_MODULUS = 256;
   WCHAR_MODULUS = 65536;
 
-  # The largest value each integer type can hold, which is both what icon()
-  # selects on and what it clamps an overflowing constant to.
-  typeMax = {
-    "int" = INT_MAX;
-    "long" = LONG_MAX;
-    "unsigned int" = UINT_MAX;
-    "unsigned long" = ULONG_MAX;
+  # Every type this evaluator can hand back, with the two facts anything
+  # downstream needs about one. ONE table rather than a max table beside a
+  # list of signed names: the emitter decides whether to two's-complement a
+  # value from `signed', and a name in neither table has to be an ERROR rather
+  # than quietly defaulting to one answer. An earlier shape here exported a
+  # `signedTypes' LIST, and `elem "itn" signedTypes' was false -- a misspelt
+  # type read as unsigned, silently, on the emitter's critical path.
+  types = {
+    "int" = { max = INT_MAX; signed = true; };
+    "long" = { max = LONG_MAX; signed = true; };
+    "unsigned int" = { max = UINT_MAX; signed = false; };
+    "unsigned long" = { max = ULONG_MAX; signed = false; };
+    # A wide character constant's type. Its `max' is widechar's range and is
+    # never used to CLAMP anything: a wide constant reaches that range by
+    # masking inside the escape decoder, not through icon()'s ladder.
+    "unsigned short" = { max = 65535; signed = false; };
   };
-  maxOf = ty: typeMax.${ty} or (throw "no maximum recorded for the type `${ty}'");
+  typeInfo = ty: types.${ty} or (throw "`${ty}' is not a type this constant evaluator produces");
+  maxOf = ty: (typeInfo ty).max;
 
   # ---- character codes --------------------------------------------------
   # Nix has no ord(). The table is built rather than written out, because 95
@@ -86,8 +122,8 @@ let
   # rather than evaluating to something invented. It cannot be built the same
   # way, because fromJSON of a code point above U+007F yields the two or more
   # bytes of its UTF-8 ENCODING rather than the byte itself, and the bytes
-  # that never appear in
-  # valid UTF-8 (0xc0, 0xc1, 0xf5..0xff) cannot be reached through it at all.
+  # that never appear in valid UTF-8 (0xc0, 0xc1, 0xf5..0xff) cannot be
+  # reached through it at all.
   # `\xNN' and `\NNN' escapes reach every byte value, so nothing is
   # unreachable, only inconvenient. lcc's own sources are pure ASCII. See
   # task-046.
@@ -154,14 +190,29 @@ let
   # overflow is lcc's own: a constant too big for the type it landed in is a
   # diagnosed constant, not a refused translation unit.
   #
-  # ONE ARM OF lcc's LADDER IS MISSING, deliberately. lcc has a fourth test,
-  # `else if (base != 10 && n > inttype max) unsignedtype', and it is dead on
-  # every target where long and int have the same maximum -- which this one
-  # does, both being 4 bytes. It is only reached when the test above it,
-  # `n > longtype max', already failed, so `n > inttype max' cannot be true.
-  # Transliterating it would put a branch here that no input can take and no
-  # test can cover. The hexadecimal forms in oracle.nix are what shows the
-  # answer is the same without it.
+  # ONE ARM OF lcc's LADDER IS MISSING, and it is missing because it is dead
+  # in lcc too -- on every target, not just this one. lcc's fourth test is
+  # `else if (base != 10 && n > inttype max) unsignedtype', and it sits AFTER
+  # `else if (n > inttype max) longtype'. Reaching it requires that test to
+  # have failed, so `n > inttype max' is already known false and the arm can
+  # never fire anywhere. Transliterating it would put a branch here that no
+  # input can take and no test can cover.
+  #
+  # THAT ORDERING IS A REAL DEVIATION FROM C89, AND WE INHERIT IT. C89 6.1.3.2
+  # gives an octal or hexadecimal constant the ladder int -> unsigned int ->
+  # long -> unsigned long, so `0xFFFFFFFF' on a 4-byte-int target is UNSIGNED
+  # INT. lcc's order reaches `long' first and, here, `unsigned long'. We match
+  # lcc, because lcc is the oracle and a divergence the oracle cannot see is
+  # how silent bugs get in -- and this one it cannot see: on RV32 int and long
+  # are both 4 bytes, so C89's answer and lcc's have the same width, the same
+  # signedness and the same value, and no code this compiler emits can tell
+  # them apart. On a target whose long is wider than its int they would
+  # differ, and that is a decision for whoever ports this to one.
+  #
+  # `else if n > INT_MAX then "long"' below is dead on THIS target for a
+  # different and much duller reason -- INT_MAX and LONG_MAX are equal here --
+  # and is kept because it is a rung C89 really names and a wider long would
+  # need it. Dead-on-this-target is not the same as dead-everywhere.
   icon = lexeme: acc: suffix:
     let
       n = acc.value;
@@ -406,14 +457,31 @@ let
 
   # `'a'' and `L'a''; the lexer hands both back as ICON, as lcc does.
   isWide = lexeme: b.substring 0 1 lexeme == "L";
-  bodyOf = lexeme:
-    let start = if isWide lexeme then 2 else 1; in
-    b.substring start (b.stringLength lexeme - start - 1) lexeme;
+  # The quotes are checked rather than assumed, and the EXPECTED quote is
+  # passed in rather than read off the lexeme. Two traps, both real:
+  # builtins.substring reads a NEGATIVE length as "to the end of the string",
+  # so a truncated lexeme like `"' would come back as an empty literal instead
+  # of an error; and a version of this that merely required the first and last
+  # characters to MATCH accepted `evalSCON "'a'"' and `evalSCON "xax"'. The
+  # lexer cannot produce either, but a frontend stage that fails fast is one
+  # that does not depend on its caller staying correct.
+  bodyOf = quote: lexeme:
+    let
+      start = if isWide lexeme then 2 else 1;
+      n = b.stringLength lexeme;
+      kind = if quote == "\"" then "string" else "character";
+    in
+    if n < start + 1
+      || b.substring (start - 1) 1 lexeme != quote
+      || b.substring (n - 1) 1 lexeme != quote then
+      throw "`${lexeme}' is not a ${kind} literal: it must open and close with ${quote}"
+    else
+      b.substring start (n - start - 1) lexeme;
 
   charConst = lexeme:
     let
       wide = isWide lexeme;
-      r = scanUnits wide (bodyOf lexeme);
+      r = scanUnits wide (bodyOf "'" lexeme);
       count = b.length r.values;
       first = if count == 0 then throw "empty character constant `${lexeme}'" else b.head r.values;
       excess =
@@ -436,7 +504,7 @@ let
   stringConst = lexeme:
     let
       wide = isWide lexeme;
-      r = scanUnits wide (bodyOf lexeme);
+      r = scanUnits wide (bodyOf "\"" lexeme);
     in
     {
       units = r.values;
@@ -451,24 +519,29 @@ let
 
   evalICON = lexeme: if isCharLexeme lexeme then charConst lexeme else intConst lexeme;
   evalSCON = stringConst;
-  floatDeferred = lexeme:
-    throw
-      "floating constant `${lexeme}': float support is deferred to a later wave (decision-006), so the frontend rejects it rather than silently miscompiling it (task-015). RV32I has no F or D extension, and lcc's symbolic oracle prints floats with %g, so this is the one constant form with no oracle behind it";
+  evalFCON = lexeme: throw "floating constant `${lexeme}': float support is deferred to a later wave (decision-006), so the frontend rejects it rather than silently miscompiling it (task-015). RV32I has no F or D extension, and lcc's symbolic oracle prints floats with %g, so this is the one constant form with no oracle behind it";
 
-  evalFCON = floatDeferred;
-
+  # The token's fields are read through `or (throw ...)' for the same reason
+  # every other lookup in this file is: builtins.tryEval does not catch an
+  # attribute miss (task-037), so `tok.text' on a token that has none would
+  # propagate out of every must-fail suite that tried to cover it. This is the
+  # entry point task-027 is told to call, which is the worst place in the file
+  # for that hole to be.
   evalToken = tok:
-    if tok.kind == "ICON" then evalICON tok.text
-    else if tok.kind == "SCON" then evalSCON tok.text
-    else if tok.kind == "FCON" then evalFCON tok.text
-    else throw "evalToken: token kind `${tok.kind}' is not a constant";
+    let
+      kind = tok.kind or (throw "evalToken: this token has no `kind' field, so there is nothing to dispatch on");
+      text = tok.text or (throw "evalToken: the `${kind}' token has no `text' field, so there is no lexeme to evaluate");
+    in
+    if kind == "ICON" then evalICON text
+    else if kind == "SCON" then evalSCON text
+    else if kind == "FCON" then evalFCON text
+    else throw "evalToken: token kind `${kind}' is not a constant";
 in
 {
   inherit evalICON evalSCON evalFCON evalToken;
-  # Exposed for the tables and the oracle, which need to talk about the target
-  # rather than restate it.
-  target = {
-    inherit INT_MAX LONG_MAX UINT_MAX ULONG_MAX;
-    signedTypes = [ "int" "long" ];
-  };
+  # Whether a type this evaluator produced is signed. A FUNCTION and not a
+  # list, so an unknown name is an error rather than "not in the list, so
+  # unsigned". The emitter will decide whether to two's-complement a value
+  # with this.
+  signedOf = ty: (typeInfo ty).signed;
 }
