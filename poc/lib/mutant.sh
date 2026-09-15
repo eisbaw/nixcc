@@ -26,6 +26,36 @@
 # Those four are outside what an evaluator or a python harness returns today.
 # That is a property of the suites this runs rather than a guarantee about
 # every possible one, and it is the reason the numbers are high and odd.
+#
+# A NOTE FOR CALLERS, not a property of this file: how many of these ran.
+#
+# It is here because it is one reason and not four, and because this is the
+# only file all four mutation stages go through. It does not belong here --
+# this script runs ONE mutation and never sees a table -- and the reason it has
+# nowhere better to go is that mutate() itself is copied into four run.sh files
+# rather than living beside this one. That is task-044.
+#
+# A count that is PRINTED rather than asserted goes quietly down when a mutate
+# call is dropped, commented out or lost to a merge, and the suite then reports
+# the smaller number just as confidently as the larger one. The case that
+# really bites is the empty one: with no mutations recorded at all, the
+# distinctness loop above the count iterates zero times, checks nothing, and
+# the stage prints "0 mutations, each detected with its own distinct failure"
+# -- its cleanest line, after testing nothing. That is the same shape as an
+# absence check with no binaries to look for, which this tree shipped and
+# fixed. The one-missing case is milder: the printed number does change, and
+# what is wrong is that no machine notices.
+#
+# So each harness DECLARES its count and asserts equality, and equality is the
+# point rather than pedantry. poc/05-loop had a `-ge 34' floor while 36 ran:
+# nobody lowered it, two commits added mutations and left it behind, and the
+# slack was then there to be spent downward in silence. A floor only catches
+# the direction that has never happened here. `-eq' catches both, and the edit
+# it forces when a mutation is added is the edit that was wanted anyway.
+#
+# The four harnesses that use this each declare a count today. Nothing checks
+# that a fifth will, and this comment is not that check -- see task-044.
+
 set -uo pipefail
 
 poc=${1:?usage: mutant.sh POC MUT APPLY RUN EDITS-TREE}

@@ -408,6 +408,13 @@ for i in "${!names[@]}"; do
   done
   echo "  mutation detected: ${names[$i]}"
 done
+# The count this harness declares, checked for equality; poc/lib/mutant.sh
+# says why it is equality and not a floor.
+declared=28
+[ "${#names[@]}" -eq "$declared" ] || {
+  echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
+  echo "declares. Either a mutate call has gone missing, or one was added" >&2
+  echo "and the declared count was not raised with it." >&2; exit 1; }
 echo "${#names[@]} mutations, each detected with its own failure"
 
 # --- 6. the ladder --------------------------------------------------------

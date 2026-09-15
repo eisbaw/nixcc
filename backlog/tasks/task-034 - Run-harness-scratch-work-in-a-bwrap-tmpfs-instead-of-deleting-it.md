@@ -1,10 +1,10 @@
 ---
 id: TASK-034
 title: Run harness scratch work in a bwrap tmpfs instead of deleting it
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 07:28'
-updated_date: '2026-09-15 14:29'
+updated_date: '2026-09-15 16:26'
 labels:
   - infrastructure
   - harness
@@ -37,7 +37,7 @@ bwrap, not podman. Both are installed (podman 5.7.0), but bwrap is what nix itse
 <!-- AC:BEGIN -->
 - [x] #1 No delete-shaped command remains in any harness: no rm, rmdir, truncate, git clean, git reset --hard. Grep proves it
 - [x] #2 Scratch state lives on a tmpfs inside bwrap and is reclaimed on exit with no cleanup command and no EXIT trap
-- [ ] #3 Mutation testing gets a fresh tmpfs per mutation, so stale state between runs is impossible by construction rather than by remembering to clear it
+- [x] #3 Mutation testing gets a fresh tmpfs per mutation, so stale state between runs is impossible by construction rather than by remembering to clear it
 - [x] #4 poc/lib/contention.py still reads the host's /proc/stat and nproc from inside the sandbox; a test asserts the values match the host, since a silently namespaced /proc would invalidate every linearity verdict
 - [x] #5 poc/05-loop's no-toolchain stage binds only nix's runtime closure, so riscv32-none-elf-as and gcc are unreachable by absolute path and not merely absent from PATH. Its comment is updated from 'demonstration' to what it now actually proves
 - [x] #6 Wall-clock cost of just e2e measured before and after and recorded; a tmpfs HOME disables nix's eval cache, so if that slows things the cache is bound read-only instead of being left to regress silently
@@ -129,4 +129,8 @@ CRITERION STATUS, one of seven not met as written.
 GATE, on 860a468: exit 0, 5 PoCs passed, lint clean, 6m17, with all 14 guard cases, both new cliff cases, the estimator mutation and 108 mutations across the five PoCs caught. Three attempts in the same window were lost first, all three to the contention self-test's own non-stationarity (task-039), which this batch neither introduced nor fixed. That is worth knowing before anyone reads a single green run as a stable gate: on this machine, right now, roughly one gate run in three is lost to that one check.
 
 The remaining gap on criterion #3 is filed as task-041, with the fix spelled out: move build_and_run into its own script the way poc/04-assembler/gnu-diff.sh was moved in this batch, for exactly the same reason, and the semantic mutation becomes an ordinary mutate() call. Task left In Progress rather than Done, with #3 unchecked, for the orchestrator to judge.
+
+Criterion 3 met by task-041, which moved poc/03-matcher's build_and_run into a script so its semantic mutation could go through poc/lib/mutant.sh like every other one. Every mutation in the mutate() stage now gets a tmpfs of its own, with no exception attached.
+
+Ticked on the reading that 'mutation testing' here means the mutate() stage -- the population this task was counting. The GUARD stage in poc/02-lexer and poc/03-matcher separately copies poc/lib into single-use directories and calls two of those copies mutations in its own output; they are not on a tmpfs. Filed as task-043. If criterion 3 was meant to cover those too, untick it and reopen.
 <!-- SECTION:NOTES:END -->
