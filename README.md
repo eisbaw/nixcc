@@ -8,8 +8,10 @@ inside a single evaluation.
 
 Status: **early, but the back half of the loop is closed.** `just poc-loop`
 compiles a C program, assembles it and executes it on a pure-Nix RV32I machine
-inside a single `nix eval` whose `PATH` holds one binary — `nix` itself — and
-the program prints
+inside a single `nix eval`, in a sandbox whose filesystem holds nothing but
+nix's own runtime closure — no assembler, linker or objcopy exists there to be
+reached, by name or by absolute path, and the stage checks that from inside
+before it runs anything — and the program prints
 
     1..10 = 55
 

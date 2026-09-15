@@ -24,15 +24,14 @@
 # outcome depends on what else the machine is doing, and on a busy one it
 # renders no verdict and exits 3.
 set -euo pipefail
+# Scratch work happens on a tmpfs inside a bubblewrap sandbox, which the kernel
+# reclaims when this process exits: no cleanup, no trap, nothing to delete.
+# This re-execs, so it comes before anything else. See poc/lib/sandbox.sh.
+# shellcheck source-path=SCRIPTDIR source=../lib/sandbox.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/sandbox.sh"
 cd "$(dirname "$0")"
 poc=$PWD
 root=$(cd "$poc/.." && pwd)
-work=$(mktemp -d)
-keep=1                       # artifacts are kept unless we reach a clean pass
-cleanup() {
-  if [ "$keep" = 1 ]; then echo "artifacts kept in $work"; else rm -rf "$work"; fi
-}
-trap cleanup EXIT
 
 : "${NIX_RISCV:?NIX_RISCV is unset -- run this inside nix develop}"
 command -v riscv32-none-elf-as >/dev/null || { echo "no riscv32-none-elf-as on PATH" >&2; exit 1; }
@@ -180,16 +179,20 @@ names=(); fragments=(); outputs=()
 # $1 name, $2 fragment that must appear, $3 snippet that mutates $mut,
 # $4 snippet that runs the mutated suite
 mutate() {
-  rm -rf "$mut"; cp -r "$poc" "$mut"
-  ( cd "$mut" && eval "$3" )
-  # A sed whose pattern no longer matches edits nothing, and the suite then
-  # passes, which reads as "not detected" when the truth is "not applied".
-  if diff -rq "$poc" "$mut" >/dev/null; then
-    echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
-    exit 1
-  fi
+  # A tmpfs of its own for every mutation, so no state can survive from the
+  # last one -- by construction, rather than by a remove that has to have
+  # worked. poc/lib/mutant.sh does the copy, the apply and the run inside it,
+  # and hands back the mutated suite's own exit status.
   local out status=0
-  out=$(cd "$mut" && eval "$4" 2>&1) || status=$?
+  out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+  case "$status" in
+    120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
+    121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
+         echo "$out" >&2; exit 1 ;;
+    122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+  esac
   if [ "$status" = 0 ]; then
     echo "MUTATION NOT DETECTED: '$1' still passed:" >&2
     echo "$out" >&2
@@ -205,10 +208,16 @@ must_fail="nix eval --impure --raw --expr '(import $mut/must-fail.nix).summary'"
 # program that carries alignment padding and a symbol-valued .word, so it is
 # the one whose bytes move for the mutations the pure checks cannot see. It
 # runs the MUTATED diff.py, so that breaking the comparison is itself testable.
+# Exported, and $mut with it, because mutate() now runs each mutation in a
+# child bash inside a mount namespace of its own -- so a function defined here
+# is not in scope there unless it is put in the environment.
 gnu_diff() {
   local name=$1
-  local out=$work/mutdiff
-  rm -rf "$out"; mkdir -p "$out"
+  # Under $mut, which is a tmpfs created fresh for this one mutation: nothing
+  # from a previous differential can be in it, and nothing from this one
+  # outlives the process.
+  local out=$mut/gnu-diff-$name
+  mkdir -p "$out"
   nix eval --impure --json --expr "
     let a = import $mut/asm.nix { };
         p = import $mut/parse.nix { asm = a; };
@@ -229,6 +238,8 @@ PYEOF
   riscv32-none-elf-objcopy -O binary "$out/whole.elf" "$out/whole.bin"
   python3 "$mut/diff.py" "$out/bytes.json" "$out/whole.bin" "$name"
 }
+export -f gnu_diff
+export mut
 diff_check="gnu_diff data"
 
 # --- the assembler ---
@@ -452,4 +463,3 @@ if [ "$status" = 3 ]; then
 fi
 [ "$status" = 0 ] || exit "$status"
 
-keep=0

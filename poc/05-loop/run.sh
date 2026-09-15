@@ -30,15 +30,14 @@
 # There is no timing ladder here and so no NO VERDICT exit: nothing in this
 # PoC compares two timings.
 set -euo pipefail
+# Scratch work happens on a tmpfs inside a bubblewrap sandbox, which the kernel
+# reclaims when this process exits: no cleanup, no trap, nothing to delete.
+# This re-execs, so it comes before anything else. See poc/lib/sandbox.sh.
+# shellcheck source-path=SCRIPTDIR source=../lib/sandbox.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/sandbox.sh"
 cd "$(dirname "$0")"
 poc=$PWD
 root=$(cd "$poc/.." && pwd)
-work=$(mktemp -d)
-keep=1                       # artifacts are kept unless we reach a clean pass
-cleanup() {
-  if [ "$keep" = 1 ]; then echo "artifacts kept in $work"; else rm -rf "$work"; fi
-}
-trap cleanup EXIT
 
 : "${NIX_RISCV:?NIX_RISCV is unset -- run this inside nix develop}"
 
@@ -55,7 +54,7 @@ pure_check "$poc"
 nix eval --impure --raw --expr "(import $poc/must-fail.nix).summary"
 bash "$poc/messages.sh" "$poc"
 
-# --- 3. one eval, nothing but nix on PATH ---------------------------------
+# --- 3. one eval, in a filesystem holding nothing but nix ----------------
 bash "$poc/closed-loop.sh" "$poc"
 
 # --- 4. what it costs ------------------------------------------------------
@@ -82,16 +81,20 @@ names=(); fragments=(); outputs=()
 # $1 name, $2 fragment that must appear, $3 snippet that mutates $mut,
 # $4 snippet that runs the mutated suite
 mutate() {
-  rm -rf "$mut"; cp -r "$poc" "$mut"
-  ( cd "$mut" && eval "$3" )
-  # A sed whose pattern no longer matches edits nothing, and the suite then
-  # passes, which reads as "not detected" when the truth is "not applied".
-  if diff -rq "$poc" "$mut" >/dev/null; then
-    echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
-    exit 1
-  fi
+  # A tmpfs of its own for every mutation, so no state can survive from the
+  # last one -- by construction, rather than by a remove that has to have
+  # worked. poc/lib/mutant.sh does the copy, the apply and the run inside it,
+  # and hands back the mutated suite's own exit status.
   local out status=0
-  out=$(cd "$mut" && eval "$4" 2>&1) || status=$?
+  out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+  case "$status" in
+    120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
+    121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
+         echo "$out" >&2; exit 1 ;;
+    122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+  esac
   if [ "$status" = 0 ]; then
     echo "MUTATION NOT DETECTED: '$1' still passed:" >&2
     echo "$out" >&2
@@ -305,9 +308,17 @@ mutate "closed loop: the single-eval stage compares the output it was given" \
        "sed -i 's@(it.insn \"li\" \[ \"a1\" n \])@(it.insn \"li\" [ \"a1\" (n - 1) ])@' driver.nix" \
        "$closed_loop"
 
-mutate "closed loop: the toolchain is left reachable from the guarded PATH" \
-       "is still reachable from the guarded PATH" \
-       "sed -i \"s|^guarded=.*|guarded=\\\$PATH|\" closed-loop.sh" \
+mutate "closed loop: the sandbox binds the host, so the toolchain is there after all" \
+       "is still reachable inside the sandbox" \
+       "sed -i 's|^  --proc /proc --dev /dev|  --dev-bind / / --proc /proc --dev /dev|' closed-loop.sh" \
+       "$closed_loop"
+
+# The absence check is a loop, and a loop over nothing reports no problem
+# either. This empties the list of binaries it looks for, which has to trip the
+# floor that says so rather than printing a clean "none present".
+mutate "closed loop: the absence check is given no binaries to look for" \
+       "is a claim about nothing" \
+       "sed -i 's|^for tool in riscv32.*|for tool in nixcc-no-such-binary; do|' closed-loop.sh" \
        "$closed_loop"
 
 mutate "harness: the memory measurement measures something other than the demo" \
@@ -338,4 +349,3 @@ done
 [ "${#names[@]}" -ge 34 ] || { echo "only ${#names[@]} mutations were tried" >&2; exit 1; }
 echo "${#names[@]} mutations, each detected with its own failure"
 
-keep=0

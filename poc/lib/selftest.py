@@ -7,7 +7,16 @@ busy_cpu_seconds() out to return 0.0 and every one of them still passes,
 because they never produce contention -- they declare it. That is the
 fail-open half of the guard, and this is what covers it.
 
-Three checks, each for a defect the others cannot see.
+Four checks, each for a defect the others cannot see.
+
+ -1. /proc/stat and nproc still describe the HOST. Everything below, and every
+     linearity verdict any ladder renders, is read out of a /proc that is now
+     on the far side of a bubblewrap mount namespace. A plain user namespace
+     does not virtualise either of them -- but that is a property of this
+     kernel rather than a guarantee, and a /proc that started describing the
+     sandbox would change no line of any harness's output while making every
+     contention reading a measurement of the wrong machine. So the sandbox
+     records the host's figures on its way in and this checks they came back.
 
   0. rounds() really goes round-robin. This one is structural rather than
      statistical, so it is first: it needs no free cores and still runs on a
@@ -112,6 +121,40 @@ if len(sys.argv) != 2:
 scratch = pathlib.Path(sys.argv[1])
 if not scratch.is_dir():
     contention.fault(f"{scratch} is not a directory to write check 0's trace into")
+
+# --- -1. the sandbox did not take /proc and nproc with it -----------------
+# Only when there IS a sandbox: this file is also runnable on its own, and a
+# missing variable then means "nobody put one there" rather than "the sandbox
+# lost it". Inside one, both variables are required -- poc/lib/sandbox.sh sets
+# them unconditionally, so their absence is itself the defect.
+if os.environ.get("NIXCC_SANDBOX"):
+    try:
+        host_cores = int(os.environ["NIXCC_HOST_CORES"])
+        host_busy = float(os.environ["NIXCC_HOST_BUSY"]) / contention.CLOCK_TICK
+    except (KeyError, ValueError) as e:
+        contention.fault(
+            f"running inside the harness sandbox, but the host's core count and "
+            f"busy counter did not come in with it ({e}). Without them there is "
+            f"no way to tell a /proc that describes this machine from one that "
+            f"describes the sandbox, and every contention reading rests on that")
+    seen_cores, seen_busy = contention.cores(), contention.busy_cpu_seconds()
+    print(f"contention self-test: {seen_cores} cores and {seen_busy:.0f} busy "
+          f"CPU-seconds inside the sandbox, {host_cores} and {host_busy:.0f} "
+          f"outside it")
+    if seen_cores != host_cores:
+        fail(f"the host has {host_cores} cores and /proc reports {seen_cores} "
+             f"inside the sandbox. The sandbox is virtualising the core count, "
+             f"so every contention threshold in this tree is being compared "
+             f"against the wrong machine")
+    # Monotonic and plausible: the counter only climbs, and it cannot climb by
+    # more than one core-second per core per second of wall clock. A namespaced
+    # or reset /proc/stat shows up as a counter that went backwards or one that
+    # bears no relation to the figure taken moments earlier.
+    if not 0 <= seen_busy - host_busy <= host_cores * 600:
+        fail(f"/proc/stat read {host_busy:.0f} busy CPU-seconds outside the "
+             f"sandbox and {seen_busy:.0f} inside it. The two do not describe "
+             f"the same machine's history, so the contention measurement is "
+             f"reading something other than this host")
 
 # --- 0. the rounds really are interleaved ---------------------------------
 # Three jobs that do nothing but name themselves, so the trace file ends up

@@ -5,13 +5,12 @@
 # while comparing nothing is worse than no test, so every step that could
 # silently produce an empty or short comparison is guarded below.
 set -euo pipefail
+# Scratch work happens on a tmpfs inside a bubblewrap sandbox, which the kernel
+# reclaims when this process exits: no cleanup, no trap, nothing to delete.
+# This re-execs, so it comes before anything else. See poc/lib/sandbox.sh.
+# shellcheck source-path=SCRIPTDIR source=../lib/sandbox.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/sandbox.sh"
 cd "$(dirname "$0")"
-work=$(mktemp -d)
-keep=1                       # artifacts are kept unless we reach a clean pass
-cleanup() {
-  if [ "$keep" = 1 ]; then echo "artifacts kept in $work"; else rm -rf "$work"; fi
-}
-trap cleanup EXIT
 
 nix eval --impure --raw --expr \
   'builtins.concatStringsSep "\n" (map (c: c.asm) (import ./cases.nix))' > "$work/in.s"
@@ -28,4 +27,3 @@ python3 ./compare.py "$work"
 # Separate must-fail suite: a differential test cannot exercise throw paths,
 # so if `fits` were inverted every case above would still pass.
 nix eval --impure --raw --file ./must-fail.nix
-keep=0

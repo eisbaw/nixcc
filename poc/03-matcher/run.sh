@@ -22,14 +22,13 @@
 # Stage 3 is the only semantic oracle here, which is why `checks.matcher' in
 # the flake, being stage 2 only, is a weaker gate than `just poc-matcher'.
 set -euo pipefail
+# Scratch work happens on a tmpfs inside a bubblewrap sandbox, which the kernel
+# reclaims when this process exits: no cleanup, no trap, nothing to delete.
+# This re-execs, so it comes before anything else. See poc/lib/sandbox.sh.
+# shellcheck source-path=SCRIPTDIR source=../lib/sandbox.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/sandbox.sh"
 cd "$(dirname "$0")"
 poc=$PWD
-work=$(mktemp -d)
-keep=1                       # artifacts are kept unless we reach a clean pass
-cleanup() {
-  if [ "$keep" = 1 ]; then echo "artifacts kept in $work"; else rm -rf "$work"; fi
-}
-trap cleanup EXIT
 
 : "${LCC_SRC:?LCC_SRC is unset -- run this inside nix develop}"
 : "${NIX_RISCV:?NIX_RISCV is unset -- run this inside nix develop}"
@@ -193,7 +192,7 @@ root=$(cd "$poc/.." && pwd)
 # The mutation stage further down runs its copy as $work/mut, so the guard has
 # to be $work/lib for that copy to import it.
 cp -r "$root/lib" "$work/lib"
-guard=$work/guard
+blinded=$work/blinded
 
 # --- the contention guard: it measures, and it refuses in both directions ---
 # The ladder below is only worth reading if it refuses to render a verdict
@@ -211,12 +210,12 @@ guard=$work/guard
 # applied, and has to be caught.
 python3 "$root/lib/selftest.py" "$work"
 
-rm -rf "$guard"; mkdir -p "$guard"; cp -r "$root/lib" "$guard/lib"
-sed -i 's|^    return (v\[0\].*|    return 0.0|' "$guard/lib/contention.py"
-grep -qx "    return 0.0" "$guard/lib/contention.py" || {
+mkdir "$blinded"; cp -r "$root/lib" "$blinded/lib"
+sed -i 's|^    return (v\[0\].*|    return 0.0|' "$blinded/lib/contention.py"
+grep -qx "    return 0.0" "$blinded/lib/contention.py" || {
   echo "HARNESS FAULT: busy_cpu_seconds is not where this expects it in" >&2
   echo "contention.py, so the blinding mutation changed nothing" >&2; exit 1; }
-if python3 "$guard/lib/selftest.py" "$guard" > "$work/blinded.log" 2>&1; then
+if python3 "$blinded/lib/selftest.py" "$blinded" > "$work/blinded.log" 2>&1; then
   echo "MUTATION NOT DETECTED: with the contention measurement stubbed out to" >&2
   echo "report a perfectly idle machine, the self-test still passed" >&2
   cat "$work/blinded.log" >&2; exit 1
@@ -355,17 +354,20 @@ names=(); fragments=(); outputs=()
 # $1 name, $2 fragment that must appear, $3 shell snippet that mutates $mut,
 # $4 shell snippet that runs the mutated suite
 mutate() {
-  rm -rf "$mut"; cp -r "$poc" "$mut"
-  ( cd "$mut" && eval "$3" )
-  # A sed whose pattern no longer matches edits nothing and the suite then
-  # passes, which reads as "not detected" when the truth is "not applied".
-  # Renaming a binding in the code under test is enough to cause it.
-  if diff -rq "$poc" "$mut" >/dev/null; then
-    echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
-    exit 1
-  fi
+  # A tmpfs of its own for every mutation, so no state can survive from the
+  # last one -- by construction, rather than by a remove that has to have
+  # worked. poc/lib/mutant.sh does the copy, the apply and the run inside it,
+  # and hands back the mutated suite's own exit status.
   local out status=0
-  out=$(cd "$mut" && eval "$4" 2>&1) || status=$?
+  out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+  case "$status" in
+    120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
+    121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
+         echo "$out" >&2; exit 1 ;;
+    122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+  esac
   if [ "$status" = 0 ]; then
     echo "MUTATION NOT DETECTED: '$1' still passed:" >&2
     echo "$out" >&2
@@ -599,16 +601,25 @@ mutate "harness: the scale driver measures a different file" \
 # check.nix reports a clean pass. Without it, "the emulator runs the code"
 # would be the one unpinned claim in the suite -- and it is the only semantic
 # oracle in it.
-rm -rf "$mut"; cp -r "$poc" "$mut"
-sed -i 's|mv a0,%0\\nmv a1,%1\\ncall __divsi3|mv a0,%0\\nmv a1,%0\\ncall __divsi3|' "$mut/rules.nix"
-grep -q 'mv a1,%0' "$mut/rules.nix" || {
+# Its own directory rather than its own tmpfs, unlike every mutation above:
+# the block below interleaves with build_and_run, a function defined in this
+# file, so it cannot be handed to poc/lib/mutant.sh to run inside a mount
+# namespace of its own. A directory used exactly once is fresh for the same
+# reason a tmpfs is -- there is no previous run of it to inherit from.
+semantic=$work/semantic
+mkdir "$semantic"; cp -r "$poc"/. "$semantic"
+sed -i 's|mv a0,%0\\nmv a1,%1\\ncall __divsi3|mv a0,%0\\nmv a1,%0\\ncall __divsi3|' "$semantic/rules.nix"
+grep -q 'mv a1,%0' "$semantic/rules.nix" || {
   echo "the divide-by-itself mutation did not apply; rules.nix has changed shape" >&2; exit 1; }
-if ! eval "$matcher_check" >/dev/null 2>&1; then
+semantic_list=$(for c in $cases; do printf '{ name = "%s"; value = %s/ir/%s.sym; } ' "$c" "$semantic" "$c"; done)
+if ! nix eval --impure --raw --expr \
+     "import $semantic/check.nix { sources = builtins.listToAttrs [ $semantic_list ]; }" \
+     >/dev/null 2>&1; then
   echo "the divide-by-itself mutation was caught by check.nix, so it no longer" >&2
   echo "demonstrates that the execution stage catches what the pure checks cannot" >&2
   exit 1
 fi
-broken=$(build_and_run "$mut" expr)
+broken=$(build_and_run "$semantic" expr)
 got=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["exitCode"])' "$broken")
 [ "$got" != 72 ] || {
   echo "MUTATION NOT DETECTED: the divide libcall divides x by itself and the" >&2
@@ -652,4 +663,3 @@ if [ "$status" = 3 ]; then
 fi
 [ "$status" = 0 ] || exit "$status"
 
-keep=0
