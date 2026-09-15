@@ -1,0 +1,91 @@
+export hello
+segment text
+function hello type=int function(pointer to int,int,pointer to int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=1
+caller v type=pointer to int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller n type=int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+caller out type=pointer to int sclass=auto scope=PARAM flags=0 offset=8 ref=0.000000
+callee v type=pointer to int sclass=register scope=PARAM flags=0 offset=0 ref=10.000000
+callee n type=int sclass=register scope=PARAM flags=0 offset=4 ref=10.000000
+callee out type=pointer to int sclass=auto scope=PARAM flags=0 offset=8 ref=2.000000
+blockbeg off=0
+local i type=int sclass=register scope=LOCAL flags=0 offset=0 ref=41.000000
+local s type=int sclass=register scope=LOCAL flags=0 offset=4 ref=23.000000
+blockbeg off=8
+blockend off=8
+blockend off=8
+ 2. ADDRFP4 v
+4. ADDRFP4 v
+3. INDIRP4 #4
+1' ASGNP4 #2 #3 4 4
+ 2. ADDRFP4 n
+4. ADDRFP4 n
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRLP4 s
+3. CNSTI4 count=2 0
+1' ASGNI4 #2 #3 4 4
+5. ADDRLP4 i
+4' ASGNI4 #5 #3 4 4
+ 2. ADDRGP4 3
+1' JUMPV #2
+ 2:
+ 2. ADDRLP4 count=2 s
+4. INDIRI4 #2
+9. ADDRLP4 count=2 i
+8. INDIRI4 count=2 #9
+10. CNSTI4 2
+7. LSHI4 #8 #10
+12. ADDRFP4 v
+11. INDIRP4 #12
+6. ADDP4 #7 #11
+5. INDIRI4 #6
+3. ADDI4 #4 #5
+1' ASGNI4 #2 #3 4 4
+15. CNSTI4 1
+14. ADDI4 #8 #15
+13' ASGNI4 #9 #14 4 4
+ 3:
+ 3. ADDRLP4 i
+2. INDIRI4 #3
+5. ADDRFP4 n
+4. INDIRI4 #5
+1' LTI4 #2 #4 2
+ 4. ADDRFP4 out
+3. INDIRP4 #4
+5. CNSTI4 count=2 8
+2. ADDP4 #3 #5
+11. ADDRLP4 s
+10. INDIRI4 count=2 #11
+12. CNSTI4 count=2 10
+9. DIVI4 #10 #12
+13. CNSTI4 count=2 48
+8. ADDI4 #9 #13
+16. MODI4 #10 #12
+15. ADDI4 #16 #13
+14. LSHI4 #15 #5
+7. ADDI4 #8 #14
+17. CNSTI4 655360
+6. ADDI4 #7 #17
+1' ASGNI4 #2 #6 4 4
+ 2. CNSTI4 1
+1' ARGI4 #2 4 4
+5. ADDRFP4 out
+4. INDIRP4 #5
+3' ARGP4 #4 4 4
+7. CNSTI4 11
+6' ARGI4 #7 4 4
+9. ADDRGP4 wr
+8' CALLI4 #9 {int function(int,pointer to int,int)}
+11. CNSTI4 11
+10' NEI4 #8 #11 5
+ 2. CNSTI4 0
+1' RETI4 #2
+ 2. ADDRGP4 1
+1' JUMPV #2
+ 5:
+ 2. CNSTI4 1
+1' RETI4 #2
+ 1:
+maxoff=8
+import wr
+progend

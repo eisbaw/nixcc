@@ -6,10 +6,22 @@ The goal is that `nix eval` alone can compile and run a C program — no gcc, no
 assembler, no linker, no emulator binary. C source in, program output out,
 inside a single evaluation.
 
-Status: **early.** Three pieces work and are verified: an RV32I instruction
-encoder, a C89 lexer, and an lburg-style instruction selector that turns lcc's
-own DAG output into RV32 assembly. The parser and the DAG builder that would
-join the last two do not exist yet. See `backlog/` for what is done.
+Status: **early, but the back half of the loop is closed.** `just poc-loop`
+compiles a C program, assembles it and executes it on a pure-Nix RV32I machine
+inside a single `nix eval` whose `PATH` holds one binary — `nix` itself — and
+the program prints
+
+    1..10 = 55
+
+in 711 emulated instructions. The digits are summed and converted to ASCII by
+the compiled C; the message leaves the machine through the `write` syscall and
+the program stops through `exit`, with status 0 only because `hello.c` checks
+that `write` reported every byte.
+
+The honest limit: **lcc is still the front end.** `nix eval` starts from lcc's
+IR listing for that C file, not from the `.c` itself, because the parser and
+the DAG builder do not exist yet — the lexer does. Everything downstream of the
+IR is Nix. See `backlog/` for what is done and TASK-005 for what that costs.
 
 ## Why lcc and not tcc
 
@@ -79,10 +91,18 @@ The lexer has no external oracle, so it is pinned down three ways instead: a
 table of hand-written token sequences, a byte-for-byte round-trip over all 34
 lcc sources, and a must-fail suite with control cases.
 
-All three are mutation-tested: deliberately corrupting the code under test must
-make them fail, and deliberately breaking the *harness* must make them fail too,
-with a different message. An earlier version reported `PASS` while comparing
-nothing.
+The closed loop has no oracle at all beyond the program's own output, so it
+carries a second table: ten deliberately malformed programs that must each
+halt with their own reported fault — an illegal instruction, a misaligned jump,
+a store past the end of RAM, a syscall the machine does not implement, a loop
+that never stops — each paired with a control that must still run to a clean
+exit with its output pinned. Without that table, "the demo exited 0" is
+consistent with an emulator that exits 0 for everything.
+
+All of them are mutation-tested: deliberately corrupting the code under test
+must make them fail, and deliberately breaking the *harness* must make them
+fail too, with a different message. An earlier version reported `PASS` while
+comparing nothing.
 
 ## Usage
 
@@ -93,15 +113,18 @@ nothing.
     just poc-lexer       # token tables, round-trip, throughput, mutation test
     just poc-matcher     # rule table, labelling, cost duels, emitted code run
     just poc-assembler   # layout, labels, byte-for-byte diff against GNU as
+    just poc-loop        # compile, assemble and RUN a C program in one nix eval
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
 
 `nix flake check` runs everything that is a pure evaluation: the encoder
 differential test, the lexer's token and round-trip checks, the matcher's
-rule, labelling and emitted-code checks, and the assembler's layout, label
-addresses and `lui`/`addi` expansions. Anything that times, executes or
-mutates a subprocess — the throughput ladders, the emulator runs, the mutation
+rule, labelling and emitted-code checks, the assembler's layout, label
+addresses and `lui`/`addi` expansions, and the closed loop — which compiles,
+assembles and executes the demo, and the fault programs beside it, during flake
+evaluation. Anything that times or mutates a subprocess — the throughput
+ladders, the differential against GNU as, the memory measurements, the mutation
 tests — lives in `just poc`.
 
 ## Layout
@@ -110,6 +133,7 @@ tests — lives in `just poc`.
     poc/02-lexer/     C89 lexer in pure Nix, + its tables and throughput ladder
     poc/03-matcher/   lburg-style instruction selector, + real lcc DAGs to run it on
     poc/04-assembler/ items -> bytes: layout, labels, pseudo-instructions
+    poc/05-loop/      the whole chain in one nix eval, and the faults beside it
     poc/lib/          what the timing ladders share: the contention guard
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
     flake.nix         dev shell, the rcc oracle, and the checks output

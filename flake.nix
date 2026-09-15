@@ -176,6 +176,24 @@
             printf '%s%s' "$report" "$mustFail" | tee $out
           '';
 
+        # The closed loop is pure too: the C program's IR is read, the
+        # function is compiled, the image is assembled and the RV32I machine
+        # is RUN, all during flake evaluation, along with the eight malformed
+        # programs that must each halt with their own reported fault. What
+        # stays in run.sh is the check that lcc still produces this IR, the
+        # single-eval stage with the toolchain taken off PATH, the memory
+        # measurement and the mutation test.
+        loop = pkgs.runCommand "loop-check"
+          {
+            report = import ./poc/05-loop/check.nix {
+              cpu = import (nix-riscv + "/rv32.nix");
+            };
+            mustFail = (import ./poc/05-loop/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s' "$report" "$mustFail" | tee $out
+          '';
+
         lexer = pkgs.runCommand "lexer-check"
           {
             report = import ./poc/02-lexer/check.nix {

@@ -598,7 +598,12 @@ let
           if it.kind != "insn" then [ ]
           else
             let spec = specOf (whereOf i) it.mnemonic; in
-            map (w: { addr = addrAt i; hex = encode.toHex w; inherit (it) mnemonic; })
+            # `word' is the datum and `hex' is a rendering of it. Both are
+            # here because a test that pins an encoding reads better against
+            # hex, and one that DECODES a field -- poc/05-loop cross-checks
+            # every branch immediate against the symbol table -- needs the
+            # number, and should not have to undo toHex to get it.
+            map (w: { addr = addrAt i; word = w; hex = encode.toHex w; inherit (it) mnemonic; })
               (spec.enc (ctxAt i) (checkOps (whereOf i) it.mnemonic spec it.args)))
         n);
     };

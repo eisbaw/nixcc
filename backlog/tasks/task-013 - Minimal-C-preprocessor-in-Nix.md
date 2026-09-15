@@ -4,6 +4,7 @@ title: Minimal C preprocessor in Nix
 status: To Do
 assignee: []
 created_date: '2026-09-14 20:04'
+updated_date: '2026-09-15 02:14'
 labels:
   - frontend
   - preprocessor
@@ -31,3 +32,37 @@ Binding constraints from decision-001 and task-002: no traversal with input-prop
 - [ ] #5 Loop shape obeys decision-001; linearity demonstrated on a real multi-file include graph, not asserted
 - [ ] #6 Harness is mutation-tested: breaking the preprocessor and breaking the harness each fail distinctly
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+forward-carried from task-004: the preprocessor is now the FIRST of the three
+missing frontend stages, and its output is what the closed loop would consume.
+
+poc/05-loop runs the whole chain from lcc's IR listing to program output
+inside one `nix eval' with nothing but nix on PATH. The IR is produced OUTSIDE
+that eval by rcc-rv32, so today's real entry point is a .sym file. This task,
+the parser and the DAG builder are what stand between a .c file and that
+point, and this one comes first because #include means the preprocessor
+decides how much text the two stages after it ever see.
+
+Two things poc/05-loop makes concrete for AC #5:
+
+  * MEASURE IN LIVE VALUES, NOT SECONDS. The closed loop costs about 43.5 kB
+    of peak RSS per emulated instruction, on top of 4 kB/token lexing. A
+    preprocessor that expands an include graph holds the expanded token stream
+    live while the parser runs over it; the budget is the whole pipeline's
+    peak, not this stage's own.
+  * THE HARNESS BAR. poc/05-loop's mutation stage trims nix's output to the
+    text after the LAST `error:' line before matching a fragment, because nix
+    prints the SOURCE around each frame and check.nix's source contains the
+    message templates of every other check in it. Without the trim one
+    mutation can claim another's fragment and the suite reports that its
+    checks distinguish when they do not. poc/04-assembler/messages.sh found
+    this first; copy the awk rather than rediscovering it.
+
+Also relevant to AC #1: nothing downstream reads linemarkers yet. poc/03-matcher's
+IR parser treats every non-forest line as directive noise against an explicit
+allowlist, so a linemarker format nothing consumes will not be caught by the
+existing suite -- the differential in AC #4 is the only thing that would.
+<!-- SECTION:NOTES:END -->

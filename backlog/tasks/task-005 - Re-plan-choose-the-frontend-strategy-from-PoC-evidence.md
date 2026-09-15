@@ -4,7 +4,7 @@ title: 'Re-plan: choose the frontend strategy from PoC evidence'
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-15 00:38'
+updated_date: '2026-09-15 02:14'
 labels:
   - planning
   - wave-boundary
@@ -64,4 +64,49 @@ Practical cost to budget for: on a machine that idles around 2 cores and bursts 
 Two things a re-plan may want to schedule. First, 'just e2e' went from about 2 minutes to 4m17, nearly all of it the four cases that prove the guard refuses in both directions, each of which runs a real ladder. Extracting a pure judge(rows, quiet, tolerances) from the ladders would make those cases synthetic and near-instant; it is a refactor of both ladders rather than a fix, so it was left. Second, there is still no Python linter in the dev shell -- statix, deadnix and shellcheck cover Nix and shell, and nothing covers the four .py files that now decide whether this architecture is linear.
 
 Known hole, recorded in poc/lib/contention.py rather than hidden: iowait counts as idle, so a machine saturating the memory bus through writeback reads quiet and gets a verdict it should not.
+
+forward-carried from task-004: THE LOOP IS CLOSED FROM lcc IR DOWNWARD, AND
+ONLY FROM THERE. `just poc-loop' compiles poc/05-loop/hello.c, assembles it and
+RUNS it on nix-riscv's RV32I machine inside a single `nix eval' whose PATH
+holds exactly one binary -- nix itself -- and the program prints `1..10 = 55'
+through the write syscall and exits 0 through the exit syscall. 711
+instructions, 648-byte image.
+
+The entry point of that eval is hello.sym, lcc's IR listing, NOT hello.c. That
+is the gap this re-plan has to cost, and it is now the only one: everything
+from the IR to the program's output is Nix, with no external toolchain
+anywhere in it. What is missing between .c and .sym is the preprocessor
+(task-013), the parser and the DAG builder -- the lexer already exists.
+
+WHAT THE DEMO COSTS, which is the number this re-plan should weigh:
+  0.06-0.10 s CPU and 30 MB net of the evaluator's own 36 MB, for compiling
+  one function, assembling 648 bytes and executing 711 instructions. That is
+  AT MOST 43.5 kB of peak RSS per emulated instruction -- at most, because the
+  same figure also carries the selection and the assembly. Compare 4 kB/token
+  lexing, 8.5 kB/DAG node matching, 8.6 kB/item assembling.
+
+  Execution is therefore by far the most expensive stage per unit, and it is
+  the stage whose unit count is the RUNTIME of the compiled program, not its
+  size. A test suite that runs its cases in-Nix pays per executed instruction.
+  poc/05-loop's own 19 programs together cost 0.16 s CPU and 74 MB, so this is
+  affordable at PoC scale and is not obviously affordable for tinycc's 139
+  cases if any of them loop much.
+
+THE DECISION TASK-006 LEFT HERE, now with evidence. emit.nix still produces
+assembly TEXT which parse.nix immediately reads back into items. poc/05-loop
+has both paths side by side: its driver and all nineteen fault programs are
+built as items in Nix and handed straight to asm.nix, and the compiled
+function goes through text. Filed as task-026 with what has to be decided --
+keeping rules.nix declarative is the constraint, not the mechanics. It was NOT
+done here: it is a change to poc/03-matcher's rule table shape, and task-004's
+job was to show the loop closes.
+
+THREE MATCHER GAPS FOUND BY WRITING ONE SMALL C PROGRAM, all refusals rather
+than miscompiles, all now tasks: a global at a constant offset (task-023), any
+byte-sized load or store, i.e. char (task-024), and a call whose int result is
+discarded (task-025). hello.c had to be written around all three. That ratio
+-- three gaps in forty lines of ordinary C -- is itself evidence about how
+much of C89 the rule table currently covers, and worth weighing against the
+frontend work: a frontend that parses all of C89 in front of a back end that
+cannot store a char does not compile more programs.
 <!-- SECTION:NOTES:END -->

@@ -63,6 +63,12 @@ poc-matcher:
 poc-assembler:
     nix develop --command bash poc/04-assembler/run.sh
 
+# Close the loop: compile a C program, assemble it and execute it in the Nix
+# RV32I emulator inside one `nix eval' with no toolchain on PATH, plus the
+# fault table, the memory measurement and the mutation test
+poc-loop:
+    nix develop --command bash poc/05-loop/run.sh
+
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:
     #!/usr/bin/env bash
