@@ -48,9 +48,9 @@ let
       run = it.chars "must-fail" "ok${del}";
     }
     {
-      # n = 9 gives "1..9 = ", seven bytes, and hello() stores its digits into
-      # the buffer's THIRD word.
-      what = "a message prefix that is not exactly two words";
+      # n = 9 gives "1..9 = ", seven bytes, and hello() stores its digits at
+      # msg[8] onwards.
+      what = "a message prefix that is not exactly eight bytes";
       expect = "so the prefix must be exactly 8";
       run = (driver 9).expectedBytes;
     }
@@ -83,7 +83,7 @@ let
     {
       # 1 + ... + 13 = 91: two digits, and "1..13 = " is eight bytes. The
       # layout guard is about the LAYOUT, not about n.
-      what = "a different vector that still lays out as two words and two digits";
+      what = "a different vector that still lays out as eight bytes and two digits";
       run = (driver 13).expectedBytes;
     }
     {

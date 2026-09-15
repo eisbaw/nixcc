@@ -57,11 +57,14 @@ let
   final = cpu.run stepLimit loaded;
 in
 {
-  # `asm' is exported rather than left to the caller to import again: check.nix
-  # reads operand KINDS out of it to decide which operands are branch targets,
-  # and reading them from an assembler instance other than the one that built
-  # this image would be reading a different table.
-  inherit asm items image loaded driver;
+  # `asm' and `compiled' are exported rather than left to the caller to import
+  # again: check.nix reads operand KINDS out of `asm' to decide which operands
+  # are branch targets, and the instructions and IR out of `compiled' to check
+  # that hello.c still uses what it demonstrates. Reading either from an
+  # instance other than the one that built THIS image would be reading a
+  # different table -- and a second `emit.compile' of the same listing is also
+  # a second DAG live at once, which decision-007 says is the budget to watch.
+  inherit asm items image loaded driver compiled;
   report = cpu.report final;
 
   # Assemble and run an arbitrary item list on the same machine, which is what

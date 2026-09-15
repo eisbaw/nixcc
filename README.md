@@ -13,10 +13,11 @@ the program prints
 
     1..10 = 55
 
-in 711 emulated instructions. The digits are summed and converted to ASCII by
-the compiled C; the message leaves the machine through the `write` syscall and
-the program stops through `exit`, with status 0 only because `hello.c` checks
-that `write` reported every byte.
+in 714 emulated instructions. The digits are summed and converted to ASCII by
+the compiled C, which stores them into a global `char` array a byte at a time;
+the message leaves the machine through the `write` syscall and the program
+stops through `exit`. What is checked is what it PRINTED, byte for byte — the
+program discards `write`'s answer, the way C usually does.
 
 The honest limit: **lcc is still the front end.** `nix eval` starts from lcc's
 IR listing for that C file, not from the `.c` itself, because the parser and

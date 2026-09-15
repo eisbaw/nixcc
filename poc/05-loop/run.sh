@@ -121,9 +121,39 @@ mutate "driver: hello() is told the vector is one element shorter than it is" \
        "sed -i 's@(it.insn \"li\" \[ \"a1\" n \])@(it.insn \"li\" [ \"a1\" (n - 1) ])@' driver.nix" \
        "$mutated_check"
 
-mutate "driver: the message buffer stops being word-aligned" \
+# The VECTOR, not the message. hello() reads the vector with `lw', which
+# faults on a misaligned address; it writes the message with `sb', which has
+# no alignment rule at all now that task-024 exists.
+mutate "driver: the vector stops being word-aligned" \
        "which is not word-aligned" \
-       "sed -i 's@    (it.label \"msg\")@    (it.bytes [ 0 ]) (it.label \"msg\")@' driver.nix" \
+       "sed -i 's@      (it.label \"vec\")@      (it.bytes [ 0 ]) (it.label \"vec\")@' driver.nix" \
+       "$mutated_check"
+
+# The demo is the evidence that task-023, task-024 and task-025 are closed,
+# and the way that stops being true is not a regression in the compiler -- it
+# is hello.c drifting back into something that does not use them.
+mutate "harness: a task drops out of the demonstrates table" \
+       "says nothing about task-024" \
+       "sed -i 's@^      \"task-024\" = {@      \"unused-024\" = {@' cases.nix" \
+       "$mutated_check"
+
+# The emitted-line pin is compared against what the matcher really produced for
+# hello.c, not against a copy of itself: ask for a word store and the check
+# says so. Mutating hello.c instead would take hello.sym with it, and the
+# provenance stage would report that first.
+mutate "harness: an emitted-line pin is not one the demo actually emits" \
+       "hello.c no longer demonstrates task-024" \
+       "sed -i 's@emits = \"sb s\[0-9\]+@emits = \"sw s[0-9]+@' cases.nix" \
+       "$mutated_check"
+
+# The task-025 pin is the one that had to be rebuilt: `call wr' is emitted
+# whether the result is used or not, so a must-contain pin on it passed on the
+# very program it forbade. This asks the IR instead -- a listed CALLI4 nothing
+# references -- and the mutation makes it ask about an opcode hello.c has not
+# got, which is what a pin looking at the wrong thing would do.
+mutate "harness: the discarded-call pin asks about an opcode the demo has not got" \
+       "hello.c no longer demonstrates task-025" \
+       "sed -i 's@discardedCall = \"CALLI4\";@discardedCall = \"CALLV\";@' cases.nix" \
        "$mutated_check"
 
 mutate "demo: the machine is entered four bytes past _start" \
@@ -231,7 +261,7 @@ mutate "cases: a required symbol is one the runtime does not define" \
 
 mutate "cases: a pinned address is not where the driver actually puts it" \
        "\`wr' is at 0x" \
-       "sed -i 's@wr = base + 36;@wr = base + 40;@' cases.nix" \
+       "sed -i 's@wr = base + 28;@wr = base + 32;@' cases.nix" \
        "$mutated_check"
 
 # Criterion 7's own two guards. Neither can be reached by mutating the
@@ -305,7 +335,7 @@ done
 # A floor on the mutation table itself, set at what is actually here: two
 # mutations could be deleted silently under a slacker one, and a table of
 # mutations is a table like any other.
-[ "${#names[@]}" -ge 31 ] || { echo "only ${#names[@]} mutations were tried" >&2; exit 1; }
+[ "${#names[@]}" -ge 34 ] || { echo "only ${#names[@]} mutations were tried" >&2; exit 1; }
 echo "${#names[@]} mutations, each detected with its own failure"
 
 keep=0

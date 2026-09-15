@@ -54,6 +54,11 @@ let
   minItems = 120;
   minImageBytes = 500;
   minBranches = 10;
+  # NAMED, not counted: three entries that turned out to be three copies of
+  # one claim would satisfy a length floor, which is the mistake the previous
+  # version of this check actually made.
+  requiredDemonstrations = [ "task-023" "task-024" "task-025" ];
+
 
   fault = msg: throw "HARNESS FAULT: ${msg}";
   firstError = errs:
@@ -103,6 +108,8 @@ let
         "control `${r.what}' wrote ${toString r.got.stdoutBytes}, expected ${toString r.stdoutBytes}"
       else null)
     controlResults);
+
+  missingDemonstrations = b.filter (t: !(cases.demo.demonstrates ? ${t})) requiredDemonstrations;
 
   reasonsSeen = map (r: r.reason) cases.faults;
   missingReasons = b.filter (r: !(b.elem r reasonsSeen)) cases.requiredReasons;
@@ -162,21 +169,65 @@ let
       + (if b.length loadedBytes == 1 then "" else " (and ${toString (b.length loadedBytes - 1)} more)")
     else null)
     (
-      let a = image.symbols.msg or null; in
-      if a == null then "the image defines no `msg' buffer"
+      # `vec', not `msg'. hello() READS the vector with `lw', which faults on
+      # a misaligned address; it writes the message with `sb', which has no
+      # alignment rule at all (task-024). The guard moved with the reason.
+      let a = image.symbols.vec or null; in
+      if a == null then "the image defines no `vec' vector"
       else if a - (a / 4) * 4 != 0 then
-        "`msg' is at 0x${asm.toHex a}, which is not word-aligned, and hello() stores its digits there with `sw'"
+        "`vec' is at 0x${asm.toHex a}, which is not word-aligned, and hello() reads it with `lw'"
       else null
     )
   ];
+
+  # The three gaps the demo exists to show are closed, read off what the
+  # matcher actually did with hello.sym rather than off hello.c's source --
+  # and off demo.nix's OWN compilation, not a second one of the same listing.
+  #
+  # `bodyLines' is the body as emit.nix built it, unindented and without the
+  # prologue or epilogue; `indent' is applied later, on the way to `asm'.
+  #
+  # Two kinds of claim, because one of the three cannot be an emitted line.
+  # `emits' is a regex over those lines. `discardedCall' is a property of the
+  # IR: a root with that opcode that NOTHING references, which is what a
+  # discarded result is and which no emitted line can distinguish.
+  taskIds = b.attrNames cases.demo.demonstrates;
+  usedAsKidIn = forest: id: forest.usedAsKid ? ${id};
+  hasDiscardedCall = op: b.any
+    (forest: b.any
+      (id:
+        let nd = forest.byId.${id}; in
+        nd.op == op && nd.listed && !(usedAsKidIn forest id))
+      forest.order)
+    demo.compiled.fn.forests;
+  notDemonstrated = b.filter
+    (t:
+      let d = cases.demo.demonstrates.${t}; in
+      if d ? emits then !(b.any (l: b.match d.emits l != null) demo.compiled.bodyLines)
+      else !(hasDiscardedCall d.discardedCall))
+    taskIds;
 
   # --- the demo -------------------------------------------------------------
   demoErrors = b.filter (e: e != null) [
     (if report.reason != cases.demo.reason then
       "the demo halted with reason ${report.reason}, expected ${cases.demo.reason}" else null)
     (if report.exitCode != cases.demo.exitCode then
-      "the demo exited ${toString report.exitCode}, expected ${toString cases.demo.exitCode}; hello() returns 0 only when write() reported all ${toString driver.writeCount} bytes"
+      "the demo exited ${toString report.exitCode}, expected ${toString cases.demo.exitCode}"
     else null)
+    # hello() DISCARDS write()'s result now (task-025) and returns 0
+    # unconditionally, so the exit status no longer carries whether the write
+    # succeeded, and the check above is weaker than it looks.
+    #
+    # What replaced it is NOT the byte comparison below -- that catches a
+    # write that wrote the wrong thing, not one that reported the wrong
+    # number. It is the three write controls in cases.nix, which drive the
+    # syscall from hand-built items and exit with a0: they pin its answer on
+    # all three of rv32's paths (a good write, -EBADF and -EFAULT) where
+    # hello.c pinned one. The observer moved rather than disappearing.
+    #
+    # What is genuinely lost: a `wr' stub that writes all eleven bytes and
+    # then reports a wrong count is no longer caught anywhere on the compiled
+    # path. Recorded rather than papered over.
     (if report.stdoutBytes != driver.expectedBytes then
       "the demo wrote `${visible report.stdout}', expected `${visible driver.expectedStdout}' -- as bytes, ${toString report.stdoutBytes} against ${toString driver.expectedBytes}"
     else null)
@@ -288,6 +339,7 @@ else if b.length cases.requiredReasons < minReasons then fault "the required-fau
 else if missingReasons != [ ] then fault "the fault table no longer covers ${b.concatStringsSep ", " missingReasons}"
 else if b.length cases.requiredSymbols < minRequiredSymbols then fault "the required-symbol list has ${toString (b.length cases.requiredSymbols)} entries, fewer than ${toString minRequiredSymbols}"
 else if b.length (b.attrNames cases.demo.symbols) < minDemoSymbols then fault "the demo's address table has ${toString (b.length (b.attrNames cases.demo.symbols))} entries, fewer than ${toString minDemoSymbols}"
+else if missingDemonstrations != [ ] then fault "the demo's `demonstrates' table says nothing about ${b.head missingDemonstrations}, so nothing keeps hello.c using what that task fixed"
 else if cases.demo.minCompiledBranches < 1 then fault "the compiled-branch floor is ${toString cases.demo.minCompiledBranches}, which no image can fall below"
 
 # --- the image the numbers below are about ---------------------------------
@@ -300,6 +352,13 @@ else if firstError faultErrors != null then throw "loop: ${firstError faultError
 
 # --- the demo --------------------------------------------------------------
 else if firstError demoErrors != null then throw "loop: ${firstError demoErrors}"
+# AFTER the demo's own verdict, deliberately. hello.c drifting is a deliberate
+# act; the matcher breaking is what happens by accident, and if the compiled
+# function is garbage the reader wants "the demo printed nothing" rather than
+# "hello.c has stopped using a byte store".
+else if notDemonstrated != [ ] then
+  throw "loop: hello.c no longer demonstrates ${b.head notDemonstrated} -- ${
+    cases.demo.demonstrates.${b.head notDemonstrated}.what}. It is the headline demo's job to use what this project says it fixed, and it has stopped using that"
 
 # --- the label layer -------------------------------------------------------
 else if firstError offsetErrors != null then throw "loop: ${firstError offsetErrors}"
@@ -317,6 +376,7 @@ else ''
   loop: every byte of the machine's RAM is the byte the assembler put there
   loop: the demo ran ${toString report.steps} instructions, wrote ${toString (b.length report.stdoutBytes)} bytes and exited ${toString report.exitCode} through the exit syscall
   loop: its output was "${visible report.stdout}", computed by compiled C and carried out by the write syscall
+  loop: hello.c still demonstrates ${b.concatStringsSep ", " taskIds} -- a global at a constant offset, a byte store, and a call whose result nothing consumes
   loop: ${toString (b.length branches)} branch offsets agree with the symbol table, ${toString (b.length forward)} forward and ${toString (b.length backward)} backward inside the compiled function
   loop: ${toString (b.length cases.faults)} malformed programs each halted with their own reported fault, covering ${toString (b.length cases.requiredReasons)} classifications
   loop: ${toString (b.length cases.controls)} control programs still ran to a clean exit with their output pinned

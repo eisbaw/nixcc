@@ -49,21 +49,67 @@ rec {
   demo = {
     exitCode = 0;
     reason = "exit";
-    # The compiled function is ~90 instructions and the two libcalls iterate
+    # The compiled function is ~75 instructions and the two libcalls iterate
     # 32 times each; a run that did far less than this did not execute the
     # program.
     minSteps = 400;
     # Written as offsets from the load address, because that is what they
-    # measure: the driver's own size. `_start' is the entry point, `wr' is 36
+    # measure: the driver's own size. `_start' is the entry point, `wr' is 28
     # bytes of driver later, and `hello' is the first thing after the whole
-    # 48-byte driver -- so this table pins the hand-built half of .text and
+    # 40-byte driver -- so this table pins the hand-built half of .text and
     # says nothing about what the matcher emitted.
-    symbols = { _start = base; wr = base + 36; hello = base + 48; };
+    #
+    # Both moved back eight bytes with task-023: hello() takes the buffer as a
+    # GLOBAL now, so the driver no longer materialises its address into a2,
+    # and an `la' is two instructions.
+    symbols = { _start = base; wr = base + 28; hello = base + 40; };
     # Every label in the compiled function, so that "a branch was resolved
     # from the symbol table" is checked against a function that still HAS
     # branches after a change to emit.nix.
     labelPrefix = ".Lhello_";
     minCompiledBranches = 3;
+
+    # THE THREE GAPS THE DEMO EXISTS TO SHOW ARE CLOSED, keyed by the task
+    # that closed each. NAMED rather than counted, for the reason the fault
+    # classifications further down give: a list of three that turned out to be
+    # three copies of one claim would satisfy a length floor.
+    #
+    # A regression in any of the three is caught in its own PoC long before
+    # here. What this catches is the other direction -- hello.c rewritten back
+    # into something that does not use them, leaving the headline demo quietly
+    # no longer demonstrating what it says it does.
+    #
+    # `emits' is a REGEX over the emitted lines and deliberately says nothing
+    # about which register. Registers here come from the evaluation-depth pool
+    # in poc/03-matcher/emit.nix, so they move whenever hello.c's expression
+    # shapes move and will all move again when task-016 allocates them.
+    # Pinning `s1' would fail on an unchanged hello.c and blame hello.c.
+    demonstrates = {
+      "task-023" = {
+        what = "a global at a constant offset, which lcc folds into one ADDRGP4 msg+8";
+        emits = "la s[0-9]+,msg\\+8";
+      };
+      "task-024" = {
+        what = "a byte store, so `char' exists";
+        emits = "sb s[0-9]+,0\\(s[0-9]+\\)";
+      };
+      "task-025" = {
+        # NOT an emitted line, and this is the one that had to be rebuilt.
+        # `call wr' is emitted whether the result is used or not -- both the
+        # `reg' rule and the `stmt' rule emit it -- so a must-contain pin on
+        # it PASSES on the very program it claims to forbid. Measured: the
+        # pre-task-025 hello.sym, whose C reads `if (wr(...) == 11)', emits
+        # `call wr' too. It was a check that verified nothing, in the PoC
+        # whose own header catalogues four of those.
+        #
+        # What separates the two worlds is in the IR, and it is positive
+        # there: the CALLI4 is a root NOTHING REFERENCES. That is what "the
+        # result is discarded" means, it needs no register names, and it does
+        # not depend on the matcher at all.
+        what = "a call whose int result is discarded";
+        discardedCall = "CALLI4";
+      };
+    };
   };
 
   # Symbols the demo's image must define, which is how the runtime being
