@@ -194,6 +194,27 @@
             printf '%s%s' "$report" "$mustFail" | tee $out
           '';
 
+        # The parser is pure as well: every corpus listing is produced, poc/03-
+        # matcher's listing parser re-checks the numbering and the reference
+        # counts from the consumer's side, and the three programs of
+        # criterion #4 are compiled from .c, assembled and RUN, all during
+        # flake evaluation. What stays in run.sh is everything that needs a
+        # subprocess -- the byte-for-byte differential against lcc's own
+        # frontend, the generated corpus, the check on the text of each
+        # refusal, the memory ladder and the mutation test. `just poc-parser'
+        # is by far the stronger gate; this one fails at eval time, which is
+        # worth having on its own.
+        parser = pkgs.runCommand "parser-check"
+          {
+            report = import ./poc/07-parser/check.nix {
+              cpu = import (nix-riscv + "/rv32.nix");
+            };
+            mustFail = (import ./poc/07-parser/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s' "$report" "$mustFail" | tee $out
+          '';
+
         lexer = pkgs.runCommand "lexer-check"
           {
             report = import ./poc/02-lexer/check.nix {

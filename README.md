@@ -23,10 +23,20 @@ the message leaves the machine through the `write` syscall and the program
 stops through `exit`. What is checked is what it PRINTED, byte for byte — the
 program discards `write`'s answer, the way C usually does.
 
-The honest limit: **lcc is still the front end.** `nix eval` starts from lcc's
-IR listing for that C file, not from the `.c` itself, because the parser and
-the DAG builder do not exist yet — the lexer does. Everything downstream of the
-IR is Nix. See `backlog/` for what is done and TASK-005 for what that costs.
+The front half is closed too, for the integer subset. `just poc-parser`
+compiles C from `.c` — lexer, parser, DAG builder and IR listing, all in Nix —
+and diffs the result against lcc's own frontend byte for byte: node numbers,
+`#n` back-references, reference counts, storage classes, frame offsets and
+every line lcc prints on stderr. Three of those programs are then assembled and
+executed in the same evaluation, printing `55`, `21 55` and `22 57`.
+
+The honest limit: **`poc/05-loop`'s `hello.c` is not one of them.** It uses a
+global `char` array and a pointer parameter, which are slices 2 and 3
+(TASK-028, TASK-029); the demo above still enters at lcc's IR listing for that
+file. What compiles from `.c` today is `int`, `long` and `unsigned` locals and
+parameters, the integer operators, assignment, `if`/`while`/`for`/`do`, calls
+and `return`. Everything outside that is refused by name, with the task that
+owns it, rather than guessed at.
 
 ## Why lcc and not tcc
 
@@ -120,6 +130,8 @@ comparing nothing.
     just poc-matcher     # rule table, labelling, cost duels, emitted code run
     just poc-assembler   # layout, labels, byte-for-byte diff against GNU as
     just poc-loop        # compile, assemble and RUN a C program in one nix eval
+    just poc-constants   # C89 constant lexemes -> values, diffed against lcc
+    just poc-parser      # C -> lcc's IR, diffed node for node; three programs run
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
@@ -129,7 +141,8 @@ differential test, the lexer's token and round-trip checks, the matcher's
 rule, labelling and emitted-code checks, the assembler's layout, label
 addresses and `lui`/`addi` expansions, and the closed loop — which compiles,
 assembles and executes the demo, and the fault programs beside it, during flake
-evaluation. Anything that times or mutates a subprocess — the throughput
+evaluation, and the parser — which compiles every corpus listing and runs the
+three programs it compiles from `.c`. Anything that times or mutates a subprocess — the throughput
 ladders, the differential against GNU as, the memory measurements, the mutation
 tests — lives in `just poc`.
 
@@ -142,6 +155,8 @@ tests — lives in `just poc`.
     poc/05-loop/      the whole chain in one nix eval, and the faults beside it
     poc/06-constants/ C89 constant lexemes -> values and unit lists, diffed
                       against lcc form by form
+    poc/07-parser/    C -> DAG in Nix: lcc's frontend middle-end ported file by
+                      file, diffed against lcc's own listing byte for byte
     poc/lib/          what the timing ladders share: how they measure, and the
                       contention guard that says when a reading means nothing
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
