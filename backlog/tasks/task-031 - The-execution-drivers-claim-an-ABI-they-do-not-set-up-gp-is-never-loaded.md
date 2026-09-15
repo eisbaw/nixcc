@@ -4,6 +4,7 @@ title: 'The execution drivers claim an ABI they do not set up: gp is never loade
 status: To Do
 assignee: []
 created_date: '2026-09-15 05:33'
+updated_date: '2026-09-15 16:14'
 labels:
   - poc
   - matcher
@@ -30,3 +31,9 @@ Found by the task-023 review.
 - [ ] #2 The execution stage runs with linker relaxation ON again, or the reason it cannot is a measured one written down beside the flag
 - [ ] #3 Linker diagnostics are visible; only the known-benign -z relro/-z now lines are filtered, and a real ld error still reaches the reader
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Citation update, not a change of scope: the -mno-relax / --no-relax flags and the 2>/dev/null on ld no longer live in a function called build_and_run in poc/03-matcher/run.sh. They moved to poc/03-matcher/build-and-run.sh under task-041, which took the function out of run.sh so that the mutation stage could reach it. The comment explaining them moved with them and still points here.
+<!-- SECTION:NOTES:END -->

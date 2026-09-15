@@ -70,59 +70,17 @@ bash "$poc/messages.sh" "$poc"
 # --- 3. assemble, link, run, and compare against the host compiler ------
 # `expect` is in cases.nix as well, so that two compilers agreeing on a wrong
 # answer is still a failure.
-build_and_run() {
-  local src=$1
-  local name=$2
-  local out
-  out=$work/$(basename "$src")-$name
-  mkdir -p "$out"
-  nix eval --impure --raw --expr \
-    "((import $src/emit.nix { }).compile
-       ((import $src/parse.nix).parse (builtins.readFile $src/ir/$name.sym))).asm" \
-    > "$out/$name.s"
-  [ -s "$out/$name.s" ] || { echo "$name: the matcher emitted nothing" >&2; return 1; }
-
-  # -mno-relax and --no-relax. Linker relaxation rewrites `la rd,sym' into
-  # `addi rd,gp,off' whenever sym is within 2 KB of __global_pointer$, and that
-  # is correct only if the startup code loaded gp. None of drivers/*.s does:
-  # `_start' is the first instruction of the image and gp is zero, so the
-  # relaxed form addresses whatever sits near address 0. Not hypothetical --
-  # ir/gsym.c's `la s1,tbl+4' relaxed to `addi s1,gp,-2044' and the store
-  # faulted.
-  #
-  # Say plainly which way round this is: these programs do not conform to the
-  # gp half of the ABI, and the honest alternative is to make them conform by
-  # loading gp in a shared `_start' (task-031). Until then the flags are the
-  # smaller lie, because the target this project is building -- a Nix
-  # assembler that emits no relocations and a Nix emulator that sets no gp --
-  # cannot express the optimisation either. `2>/dev/null' on ld hides its
-  # `-z relro ignored' noise, and with it any real linker diagnostic; that is
-  # also task-031.
-  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/fn.o" "$out/$name.s"
-  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/rt.o" "$src/runtime.s"
-  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/drv.o" "$src/drivers/$name.s"
-  riscv32-none-elf-ld --no-relax -Ttext=0x10000 -o "$out/prog.elf" "$out/drv.o" "$out/rt.o" "$out/fn.o" 2>/dev/null
-  riscv32-none-elf-objcopy -O binary "$out/prog.elf" "$out/prog.bin"
-
-  # The assembler is allowed to reject nothing silently: if it had produced an
-  # empty .text the emulator would fault rather than pass, but say so here.
-  local insns
-  insns=$(riscv32-none-elf-objdump -d "$out/fn.o" | grep -cE '^\s+[0-9a-f]+:') || true
-  [ "${insns:-0}" -ge 5 ] || {
-    echo "$name: only ${insns:-0} instructions in the assembled object" >&2; return 1; }
-
-  python3 -c "import json,sys; json.dump(list(open(sys.argv[1],'rb').read()), open(sys.argv[2],'w'))" \
-    "$out/prog.bin" "$out/prog.json"
-
-  nix eval --impure --json --expr "
-    let cpu = import (/. + \"$NIX_RISCV/rv32.nix\");
-        bytes = builtins.fromJSON (builtins.readFile $out/prog.json);
-        final = cpu.run 200000 (cpu.load { inherit bytes; base = 65536; entry = 65536; });
-    in { inherit (final) halted reason exitCode steps; insns = $insns; }"
-}
+# Assembling, linking and running one case is poc/03-matcher/build-and-run.sh,
+# not a function here. Its header says why; the short version is that a
+# function defined in run.sh is out of scope inside the mount namespace each
+# mutation runs in, so as a function it was the last piece of the semantic
+# path living in a file a mutation could reach and did not (task-041). Said
+# that carefully: plenty of THIS file is still out of a mutation's reach --
+# stage 1's DAG diff, the host-compiler cross-check, mutate()'s own
+# distinctness loop -- because no mutation anywhere in poc/ edits a run.sh.
 
 for name in $cases; do
-  result=$(build_and_run "$poc" "$name")
+  result=$(bash "$poc/build-and-run.sh" "$poc" "$name" "$work/exec/$name")
   read -r reason exitcode steps insns <<<"$(python3 -c '
 import json, sys
 r = json.loads(sys.argv[1])
@@ -376,6 +334,19 @@ mutate() {
          exit 1 ;;
     123) echo "HARNESS FAULT: mutation '$1' declared \"${5:-yes}\" for whether it edits the tree" >&2
          exit 1 ;;
+    # A run snippet that checks a CONTROL before making its claim says so with
+    # 9, and is named here for the reason poc/lib/mutant.sh names 120-123: a
+    # non-zero status from a mutated suite means "detected" everywhere else, so
+    # a snippet whose control has gone would be recorded as the strongest
+    # result this harness has for its weakest reason. It did go red without
+    # this arm -- the CONTROL LOST text does not contain any mutation's
+    # fragment, so the distinctness loop caught it -- but the headline then
+    # read "the checks are not distinguishing", which is not what happened, and
+    # it stayed true only as long as nobody put the fragment into that message.
+    9)   echo "CONTROL LOST for mutation '$1'. It checks a property before it" >&2
+         echo "claims anything, and that property no longer holds, so the claim" >&2
+         echo "was never made:" >&2
+         echo "$out" >&2; exit 1 ;;
   esac
   if [ "$status" = 0 ]; then
     echo "MUTATION NOT DETECTED: '$1' still passed:" >&2
@@ -610,31 +581,79 @@ mutate "harness: the scale driver measures a different file" \
 # check.nix reports a clean pass. Without it, "the emulator runs the code"
 # would be the one unpinned claim in the suite -- and it is the only semantic
 # oracle in it.
-# Its own directory rather than its own tmpfs, unlike every mutation above:
-# the block below interleaves with build_and_run, a function defined in this
-# file, so it cannot be handed to poc/lib/mutant.sh to run inside a mount
-# namespace of its own. A directory used exactly once is fresh for the same
-# reason a tmpfs is -- there is no previous run of it to inherit from.
-semantic=$work/semantic
-mkdir "$semantic"; cp -r "$poc"/. "$semantic"
-sed -i 's|mv a0,%0\\nmv a1,%1\\ncall __divsi3|mv a0,%0\\nmv a1,%0\\ncall __divsi3|' "$semantic/rules.nix"
-grep -q 'mv a1,%0' "$semantic/rules.nix" || {
-  echo "the divide-by-itself mutation did not apply; rules.nix has changed shape" >&2; exit 1; }
-semantic_list=$(for c in $cases; do printf '{ name = "%s"; value = %s/ir/%s.sym; } ' "$c" "$semantic" "$c"; done)
-if ! nix eval --impure --raw --expr \
-     "import $semantic/check.nix { sources = builtins.listToAttrs [ $semantic_list ]; }" \
-     >/dev/null 2>&1; then
-  echo "the divide-by-itself mutation was caught by check.nix, so it no longer" >&2
-  echo "demonstrates that the execution stage catches what the pure checks cannot" >&2
-  exit 1
-fi
-broken=$(build_and_run "$semantic" expr)
-got=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["exitCode"])' "$broken")
-[ "$got" != 72 ] || {
-  echo "MUTATION NOT DETECTED: the divide libcall divides x by itself and the" >&2
-  echo "emulator still returned 72; the execution stage is measuring nothing" >&2; exit 1; }
-echo "  mutation detected: matcher: the divide libcall divides x by itself" \
-     "(execution only -- check.nix passed it, the emulator returned $got not 72)"
+#
+# It goes through poc/lib/mutant.sh like every other mutation here, which is
+# what gives it a tmpfs of its own (task-041). It used to interleave with a
+# shell function defined in this file, could not be handed to mutant.sh at all,
+# and made do with a directory used once.
+#
+# Its run snippet carries its own CONTROL, and in front of the claim rather
+# than after it. The property being demonstrated is "check.nix passes this and
+# the emulator does not", so if check.nix ever starts catching the mutation the
+# demonstration is void. The snippet then says CONTROL LOST and CANNOT produce
+# the fragment below, so a lost control shows up as a red suite rather than as
+# a detection -- ordering it the other way round would let the harness report
+# its strongest result for its weakest reason.
+#
+# The expectation comes out of cases.nix rather than being written here as 72,
+# so that the corpus stays the one place the answer lives.
+# No guard on this eval: `set -e' aborts the harness if it fails, and a
+# `--raw' eval of `toString c.expect' that succeeds cannot print nothing. The
+# stage-3 loop above does the same lookup with no guard either.
+expr_want=$(nix eval --impure --raw --expr \
+  "let c = builtins.head (builtins.filter (e: e.file == \"expr\")
+     (import $poc/cases.nix).execution); in toString c.expect")
+# Assemble, link, run, and hold the answer to what cases.nix says. Shared by
+# the two mutations below, which is why it is a variable: one of them breaks
+# the compiler and one breaks this oracle, and they have to be judged by the
+# same thing or neither proves the other is live.
+#
+# Two distinct diagnostics rather than one. A program that never reached the
+# exit syscall and a program that exited with the wrong number are different
+# failures, and the mutation stage requires every mutation to be told apart
+# from every other by the text it produces.
+exec_check="bash $mut/build-and-run.sh $mut expr $mut/exec > $mut/exec.json
+python3 -c \"
+import json, sys
+r = json.load(open(sys.argv[1]))
+if r['reason'] != 'exit':
+    sys.exit('expr: the emulator stopped with reason %r rather than exiting'
+             % (r['reason'],))
+if r['exitCode'] != $expr_want:
+    sys.exit('expr: the emulator returned %s, but cases.nix expects $expr_want'
+             % (r['exitCode'],))
+\" $mut/exec.json"
+# The control, in front of the claim. nix's own message is kept rather than
+# thrown away: `nix eval' failing means check.nix caught the mutation OR
+# check.nix broke for a reason of its own, and discarding stderr would leave
+# this asserting the first with no way to tell.
+semantic_run="control=\$($matcher_check 2>&1 >/dev/null) || {
+  echo 'CONTROL LOST: check.nix no longer PASSES the divide-by-itself mutation,'
+  echo 'so it no longer demonstrates what executing the code sees and the pure'
+  echo 'checks cannot. Either check.nix now catches it -- aim it somewhere'
+  echo 'check.nix still cannot see -- or check.nix itself is broken. Its own'
+  echo 'diagnostic, which is what tells those apart:'
+  echo \"\$control\"
+  exit 9
+}
+$exec_check"
+
+mutate "matcher: the divide libcall divides x by itself" \
+       "but cases.nix expects $expr_want" \
+       "sed -i 's|mv a0,%0\\\\nmv a1,%1\\\\ncall __divsi3|mv a0,%0\\\\nmv a1,%0\\\\ncall __divsi3|' rules.nix" \
+       "$semantic_run"
+
+# And the oracle itself, which is the half of poc/04-assembler's precedent that
+# moving the function does not give you for free. gnu-diff.sh is reachable by a
+# mutation AND has one aimed at it (`the differential is handed an empty
+# image'); build-and-run.sh was reachable and had none, so "the mutated copy is
+# the one that runs" was argued rather than shown. Cut the emulator's step
+# budget to 20 and the program cannot reach its exit syscall -- which only
+# shows up if the mutated copy is what ran.
+mutate "harness: the semantic oracle stops running the program to completion" \
+       "rather than exiting" \
+       "sed -i 's|cpu.run 200000|cpu.run 20|' build-and-run.sh" \
+       "$exec_check"
 
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
