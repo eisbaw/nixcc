@@ -1,10 +1,10 @@
 ---
 id: TASK-027
 title: 'Slice 1: parse declarations and integer expressions to DAG'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 18:56'
+updated_date: '2026-09-15 19:12'
 labels:
   - frontend
   - parser
@@ -35,6 +35,17 @@ Binding constraints: decision-001 (loop shape, accumulator, substring, deepSeq, 
 - [ ] #6 Harness mutation-tested: breaking the parser and breaking the harness each fail distinctly
 - [ ] #7 The slice's oracle compares rcc's stderr, not only its IR, so a constant that is clamped or an escape that is diagnosed cannot be dropped silently by the parser
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Port lcc's frontend middle-end to Nix, mirroring lcc/src structure: types.nix (type system + ttob/btot/opname), sym.nix (scoped symbol tables, genlabel/genident/constant, exact-rational ref counts), simp.nix (simp.c constant folding, predicative overflow guards), tree.nix (tree.c root1 + expr.c/enode.c tree constructors), dag.nix (dag.c listnodes/node/newnode/list/reset/killnodes + symbolic.c visit numbering), parse.nix (recursive descent over poc/02-lexer tokens, state-threaded, interleaved with dag construction exactly as lcc interleaves), listing.nix (symbolic.c's emit/emitSymbol text rendering).
+2. Diff the rendered listing against 'just ir' (rcc-rv32) for a corpus of >=10 functions in the int subset, byte-for-byte including node numbers, #n back-references, count=, and syms.
+3. Feed our own forest attrset (same shape poc/03-matcher/parse.nix produces) into poc/03-matcher/emit.nix + poc/04-assembler, and run >=3 programs on nix-riscv from .c with no lcc in the path.
+4. Oracle compares rcc's stderr (warnings) as well as its IR, so a clamped constant or diagnosed escape cannot be silently dropped.
+5. Measure peak RSS per source line with tokens, trees, DAG and code list live.
+6. poc/07-parser/run.sh harness: mutation-tested with a declared count checked for equality, must-fail suite with controls, oracle in its own script with a mutation aimed at it.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
