@@ -4,7 +4,7 @@ title: Evaluate C constants from lexemes
 status: Done
 assignee: []
 created_date: '2026-09-14 19:21'
-updated_date: '2026-09-15 19:03'
+updated_date: '2026-09-15 19:05'
 labels:
   - frontend
 dependencies: []
@@ -26,12 +26,12 @@ Also open: lcc accepts multi-character constants like 'ab' with a warning and us
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 Integer constants are evaluated for decimal, octal and hexadecimal forms with u/U/l/L suffixes, and the type is chosen as C89 chooses it
-- [x] #2 Overflow is detected and reported, not thrown by the evaluator and not silently wrapped
-- [x] #3 Character constants are evaluated including simple, octal and hex escapes
-- [x] #4 String constants are decoded to byte lists, so an embedded NUL is representable
-- [x] #5 Floating constants are evaluated, or the task is split and float is deferred to task-009
-- [x] #6 Behaviour is diffed against lcc's rcc for every constant form, not just asserted
+- [x] #1 Overflow is detected and reported, not thrown by the evaluator and not silently wrapped
+- [x] #2 Character constants are evaluated including simple, octal and hex escapes
+- [x] #3 String constants are decoded to byte lists, so an embedded NUL is representable
+- [x] #4 Floating constants are evaluated, or the task is split and float is deferred to task-009
+- [x] #5 Behaviour is diffed against lcc's rcc for every constant form, not just asserted
+- [x] #6 Integer constants are evaluated for decimal, octal and hexadecimal forms with u/U/l/L suffixes, and the type is chosen AS LCC CHOOSES IT -- which differs from C89 for 0xFFFFFFFF (lcc gives unsigned long, the standard unsigned int). lcc is both port source and oracle, so matching it is correct; the divergence is documented
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -123,4 +123,20 @@ ONE CRITERION ADDED TO ANOTHER TASK, flagged because it is not mine to decide: t
 NOT FIXED, and said plainly. The integer-lexeme grammar is now specified twice -- poc/02-lexer's reHexInt/reDecInt/intSuffix and const.nix's intConst.forms -- and the lexer already decided hex-vs-octal-vs-decimal and threw the answer away, forcing the re-match. They agree today and give different diagnostics for the same bad input. cases.nix has also outgrown its stated job of covering what the oracle is blind to; most of its 51 scalar rows also appear in oracle.nix's form list. Both are rot risks rather than defects, and both are better settled when task-027 decides what a token carries.
 
 AFTER THE REVIEW ROUND, measured: gate green, 6 PoCs, mutation counts 10 / 36 / 28 / 36 / 20, e2e 6m19s. poc/06-constants now runs 51 scalar + 14 string + 3 lexed-source cases, 20 rejects with 16 controls, 111 oracle forms of which lcc diagnoses 22 across 21 forms, and 20 mutations each detected with its own distinct failure.
+
+ORCHESTRATOR: verified independently and accepting all three flagged deviations.
+
+Overflow, checked directly: 4294967295 gives 4294967295/unsigned long/0 warnings; 4294967296 clamps with 1 warning; 99999999999999999999 -- twenty digits, far past 2^64 -- also clamps with 1 warning and does NOT throw. That last case is the proof the comparison happens before the multiply rather than after.
+
+Strings, checked directly: "a\0b" decodes to units [97, 0, 98]. An embedded NUL survives, which is AC#4 and the reason byte lists were necessary at all. "ab" and "cd" each carry no terminator, so a join gives 5 units and not 6.
+
+DEVIATION on #1, 'as C89 chooses it'. lcc's icon() tests against long max before C89's unsigned-int rung, so 0xFFFFFFFF types as unsigned long where the standard says unsigned int. Implementing lcc rather than the standard is CORRECT for this project and the criterion was loose: lcc is both our port source and our differential oracle, so implementing C89 strictly would put us permanently at odds with the thing we diff against. The implementer also measured that x < 0xFFFFFFFF and x < 4294967295u emit byte-identical IR, so nothing observable differs on this target -- though it would on one with a wider long. Criterion amended to say lcc rather than C89, with that divergence named.
+
+This is the third time a criterion of mine was the thing that was wrong.
+
+DEVIATION on #5. It points at task-009, which is the DECIDE task and is closed, so no open task carried the float implementation. The implementer declined to file a speculative task, which was a reasonable call, but decision-006's 'revisit once the integer compiler works end to end' was then the only record of a real deliverable. Filed as task-050, explicitly not actionable yet.
+
+DEVIATION on #6, 'every constant form'. 111 forms diffed with two documented exclusions -- float, which has no oracle at all, and forms lcc treats as an error rather than a warning, which are in must-fail.nix with their diagnostic text checked. Accepted: an exclusion that is named and covered elsewhere is not a gap.
+
+Accepting the acceptance criterion it added to task-027 as well. It is right that nothing else would have gone red if the parser recorded warnings and never printed them.
 <!-- SECTION:NOTES:END -->
