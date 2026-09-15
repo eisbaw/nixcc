@@ -1,10 +1,10 @@
 ---
 id: TASK-027
 title: 'Slice 1: parse declarations and integer expressions to DAG'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 21:54'
+updated_date: '2026-09-15 22:27'
 labels:
   - frontend
   - parser
@@ -27,13 +27,13 @@ Binding constraints: decision-001 (loop shape, accumulator, substring, deepSeq, 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Parser consumes the task-002 lexer's tokens; no second lexer
-- [ ] #2 DAG output diffs node-for-node against 'just ir' (rcc-rv32, never raw rcc -target=symbolic) for a corpus of at least 10 C functions in the subset
-- [ ] #3 The diff compares node numbering and #n back-references, not just opcodes, since a renumbering bug is exactly what an opcode-only diff misses
-- [ ] #4 At least 3 programs in this subset compile from .c and RUN end to end in one nix eval, replacing .sym as the entry point
-- [ ] #5 Memory measured and recorded per source line, with tokens/AST/DAG live simultaneously
-- [ ] #6 Harness mutation-tested: breaking the parser and breaking the harness each fail distinctly
-- [ ] #7 The slice's oracle compares rcc's stderr, not only its IR, so a constant that is clamped or an escape that is diagnosed cannot be dropped silently by the parser
+- [x] #1 Parser consumes the task-002 lexer's tokens; no second lexer
+- [x] #2 DAG output diffs node-for-node against 'just ir' (rcc-rv32, never raw rcc -target=symbolic) for a corpus of at least 10 C functions in the subset
+- [x] #3 The diff compares node numbering and #n back-references, not just opcodes, since a renumbering bug is exactly what an opcode-only diff misses
+- [x] #4 At least 3 programs in this subset compile from .c and RUN end to end in one nix eval, replacing .sym as the entry point
+- [x] #5 Memory measured and recorded per source line, with tokens/AST/DAG live simultaneously
+- [x] #6 Harness mutation-tested: breaking the parser and breaking the harness each fail distinctly
+- [x] #7 The slice's oracle compares rcc's stderr, not only its IR, so a constant that is clamped or an escape that is diagnosed cannot be dropped silently by the parser
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -159,4 +159,22 @@ FOUR DIAGNOSTICS lcc PRINTS THAT WE DID NOT, on programs both frontends compile 
 MEMORY. A finished function's trees and dag nodes were never released where lcc frees its FUNC arena: 38% of peak RSS for one line, output verified byte-identical. sym.reachable built and filtered a full index of the code list on every code() call where lcc walks back from the tail: the largest single term on a 1600-statement function. And the ladder itself measured the wrong shape -- 8/32/128 FUNCTIONS of ten lines hides the cost of one LARGE function, which is 2.3x per line. Both shapes are now measured, and memory.py states the wall in source lines rather than leaving it to be inferred.
 
 HARNESS. oracle.py's floors carried 69-76% slack, against poc/lib/mutant.sh's own argument that a floor can be spent downward in silence; they are declared counts checked for equality now, and four of the five had no mutation aimed at them. must-fail.nix's "every reject paired with a control" was a comment, not code (17 rejects, 14 controls, one unpaired); the pairing is one table now and every `expect' fragment is asserted distinct. Criterion #4's "three programs RUN" was asserted nowhere -- deleting one left every stage green. The corpus and the run programs are derived from their directories rather than listed. messages.sh matched against nix's whole trace including echoed source. 42 mutations now, up from 26.
+
+FINAL STATE. Gate: `nix develop --command just e2e' exits 0, 7 PoCs passed, lint clean. Mutation counts across the suite are now 10 / 36 / 28 / 36 / 20 / 20 / 42.
+
+PER CRITERION, honestly:
+  #1 MET. poc/07-parser/compile.nix imports ../02-lexer/lex.nix; there is no second lexer. lex.nix now also EXPORTS the token-kind set it derives from its own tables, and check.nix holds every kind the parser names against it -- a typo in one of the parser's kind lists does not fail otherwise, it makes a case quietly unreachable.
+  #2 MET, well past the floor. 24 translation units and 41 functions diffed BYTE FOR BYTE, plus 40 seeded random programs and 803 boundary forms in the same differential.
+  #3 MET. 990 numbered node lines and 841 `#n' back-references counted and asserted for EQUALITY, not as floors. Two mutations aimed at it: starting the per-forest counter at one (every number shifts, every opcode identical) and dropping the kid references.
+  #4 MET. Three programs, asserted by cases.programCount -- deleting one used to leave every stage green. Their expected output is a second implementation in Nix, and they were re-run at four arguments each.
+  #5 MET, and the measurement moved twice while being made. 142 kB of peak RSS per source line for many small functions, 359 kB for one large function; the 1 GB mark arrives at about 2800 lines in one function. Both shapes are measured because the first hides the second. NOTE ONE THING PLAINLY: funcdefn now releases a finished function's trees and dag nodes, so at the END of a translation unit the whole file's AST is not live. The PEAK -- which is what the one-function point measures -- still has every token, every symbol and one function's entire tree and DAG live at once. Before that change the whole-file figure was 176 kB/line.
+  #6 MET. 42 mutations, 27 of the frontend and 15 of the harness, each required to fail with its own fragment and NONE of the other 41.
+  #7 MET. 12 lines of lcc's stderr diffed byte for byte, with two mutations on it: the frontend recording warnings without reporting them, and the oracle not reading lcc's stderr at all. poc/07-parser/c/warns.c covers the expression diagnostics and c/linkage.c the declaration ones, which no IR diff can reach.
+
+WHAT IS STILL NOT TRUE, said plainly:
+  * poc/05-loop/hello.c STILL CANNOT BE COMPILED BY US. It uses a global `char' array and a pointer parameter -- slices 2 and 3. That demo still enters at lcc's .sym listing.
+  * The subset that RUNS is narrower than the subset that COMPILES, because poc/03-matcher/rules.nix has no rule for the bitwise, unary or unsigned opcodes (task-051). The frontend emits all of them correctly and they diff clean.
+  * sym.err THROWS where lcc records an error and recovers. Deliberate, and safe for the differential, which only compares programs both frontends accept -- but it means our stderr carries WARNINGS ONLY, so lcc's error text is not part of what criterion #7 compares.
+  * A single expression caps at about 1300 operands (task-052).
+  * The frontend is BROADER than slice 1 advertises. char, short, pointer locals, unary & and *, function pointers, static functions, const, volatile and array types all compile and diff clean. Only subscripting, pointer arithmetic, string literals, structs, floats, globals, local statics and switch/goto/labels are refused. Slice 2 is therefore smaller than its title suggests.
 <!-- SECTION:NOTES:END -->

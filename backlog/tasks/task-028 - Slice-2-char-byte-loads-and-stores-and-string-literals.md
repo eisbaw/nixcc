@@ -4,7 +4,7 @@ title: 'Slice 2: char, byte loads and stores, and string literals'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 18:56'
+updated_date: '2026-09-15 22:25'
 labels:
   - frontend
   - parser
@@ -104,4 +104,19 @@ Verified against lcc's defstring for 17 string forms including an embedded NUL, 
 A literal containing a source byte above 127 currently throws (task-046). \xNN and \NNN reach every byte, so it constrains the corpus rather than the feature.
 
 Mixed-width joins -- `"ab" L"cd"' -- have no rule yet and no case: task-047. Everything else about the join is settled in task-011's notes.
+
+FORWARD-CARRIED from task-027 (slice 1), commits d64d382 and 9330404. The frontend exists: poc/07-parser/ is lcc's frontend middle-end ported file by file, and its listing diffs against rcc-rv32 BYTE FOR BYTE over 24 translation units, 41 functions and 843 generated programs. Read this before adding anything.
+
+WHAT ALREADY WORKS THAT SLICE 2 IS NOMINALLY ABOUT. `char' and `short' locals, parameters and conversions compile and diff clean TODAY, and so do pointer LOCALS, unary `&', unary `*', function pointers through a typedef, `static' functions, `const' and `volatile' (including the newnode-not-node rule that keeps two volatile loads two nodes), and array TYPES. Slice 1 refuses only: subscripting, pointer ARITHMETIC (simp.c's ADD+P/SUB+P, where addrtree lives), string literals, structs/unions/enums, float, switch/goto/labels, globals and local statics. So slice 2 is smaller than it looks -- it is the STRING LITERAL and the SUBSCRIPT, not `char'.
+
+WHERE TO PUT WHAT.
+  * String literals: poc/07-parser/parse.nix's `primary', the SCON arm, which currently refuses naming task-028. task-011's evalSCON gives you { units; width; warnings; }; the PARSER joins adjacent literals and appends ONE 0, and poc/06-constants/oracle.nix's `answerFor' holds the one-literal special case of that rule -- when you write the general one there will be two copies and only yours will be on the critical path. Mixed-width joins have no rule anywhere: task-047.
+  * Subscripting: `postfix''s `[' arm. lcc's is four lines and calls (*optree['+'])(ADD, pointer(p), pointer(q)) -- the work is all in enode.c's addtree, which poc/07-parser/trees.nix refuses for the pointer case.
+  * Pointer arithmetic: simp.nix's "ADD+P" and "SUB+P", both of which throw today naming this task. simp.c's addrtree is the interesting one; it allocates a generated symbol and emits an Address code item, which listing.nix's gencode does not handle (it throws on an unknown code kind, deliberately, so you will see it).
+
+TWO THINGS THAT WILL BITE.
+  * task-051: the backend has no rule for BANDI4, BORI4, BXORI4, NEGI4, BCOMI4 or ANY unsigned arithmetic. The frontend emits all of them correctly. A string program using `&' or `|' will compile to correct IR and be refused at instruction selection.
+  * task-046: poc/06-constants throws on a literal byte above 127, so a corpus with UTF-8 in a string literal stops you.
+
+HOW TO ADD A CASE. poc/07-parser/cases.nix DERIVES its corpus from the c/ directory and requires an entry in `notes' for every file; poc/07-parser/oracle.py declares the function, node-line, back-reference and diagnostic counts and checks them for EQUALITY, so adding a file means updating five numbers. That friction is deliberate -- it is where you look at what the new case brought.
 <!-- SECTION:NOTES:END -->

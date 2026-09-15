@@ -4,7 +4,7 @@ title: Minimal C preprocessor in Nix
 status: To Do
 assignee: []
 created_date: '2026-09-14 20:04'
-updated_date: '2026-09-15 02:14'
+updated_date: '2026-09-15 22:26'
 labels:
   - frontend
   - preprocessor
@@ -65,4 +65,12 @@ Also relevant to AC #1: nothing downstream reads linemarkers yet. poc/03-matcher
 IR parser treats every non-forest line as directive noise against an explicit
 allowlist, so a linemarker format nothing consumes will not be caught by the
 existing suite -- the differential in AC #4 is the only thing that would.
+
+FORWARD-CARRIED from task-027 (slice 1), commit 9330404.
+
+THE PARSER NOW NAMES YOU. A `#' at file scope is refused with: "parse: \`#' -- this frontend is fed raw C and has no preprocessor yet; decision-005 chose to write one in Nix and task-013 is where it lives". That is the FIRST error a real user hits, so it was worth spelling out; when this task lands, that arm in poc/07-parser/parse.nix's `program' comes out.
+
+WHAT THE SEAM LOOKS LIKE. poc/07-parser/compile.nix takes a SOURCE STRING and lexes it itself (`lexer.lex src'). A preprocessor that produced a token stream rather than text would slot in there -- but note that the parser reads `ws' off each token to make lcc's `*cp != '='' peek (task-002's no-compound-assignment-tokens decision), and it reads `line' for every diagnostic. Any stage between the lexer and the parser has to preserve both or the stderr differential (criterion #7 of task-027) goes red.
+
+THE SIZE YOU HAVE TO FIT IN. Measured on the frontend as it stands: 142 kB of peak RSS per source line for a file of many small functions and 359 kB for one large function, so the 1 GB mark arrives at about 2800 source lines in one function. A preprocessed translation unit that includes real headers is well past that. This is the number decision-005 should be re-read against before scoping #include.
 <!-- SECTION:NOTES:END -->
