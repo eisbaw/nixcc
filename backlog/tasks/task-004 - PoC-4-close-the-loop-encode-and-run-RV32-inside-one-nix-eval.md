@@ -4,7 +4,7 @@ title: 'PoC-4: close the loop, encode and run RV32 inside one nix eval'
 status: In Progress
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-15 02:11'
+updated_date: '2026-09-15 02:45'
 labels:
   - poc
   - integration
@@ -190,4 +190,98 @@ ALSO FILED
               parse.nix immediately reads it back. poc/05-loop has both paths
               side by side -- the driver is items, the compiled function is
               text -- which is what makes the comparison concrete.
+
+REVIEW ROUND, and what it changed. Two reviewers ran against the first draft
+and between them found the failure this project has shipped four times, one
+level up from where it was looked for:
+
+  * ELEVEN GUARDS in check.nix could be DELETED without the mutation stage
+    noticing, and FOUR TABLES could be EMPTIED while it still returned
+    success -- requiredReasons, the demo's address table, the compiled-branch
+    floor, and a control's stdout pin. Proved by deleting them and re-running
+    the full suite, which reported 17 mutations detected either way.
+  * "THE EMULATOR RAN OUR BYTES" was checked for 4 bytes of 648. A byte
+    tampered with at offset 400 -- inside a real instruction -- passed, and so
+    did a byte appended to the image.
+  * The control stdout pin was `if r ? stdoutBytes', which went vacuous for
+    eight of eleven controls; a control that spuriously wrote four bytes
+    passed.
+  * TWO DEAD GUARDS: a "produced no output at all" check that a byte-list
+    comparison five guards earlier had already made unreachable, and a
+    fragment-equality `continue' in run.sh's distinctness loop that would turn
+    "two mutations produce the same alarm" from a failure into a silent skip.
+  * The expected output was WRITTEN BESIDE the vector rather than derived from
+    it. Changing the vector made the program's correct answer read as a
+    compiler bug, with a failure message that still said 1..10.
+  * A missing unit reported "fewer items than expected" from check.nix
+    instead of the assembler's own "nothing in this unit defines `__divsi3'",
+    because an item-count floor fired before the image was ever forced.
+
+Fixed, each with a mutation aimed at it: byte-for-byte RAM comparison plus the
+memory-entry count; floors on every table; the stdout pin unconditional; the
+dead guards gone; prefix and digits derived from the vector with a layout
+guard; the item floor moved below the image checks. 17 mutations became 31.
+
+Also: the "no toolchain" PATH was `dirname $(command -v nix)', which on this
+machine is /run/current-system/sw/bin -- 1566 binaries including a host `as'.
+It is now a directory holding one symlink, to nix.
+
+Two things the reviewers were right about that were NOT fixed here, with the
+reason:
+  * items.nix's constructors are a second declaration of a format asm.nix's
+    `measure' already declares, and belong beside it. Moving them reshapes the
+    assembler's public surface, which is task-026's job; items.nix says so in
+    its header.
+  * the guarded-PATH stage proves less than it reads: a `nix eval' of a pure
+    expression could only reach a PATH binary through import-from-derivation,
+    so the property is close to true by construction. The comment now says
+    that, and says what it does rule out -- a harness that shells out, which
+    has happened here before.
+
+PER-CRITERION STATUS, all seven met.
+
+#1 write syscall prints a known string. "1..10 = 55\n", 11 bytes, through
+   syscall 64. The digits are computed by compiled C from a vector summed by
+   compiled C -- the `vector one shorter' mutation makes the program print 45,
+   which is only possible if the arithmetic is real. Pinned as a BYTE LIST,
+   which is the NUL-safe form decision-001 forces, with the printable string
+   beside it.
+#2 exit(0) through the exit syscall, halted cleanly. reason == "exit",
+   exitCode == 0, and the 0 is load-bearing: hello() returns it only when
+   write() reported all eleven bytes.
+#3 bytes from our encoder, not a pre-built image. asm.nix -> encode.nix, and
+   check.nix compares EVERY byte of the loaded machine's RAM against the
+   image, plus the number of RAM entries against its length.
+#4 one `nix eval', no assembler/linker/emulator binary. closed-loop.sh runs it
+   under a PATH holding one symlink to nix and refuses if the cross toolchain
+   is reachable. See the review note for how much that proves.
+#5 negative test. 10 malformed programs, each on its own rv32 `reason',
+   including the one that would otherwise hang; 12 controls that must still
+   run with status and stdout pinned.
+#6 `just poc-loop', at poc/05-loop/run.sh, picked up by `just poc'.
+#7 forward and backward from the symbol table. 19 branch offsets in the image
+   cross-checked against the immediate decoded back out of the assembled word;
+   5 forward and 1 backward inside the compiled function.
+
+GATE, actual: nix develop --command just e2e -> "5 PoC(s) passed", 5m38,
+lint clean. Commit b1f34af.
+
+Two earlier runs of the same gate on the same tree did not pass, and neither
+was this change:
+  * one exited 3 -- a ladder rendered NO VERDICT on a busy machine, which
+    task-020 documents as roughly one run in three here;
+  * one exited 1 with poc/02-lexer's ladder reporting SUPERLINEAR at 13.89x
+    input for 21.14x CPU, measured against 2.64 cores of other work, under the
+    3.50 the guard needs to render a verdict at all. poc/02-lexer references
+    nothing this change touched. That is the known hole poc/lib/contention.py
+    records: the threshold was measured, but iowait counts as idle and this
+    machine is carrying an unrelated runaway process.
+
+WHAT THE DEMO DOES NOT PROVE, which is what task-005 has to decide against:
+the entry point of that single eval is hello.sym, lcc's IR listing, NOT
+hello.c. The preprocessor, the parser and the DAG builder do not exist; the
+lexer does. Everything DOWNSTREAM of the IR is Nix with no external toolchain
+in it. `just poc-loop' regenerates hello.sym from hello.c with lcc and diffs
+it on every run, so the C file is the source of truth -- but lcc, not Nix, is
+what reads it today.
 <!-- SECTION:NOTES:END -->

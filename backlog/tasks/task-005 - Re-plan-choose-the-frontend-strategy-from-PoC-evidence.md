@@ -4,7 +4,7 @@ title: 'Re-plan: choose the frontend strategy from PoC evidence'
 status: To Do
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-15 02:14'
+updated_date: '2026-09-15 02:45'
 labels:
   - planning
   - wave-boundary
@@ -109,4 +109,30 @@ discarded (task-025). hello.c had to be written around all three. That ratio
 much of C89 the rule table currently covers, and worth weighing against the
 frontend work: a frontend that parses all of C89 in front of a back end that
 cannot store a char does not compile more programs.
+
+forward-carried from task-004's review round: the HARNESS BAR moved, and a
+re-plan that schedules new PoCs should budget for it.
+
+Two reviewers ran against task-004's first draft and found that eleven guards
+in its check.nix could be deleted, and four of its tables emptied, while the
+mutation stage still reported every mutation detected. The suite was not
+wrong; it was under-aimed. Mutation-testing the CODE is not the same as
+mutating every GUARD, and this project's recurring failure has now appeared at
+both levels.
+
+What that cost, and what it is worth budgeting: 17 mutations became 31, and
+the rule that produced them is cheap to state -- a guard with no mutation
+aimed at it is a guard nobody has seen fail, and a table with no floor is a
+table that can be emptied. Both are mechanical to check once someone thinks to.
+
+Two smaller findings with wider reach:
+  * A pin written BESIDE the fact it describes rather than derived FROM it
+    turns a correct program into a false failure, with a message that still
+    quotes the stale value. task-004's demo now derives its expected output
+    from its input vector.
+  * A floor evaluated before the thing it guards can pre-empt a better
+    diagnostic. An item-count floor fired before the image was forced, so a
+    demo missing a whole unit reported "fewer items than expected" instead of
+    the assembler's own "nothing in this unit defines `__divsi3'". Order
+    floors by what they can PRE-EMPT, not only by what they protect.
 <!-- SECTION:NOTES:END -->
