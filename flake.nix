@@ -1,5 +1,5 @@
 {
-  description = "nix-tcc: a C compiler for RISC-V, written in interpreted Nix";
+  description = "nixcc: a C compiler for RISC-V, written in interpreted Nix";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

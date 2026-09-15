@@ -19,7 +19,7 @@ That is the right shape for a single-eval compiler -- one translation unit, no r
 
   * .bss. Zero-initialised data currently has to be .zero bytes in .data, which puts every zero in the image.
   * .rodata. String literals and jump tables want a read-only section.
-  * Separate compilation. If nix-tcc ever compiles translation units independently, unresolved symbols have to survive as relocations rather than throw.
+  * Separate compilation. If nixcc ever compiles translation units independently, unresolved symbols have to survive as relocations rather than throw.
 
 Also here: alignment is computed on SECTION OFFSETS with section bases 16-aligned, so '.align 5' and beyond is refused. Widening that means aligning the bases themselves.
 

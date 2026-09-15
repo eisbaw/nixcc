@@ -17,7 +17,7 @@ poc/03-matcher/drivers/*.s all begin `_start:' with the first instruction of the
 
 task-023 worked around it by passing -mno-relax and --no-relax in poc/03-matcher/run.sh's build_and_run, which is defensible -- the Nix assembler emits no relocations and never relaxes, and the Nix emulator sets no gp -- but it is the smaller lie, not the fix. The programs are the thing that is wrong.
 
-Two consequences nothing currently tests. First, nix-tcc output linked by a relaxing GNU ld against startup code that does not set gp breaks exactly this way, and no check in the tree would see it. Second, the existing corpus got away with it only by luck: the `expr' case's `la s1,g' did not relax because g lands outside the 2 KB window.
+Two consequences nothing currently tests. First, nixcc output linked by a relaxing GNU ld against startup code that does not set gp breaks exactly this way, and no check in the tree would see it. Second, the existing corpus got away with it only by luck: the `expr' case's `la s1,g' did not relax because g lands outside the 2 KB window.
 
 Also here because it is the same three lines: `riscv32-none-elf-ld ... 2>/dev/null' in the same function swallows every linker diagnostic. This whole episode was found by a store faulting in an emulator rather than by a message, which is the argument against that redirect.
 

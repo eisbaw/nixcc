@@ -1,4 +1,4 @@
-# nix-tcc
+# nixcc
 
 A C compiler for RISC-V, written in the Nix expression language.
 
@@ -26,7 +26,8 @@ IR is Nix. See `backlog/` for what is done and TASK-005 for what that costs.
 ## Why lcc and not tcc
 
 The port source is [lcc](https://github.com/drh/lcc) (Fraser & Hanson), not
-Bellard's tcc, despite the project name.
+Bellard's tcc. tcc is here only as a test corpus — the flake pins it for its
+`tests2` cases, not for its compiler.
 
 tcc is single-pass: it parses and emits machine-code bytes simultaneously into
 a mutable buffer, then backpatches jump targets by writing back into code it has
