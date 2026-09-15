@@ -85,6 +85,21 @@ With the three shapes above -- genericClosure to drive, concatLists to gather,
 character lists to slice -- the lexer measures 47000 tokens/s and stays linear
 from 31 kB to 431 kB (task-002). Raw throughput is not what threatens this
 project. What does is the constant: 31 kB of C costs 85 MB of peak RSS, 431 kB
-costs 507 MB and 2.2 MB costs 976 MB, and that last one takes 18.3 s where the
-small-file rate predicts 14.5. The evaluator's own overhead per live value is
-the budget to watch in every later stage, not asymptotics.
+costs 507 MB and 2.2 MB costs 976 MB. The evaluator's own overhead per live
+value is the budget to watch in every later stage, not asymptotics.
+
+CORRECTION (see decision-008). This paragraph previously added that the 2.2 MB
+point "takes 18.3 s where the small-file rate predicts 14.5", and read that as a
+time degradation at a large working set. **That reading was wrong, and it cost
+five subsequent investigations** -- it was cited as the explanation for an
+intermittently red gate, and sent four of them down the wrong road.
+
+The cause is CPU heterogeneity, not working set. This machine has three core
+classes: cpu0-3 at 4.9 GHz, cpu4-11 at 3.8 GHz, cpu12-13 at 2.1 GHz. The same
+431 kB point costs 1.79 s pinned to a P-core, 2.40 s on an E-core and 3.93 s on
+an LP-E core, so which class the scheduler happened to give the largest ladder
+point decided the verdict. The control that settles it: run the ladder
+DESCENDING and it reads sublinear. Order alone moves the answer.
+
+The MEMORY figures above are unaffected and stand -- bytes do not care which
+core allocated them. Only the time claim was an artefact.

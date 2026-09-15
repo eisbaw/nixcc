@@ -4,7 +4,7 @@ title: 'Re-plan: choose the frontend strategy from PoC evidence'
 status: Done
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-15 04:41'
+updated_date: '2026-09-15 14:31'
 labels:
   - planning
   - wave-boundary
@@ -153,6 +153,12 @@ AC#4 is not applicable and is left unchecked rather than ticked: it covers the n
 Gate tier: this was orchestrator planning work, not an implementer cycle. Nothing was gated because nothing was implemented.
 
 One thing this re-plan should NOT paper over: task-020's forward-carried note is right that a NO VERDICT is an absent measurement rather than a result. Two of the runs behind these numbers were NO VERDICT, and one was a genuine SUPERLINEAR on 02-lexer at 2.64 cores of foreign load -- under the guard's 3.50 threshold, so it rendered a verdict it arguably should not have. That is the iowait hole the module records. The linearity claims here are sound but not unqualified.
+
+ORCHESTRATOR correction, after decision-008. This re-plan's timing estimate leaned on decision-001's claim that a large working set degrades throughput 25-30%. That claim has been withdrawn: it was CPU heterogeneity, not working set. This machine has 4.9 GHz, 3.8 GHz and 2.1 GHz core classes, the same 431 kB point costs 1.79 s / 2.40 s / 3.93 s depending which it lands on, and running the ladder descending reads SUBLINEAR. Order alone moved the verdict.
+
+What this changes for the estimate: the time side is better than recorded, not worse -- there is no working-set time penalty to budget for, only the core the scheduler gives you. The MEMORY figures are untouched and remain the binding constraint, which was the estimate's conclusion anyway.
+
+What it changes for anyone reading these notes later: a throughput number from this machine is meaningless without saying which cores produced it. The ladders now interleave their points round-robin for exactly this reason.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
