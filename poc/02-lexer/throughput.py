@@ -26,10 +26,16 @@ Switching to CPU time narrows the problem but does not remove it. Measured on a
 14-core machine with every core saturated, the largest ladder point's CPU time
 inflated 3x while the smallest inflated 2.5x -- memory-bandwidth contention
 costs a 500 MB working set more than an 82 MB one, and that is real CPU time,
-not waiting. So contention is measured around every ladder point, and when the
-machine was busy this harness renders NO VERDICT at all: not a pass, not a
-failure. See poc/lib/contention.py, which owns that measurement and is shared
-with poc/03-matcher/scale.py.
+not waiting. So contention is measured around the ladder, and when the machine
+was busy this harness renders NO VERDICT at all: not a pass, not a failure.
+
+Nor is CPU time a stable unit on a laptop. This ladder failed intermittently
+for four gate runs and was diagnosed four different ways before the cause
+turned out to be its own measurement ORDER: measuring the points in size order
+measures the largest one last, when the package is hottest and its clock
+lowest, every time. poc/lib/contention.py owns the fix -- round-robin rounds,
+cheapest run per point -- and the evidence, and is shared with the matcher and
+assembler ladders rather than copied into them.
 """
 import pathlib
 import shutil
@@ -48,12 +54,27 @@ except ImportError as e:
           f"poc/lib must sit beside this harness")
     sys.exit(2)
 
-# The cheapest of at least this many runs is the measurement; the shared guard
-# adds more when the window is too short to read contention over.
+# Every ladder point is measured this many times, one run each per round, and
+# the cheapest run is the measurement. Rounds rather than repeats: see
+# poc/lib/contention.py's rounds(), and MEASUREMENT ORDER above it.
 REPEATS = 3
 # A doubling of input may cost at most this much more than a doubling of time.
 # Slack for GC timing and scheduler noise; a quadratic lexer misses it by 10x,
 # not by 30%.
+#
+# This number did NOT move when the ladder's intermittent FAIL was fixed, and
+# that is the finding rather than an omission. The task that chased it expected
+# the top of the ladder to need its own, wider tolerance, on the reading that
+# decision-001's "2.2 MB takes 18.3 s where the small-file rate predicts 14.5"
+# was showing up at 500 MB. It is not. Measured round-robin over six sessions
+# on this machine, the worst adjacent step across the whole ladder came in at
+# 1.052, 1.067, 1.058, 1.060, 1.077 and 1.092 -- the largest step is not
+# distinguishable from the others, and 1.35 clears the worst of them by 24%.
+# What produced the 1.39 and 1.71 readings that failed the gate was the ladder
+# measuring its largest point last on a warm machine; with that fixed there is
+# no degradation at this working set left to widen a tolerance for. Widening it
+# would have hidden a real instrument fault behind a plausible-sounding
+# constant, which is the failure this project has now rejected three times.
 TOLERANCE = 1.35
 # The end-to-end step is the PRODUCT of the four adjacent ones, so holding it to
 # the same tolerance makes it far the strictest check here by accident: four
@@ -64,6 +85,11 @@ TOLERANCE = 1.35
 # here, not 1.3x, so 1.5 still leaves two orders of magnitude of signal. If this
 # starts flaking, the number is wrong and wants re-measuring, not raising.
 END_TO_END_TOLERANCE = 1.5
+# Width of the per-round CPU column: REPEATS values of up to five characters
+# (`12.34') plus the slashes between them. Computed rather than written down,
+# because at REPEATS = 5 a hardcoded 24 was exactly saturated and the first
+# ladder point to cross 10 s CPU would have pushed the table out of line.
+ROUNDS_COL = REPEATS * 5 + (REPEATS - 1)
 MIN_POINTS = 4
 MIN_SPAN = 8.0
 # The evaluator's fixed cost is subtracted from every point, so the smallest
@@ -94,15 +120,14 @@ def main(argv):
     nix = shutil.which("nix")
     if nix is None:
         fault("no `nix' on PATH -- run this inside nix develop")
-    base = contention.best([nix, "eval", "--impure", "--raw", "--expr", '""'], REPEATS)
+    ladder, base, measured = contention.ladder(nix, poc, files, REPEATS)
     base_wall, base_cpu = base.wall, base.cpu
+    quiet = contention.quiet(ladder)
 
     rows = []
-    for f in files:
-        point = contention.best([
-            nix, "eval", "--impure", "--raw", "--expr",
-            f'import {poc}/bench.nix {{ path = "{f}"; }}',
-        ], REPEATS)
+    # strict: a silently truncated zip is how this repo's first harness came to
+    # report "48 instructions compared / PASS" having compared nothing.
+    for f, point in zip(files, measured, strict=True):
         secs, cpu, rss = point.wall, point.cpu, point.rss
         parts = point.out.split()
         if len(parts) != 2:
@@ -115,15 +140,12 @@ def main(argv):
         work = cpu - base_cpu
         # A cliff, not a clamp: if the work is not comfortably bigger than the
         # baseline being subtracted from it, the ratios below are measuring
-        # start-up noise. That is a broken measurement, not a slow lexer.
+        # start-up noise. That is a broken measurement, not a slow lexer -- and
+        # a busy machine produces the same reading from a sound ladder, so the
+        # shared guard says which of the two it is rather than assuming.
         if work < base_cpu * MIN_BASELINE_RATIO:
-            # Contention inflates the baseline, which shrinks `work' -- so ask
-            # the guard first, or a busy machine gets told its ladder points
-            # are too small when the truth is that it was busy.
-            contention.require_quiet([("baseline", base), (f"{nbytes} bytes", point)],
-                                     "lexer")
-            fault(f"{f} cost {cpu:.3f} s CPU against a {base_cpu:.3f} s baseline; "
-                  f"this ladder point is too small to measure")
+            contention.too_small(ladder, f"{nbytes} bytes", point, base,
+                                 MIN_BASELINE_RATIO, "lexer")
         rows.append({
             "path": f, "lines": sum(1 for _ in f.open("rb")), "bytes": nbytes,
             "tokens": ntokens, "secs": secs, "work": work, "rss": rss,
@@ -131,20 +153,16 @@ def main(argv):
         })
 
     rows.sort(key=lambda r: r["bytes"])
-    # The baseline is in here because it is subtracted from every point: a
-    # baseline measured under load deflates all of them at once.
-    points = [("baseline", base)] + [(f"{r['bytes']} bytes", r["point"]) for r in rows]
-    quiet = contention.quiet(points)
-    contention.report(points)
+    contention.report(ladder)
     print(f"evaluator start-up baseline: {base_wall:.3f} s wall, "
-          f"{base_cpu:.3f} s CPU (subtracted from `lex cpu s'), measured against "
-          f"{base.foreign:.2f} cores of other work")
+          f"{base_cpu:.3f} s CPU (subtracted from `lex cpu s'), cheapest of "
+          f"{REPEATS} rounds at {'/'.join(f'{c:.3f}' for c in base.costs)}")
     print(f"{'lines':>7} {'bytes':>8} {'tokens':>8} {'wall s':>8} {'lex cpu s':>9} "
-          f"{'tokens/s':>9} {'peak RSS':>10} {'busy cores':>11}")
+          f"{'tokens/s':>9} {'peak RSS':>10} {'per-round cpu s':>{ROUNDS_COL}}")
     for r in rows:
         print(f"{r['lines']:>7} {r['bytes']:>8} {r['tokens']:>8} {r['secs']:>8.2f} "
               f"{r['work']:>9.2f} {r['tokens'] / r['work']:>9.0f} {r['rss'] / 1024:>7.0f} MB "
-              f"{r['point'].foreign:>11.2f}")
+              f"{'/'.join(f'{c:.2f}' for c in r['point'].costs):>{ROUNDS_COL}}")
 
     span = rows[-1]["bytes"] / rows[0]["bytes"]
     if span < MIN_SPAN:
@@ -201,7 +219,7 @@ def main(argv):
     # measuring. That is the whole point: a pass measured under contention is
     # as untrustworthy as a failure, and the guard this replaced could only
     # ever downgrade a failure.
-    contention.require_quiet(points, "lexer")
+    contention.require_quiet(ladder, "lexer")
 
     if bad:
         for a, z, grew, slower in bad:

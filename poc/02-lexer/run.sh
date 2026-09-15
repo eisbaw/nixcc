@@ -51,9 +51,6 @@ for target in 1000 2000 4000 8000 16000; do
   done
   ladder+=("$out")
 done
-# Points 0, 1, 2 and 4: this ladder refuses to judge a span under 8x and the
-# four cheapest only span 7.2x, so it is the second-largest point that gets
-# dropped to keep these four cases cheap, not the largest.
 # The ladder imports its contention guard from poc/lib, a SIBLING of this
 # directory, and everything below runs COPIES of this directory elsewhere.
 root=$(cd "$poc/.." && pwd)
@@ -74,18 +71,18 @@ guard=$work/guard
 #
 # First, that the guard MEASURES. selftest.py puts a known number of busy cores
 # on this machine and checks they are seen, and that a core burnt by a child of
-# ours is not. Nothing else here can see that: the four cases below force the
+# ours is not. Nothing else here can see that: the cases below force the
 # guard's DECISION by moving its threshold, so with the measurement stubbed out
-# to report an idle machine all four still pass. Which is why the stub is then
-# applied, and has to be caught.
-python3 "$root/lib/selftest.py"
+# to report an idle machine every one of them still passes. Which is why the
+# stub is then applied, and has to be caught.
+python3 "$root/lib/selftest.py" "$work"
 
 rm -rf "$guard"; mkdir -p "$guard"; cp -r "$root/lib" "$guard/lib"
 sed -i 's|^    return (v\[0\].*|    return 0.0|' "$guard/lib/contention.py"
 grep -qx "    return 0.0" "$guard/lib/contention.py" || {
   echo "HARNESS FAULT: busy_cpu_seconds is not where this expects it in" >&2
   echo "contention.py, so the blinding mutation changed nothing" >&2; exit 1; }
-if python3 "$guard/lib/selftest.py" > "$work/blinded.log" 2>&1; then
+if python3 "$guard/lib/selftest.py" "$guard" > "$work/blinded.log" 2>&1; then
   echo "MUTATION NOT DETECTED: with the contention measurement stubbed out to" >&2
   echo "report a perfectly idle machine, the self-test still passed" >&2
   cat "$work/blinded.log" >&2; exit 1
@@ -116,57 +113,133 @@ echo "  guard: a blinded contention measurement is caught, not waved through"
 # machine, because what is under test here is the decision; the measurement is
 # what selftest.py just covered.
 #
-# $1 name, $2 threshold (cores), $3 both tolerances, $4 expected exit status,
-# $5 and $6 fragments that must appear, $7 one that must not.
+# Arguments are NAME=VALUE in any order, because there are eight of them and
+# three are optional; positionally this read as an unlabelled list of numbers
+# and quoted fragments that nobody could check against the call site.
+#
+#   id=       names this case's own copy of the tree
+#   desc=     what the case claims, echoed on success
+#   busy=     BUSY_FRACTION and BUSY_CEILING, in cores
+#   tol=      TOLERANCE and END_TO_END_TOLERANCE
+#   cliff=    MIN_BASELINE_RATIO. Every case sets it, and that is load-bearing:
+#             see below.
+#   status=   the exit status the ladder must give
+#   want=     a fragment the output must contain
+#   want2=    a second one, optional
+#   forbid=   one it must not contain
+#
+# WHY EVERY CASE PINS THE CLIFF. The ladder has two refusal paths: the one
+# below the tolerances, which prints `unjudged' per step, and the cliff at the
+# bottom, which refuses before any step is reached because the smallest point's
+# CPU did not clear the evaluator's start-up baseline. Which one a run took
+# used to depend on how loaded the machine really was -- these cases LIE about
+# the threshold, so a genuinely busy machine took the cliff while the case was
+# trying to test the other path. Four gate runs were lost to that being
+# reported as a harness failure.
+#
+# The fix is to remove the variable rather than to accept both answers. The
+# four contention cases set MIN_BASELINE_RATIO to 0.0, which makes the cliff
+# `work < 0' -- unreachable unless a ladder point costs less than an empty
+# eval -- so `unjudged' goes back to being required and those cases exercise
+# require_quiet every time. The two cliff cases set it to 1e6, which makes
+# every point too small on any machine, so the cliff is covered deterministically
+# and separately. Accepting either fragment in either place would have let one
+# case silently become a duplicate of the other with the suite still green.
 guard_case() {
-  rm -rf "$guard"; mkdir -p "$guard"
+  local id='' desc='' busy='' tol='' cliff='' status='' want='' want2='' forbid='' arg
+  for arg in "$@"; do
+    case "$arg" in
+      id=*) id=${arg#*=} ;;          desc=*) desc=${arg#*=} ;;
+      busy=*) busy=${arg#*=} ;;      tol=*) tol=${arg#*=} ;;
+      cliff=*) cliff=${arg#*=} ;;    status=*) status=${arg#*=} ;;
+      want=*) want=${arg#*=} ;;      want2=*) want2=${arg#*=} ;;
+      forbid=*) forbid=${arg#*=} ;;
+      *) echo "HARNESS FAULT: guard_case got \`$arg', which is not NAME=VALUE" >&2
+         exit 1 ;;
+    esac
+  done
+  for arg in id desc busy tol cliff status want forbid; do
+    [ -n "${!arg}" ] || {
+      echo "HARNESS FAULT: guard_case was not given $arg=" >&2; exit 1; }
+  done
+
+  local guard=$work/guard-$id
+  mkdir "$guard"                     # plain mkdir: a reused directory is a fault
   cp -r "$poc" "$guard/poc"; cp -r "$root/lib" "$guard/lib"
   # The real constants, in the real files, in a copy of the tree -- not a knob
   # added for the test, which could go stale while the checks kept passing.
-  sed -i "s|^BUSY_FRACTION = .*|BUSY_FRACTION = $2|;
-          s|^BUSY_CEILING = .*|BUSY_CEILING = $2|" "$guard/lib/contention.py"
-  sed -i "s|^TOLERANCE = .*|TOLERANCE = $3|;
-          s|^END_TO_END_TOLERANCE = .*|END_TO_END_TOLERANCE = $3|;
+  sed -i "s|^BUSY_FRACTION = .*|BUSY_FRACTION = $busy|;
+          s|^BUSY_CEILING = .*|BUSY_CEILING = $busy|" "$guard/lib/contention.py"
+  sed -i "s|^TOLERANCE = .*|TOLERANCE = $tol|;
+          s|^END_TO_END_TOLERANCE = .*|END_TO_END_TOLERANCE = $tol|;
+          s|^MIN_BASELINE_RATIO = .*|MIN_BASELINE_RATIO = $cliff|;
           s|^AC_SECONDS = .*|AC_SECONDS = 9999.0|" "$guard/poc/throughput.py"
-  for knob in "$guard/lib/contention.py:BUSY_FRACTION = $2" \
-              "$guard/lib/contention.py:BUSY_CEILING = $2" \
-              "$guard/poc/throughput.py:TOLERANCE = $3" \
-              "$guard/poc/throughput.py:END_TO_END_TOLERANCE = $3" \
+  local knob
+  for knob in "$guard/lib/contention.py:BUSY_FRACTION = $busy" \
+              "$guard/lib/contention.py:BUSY_CEILING = $busy" \
+              "$guard/poc/throughput.py:TOLERANCE = $tol" \
+              "$guard/poc/throughput.py:END_TO_END_TOLERANCE = $tol" \
+              "$guard/poc/throughput.py:MIN_BASELINE_RATIO = $cliff" \
               "$guard/poc/throughput.py:AC_SECONDS = 9999.0"; do
     grep -qx "${knob#*:}" "${knob%%:*}" || {
       echo "HARNESS FAULT: could not set \`${knob#*:}' in ${knob%%:*}." >&2
       echo "The file has changed shape, so this stage is no longer testing" >&2
       echo "the guard it claims to test" >&2; exit 1; }
   done
-  local out status=0
-  out=$(python3 "$guard/poc/throughput.py" "$guard/poc" "${ladder[0]}" "${ladder[1]}" "${ladder[2]}" "${ladder[4]}" 2>&1) || status=$?
-  [ "$status" = "$4" ] || {
-    echo "GUARD CASE '$1' exited $status, expected $4:" >&2
+  # Points 0, 1, 2 and 4. Not the four cheapest: this ladder refuses a span
+  # under 8x and the four cheapest only span 7.2x, so a case that dropped the
+  # largest point would exit on the span fault and its expected status would
+  # stop meaning anything.
+  local out rc=0
+  out=$(python3 "$guard/poc/throughput.py" "$guard/poc" \
+        "${ladder[0]}" "${ladder[1]}" "${ladder[2]}" "${ladder[4]}" 2>&1) || rc=$?
+  [ "$rc" = "$status" ] || {
+    echo "GUARD CASE '$desc' exited $rc, expected $status:" >&2
     echo "$out" >&2; exit 1; }
-  for want in "$5" "$6"; do
-    [ -n "$want" ] || continue
+  local frag
+  for frag in "$want" "$want2"; do
+    [ -n "$frag" ] || continue
     case "$out" in
-      *"$want"*) ;;
-      *) echo "GUARD CASE '$1' never said \"$want\":" >&2
+      *"$frag"*) ;;
+      *) echo "GUARD CASE '$desc' never said \"$frag\":" >&2
          echo "$out" >&2; exit 1 ;;
     esac
   done
   case "$out" in
-    *"$7"*) echo "GUARD CASE '$1' said \"$7\", which is the one thing it must not:" >&2
-            echo "$out" >&2; exit 1 ;;
+    *"$forbid"*) echo "GUARD CASE '$desc' said \"$forbid\", which is the one thing it must not:" >&2
+                 echo "$out" >&2; exit 1 ;;
   esac
-  echo "  guard: $1"
+  echo "  guard: $desc"
 }
 
-guard_case "a reading that fails still FAILs when contention is discounted" \
-           1000.0 0.01 1 "but cost" "SUPERLINEAR" "NO VERDICT"
-guard_case "a reading that fails under contention is no verdict, not a FAIL" \
-           -1.0 0.01 3 "NO VERDICT" "unjudged" "but cost"
-guard_case "a reading that passes still PASSes when contention is discounted" \
-           1000.0 99.0 0 "PASS:" "" "NO VERDICT"
-guard_case "a reading that passes under contention is no verdict, not a PASS" \
-           -1.0 99.0 3 "NO VERDICT" "unjudged" "PASS:"
-echo "the contention guard measures, and refuses a verdict in both directions"
+guard_case id=fail-judged busy=1000.0 tol=0.01 cliff=0.0 status=1 \
+  want="but cost" want2="SUPERLINEAR" forbid="NO VERDICT" \
+  desc="a reading that fails still FAILs when contention is discounted"
+guard_case id=fail-refused busy=-1.0 tol=0.01 cliff=0.0 status=3 \
+  want="NO VERDICT" want2="unjudged" forbid="but cost" \
+  desc="a reading that fails under contention is no verdict, not a FAIL"
+guard_case id=pass-judged busy=1000.0 tol=99.0 cliff=0.0 status=0 \
+  want="PASS:" forbid="NO VERDICT" \
+  desc="a reading that passes still PASSes when contention is discounted"
+guard_case id=pass-refused busy=-1.0 tol=99.0 cliff=0.0 status=3 \
+  want="NO VERDICT" want2="unjudged" forbid="PASS:" \
+  desc="a reading that passes under contention is no verdict, not a PASS"
+
+# And the cliff itself, forced rather than waited for, because the complaint
+# this answers was that its two causes were reported as one. Which cause the
+# ladder names has to depend on whether the machine counted as busy, and each
+# case forbids the other's fragment, so the two are told apart rather than
+# merely both mentioned.
+guard_case id=cliff-quiet busy=1000.0 tol=99.0 cliff=1000000.0 status=2 \
+  want="too small to measure" want2="wants a bigger smallest point" \
+  forbid="NO VERDICT" \
+  desc="a ladder point too small to measure on a quiet machine is a harness fault"
+guard_case id=cliff-busy busy=-1.0 tol=99.0 cliff=1000000.0 status=3 \
+  want="NO VERDICT" want2="cannot be told apart" \
+  forbid="wants a bigger smallest point" \
+  desc="the same point on a busy machine says it cannot tell the two apart"
+echo "the contention guard measures, refuses a verdict in both directions, and"
+echo "names which of the two things it refused for"
 
 
 # --- 4. mutation test ---------------------------------------------------

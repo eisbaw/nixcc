@@ -64,8 +64,13 @@ def main(argv):
             f'd = import {poc}/demo.nix {{ inherit cpu; }}; '
             f'in toString d.report.steps')
 
-    base = contention.best([nix, "eval", "--impure", "--raw", "--expr", '""'], REPEATS)
-    run = contention.best([nix, "eval", "--impure", "--raw", "--expr", expr], REPEATS)
+    # Round-robin, like the three linearity ladders, even though nothing here
+    # is a ratio between two sizes: the baseline is still subtracted from the
+    # measurement, and interleaving is what makes the two comparable.
+    measured = contention.rounds(
+        [contention.baseline_argv(nix),
+         [nix, "eval", "--impure", "--raw", "--expr", expr]], REPEATS)
+    base, run = measured.points
 
     steps = int(run.out.strip())
     if steps < MIN_STEPS:
@@ -76,9 +81,8 @@ def main(argv):
     net_cpu = run.cpu - base.cpu
     per_step = net_rss / steps
 
-    points = [("baseline", base), ("demo", run)]
     print(f"machine: {contention.cores()} cores; other work occupied up to "
-          f"{contention.busiest(points):.2f} of them while measuring "
+          f"{contention.busiest(measured):.2f} of them while measuring "
           f"(no verdict here depends on that)")
     print(f"  evaluator baseline: {base.cpu:.2f} s CPU, {base.rss / 1024:.0f} MB peak RSS")
     print(f"  closed loop:        {run.cpu:.2f} s CPU, {run.rss / 1024:.0f} MB peak RSS, "

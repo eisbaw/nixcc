@@ -20,9 +20,12 @@ Method follows poc/03-matcher/scale.py, which follows poc/02-lexer's, and the
 details there were earned the hard way: linearity is judged on the child's own
 CPU time rather than the wall clock; the evaluator's fixed start-up cost is
 measured and subtracted; every adjacent step is checked and not only the
-endpoints; and contention is measured around every point, with NO verdict
-rendered in either direction when the machine was busy. That guard lives in
-poc/lib/contention.py and is shared rather than copied.
+endpoints; contention is measured around the ladder, with NO verdict rendered
+in either direction when the machine was busy; and the points are measured
+round-robin rather than one at a time, because a ladder walked in size order
+measures its largest point last, on the warmest machine, every time. That
+guard and that loop live in poc/lib/contention.py and are shared rather than
+copied.
 """
 import pathlib
 import shutil
@@ -49,6 +52,11 @@ REPEATS = 5
 # not raising.
 TOLERANCE = 1.45
 END_TO_END_TOLERANCE = 1.6
+# Width of the per-round CPU column: REPEATS values of up to five characters
+# (`12.34') plus the slashes between them. Computed rather than written down,
+# because at REPEATS = 5 a hardcoded 24 was exactly saturated and the first
+# ladder point to cross 10 s CPU would have pushed the table out of line.
+ROUNDS_COL = REPEATS * 5 + (REPEATS - 1)
 MIN_POINTS = 4
 MIN_SPAN = 6.0
 MIN_BASELINE_RATIO = 3.0
@@ -73,15 +81,16 @@ def main(argv):
     nix = shutil.which("nix")
     if nix is None:
         fault("no `nix' on PATH -- run this inside nix develop")
-    base = contention.best([nix, "eval", "--impure", "--raw", "--expr", '""'], REPEATS)
+    # Baseline and points measured together, round-robin, for the reason
+    # poc/lib/contention.py's MEASUREMENT ORDER section gives: a ladder walked
+    # in size order measures its largest point last, on the warmest machine,
+    # every time.
+    ladder, base, measured = contention.ladder(nix, poc, files, REPEATS)
     base_cpu, base_rss = base.cpu, base.rss
+    quiet = contention.quiet(ladder)
 
     rows = []
-    for f in files:
-        point = contention.best([
-            nix, "eval", "--impure", "--raw", "--expr",
-            f'import {poc}/bench.nix {{ path = "{f}"; }}',
-        ], REPEATS)
+    for f, point in zip(files, measured, strict=True):
         parts = point.out.split()
         if len(parts) != 4:
             fault(f"bench.nix printed {point.out!r} for {f}, expected four numbers")
@@ -99,14 +108,12 @@ def main(argv):
             fault(f"{f} assembled {items} items into only {outbytes} bytes; "
                   f"items are being dropped rather than assembled")
         work = point.cpu - base_cpu
+        # A busy machine inflates the baseline, which shrinks `work' and
+        # produces this same reading from a sound ladder -- so the shared guard
+        # says which of the two it is rather than blaming either on its own.
         if work < base_cpu * MIN_BASELINE_RATIO:
-            # Contention inflates the baseline, which shrinks `work' -- so ask
-            # the guard first, or a busy machine gets told its ladder points
-            # are too small when the truth is that it was busy.
-            contention.require_quiet([("baseline", base), (f"{items} items", point)],
-                                     "assembler")
-            fault(f"{f} cost {point.cpu:.3f} s CPU against a {base_cpu:.3f} s baseline; "
-                  f"this ladder point is too small to measure")
+            contention.too_small(ladder, f"{items} items", point, base,
+                                 MIN_BASELINE_RATIO, "assembler")
         if point.rss < base_rss * MIN_RSS_RATIO:
             fault(f"{f} peaked at {point.rss / 1024:.0f} MB against a "
                   f"{base_rss / 1024:.0f} MB baseline; subtracting one from the other "
@@ -116,18 +123,17 @@ def main(argv):
                      "net": max(point.rss - base_rss, 0), "point": point})
 
     rows.sort(key=lambda r: r["items"])
-    points = [("baseline", base)] + [(f"{r['items']} items", r["point"]) for r in rows]
-    quiet = contention.quiet(points)
-    contention.report(points)
+    contention.report(ladder)
     print(f"evaluator start-up baseline: {base_cpu:.3f} s CPU, {base_rss / 1024:.0f} MB RSS "
-          f"(both subtracted), measured against {base.foreign:.2f} cores of other work")
+          f"(both subtracted), cheapest of {REPEATS} rounds at "
+          f"{'/'.join(f'{c:.3f}' for c in base.costs)}")
     print(f"{'items':>8} {'symbols':>8} {'out B':>8} {'wall s':>8} {'asm cpu s':>10} "
-          f"{'items/s':>9} {'peak RSS':>11} {'kB/item':>8} {'busy cores':>11}")
+          f"{'items/s':>9} {'peak RSS':>11} {'kB/item':>8} {'per-round cpu s':>{ROUNDS_COL}}")
     for r in rows:
         print(f"{r['items']:>8} {r['symbols']:>8} {r['out']:>8} {r['secs']:>8.2f} "
               f"{r['work']:>10.2f} {r['items'] / r['work']:>9.0f} "
               f"{r['rss'] / 1024:>8.0f} MB {r['net'] / r['items']:>8.1f} "
-              f"{r['point'].foreign:>11.2f}")
+              f"{'/'.join(f'{c:.2f}' for c in r['point'].costs):>{ROUNDS_COL}}")
 
     span = rows[-1]["items"] / rows[0]["items"]
     if span < MIN_SPAN:
@@ -168,7 +174,7 @@ def main(argv):
 
     # Everything below compares one run against another, so none of it may be
     # judged on a machine that was busy while measuring.
-    contention.require_quiet(points, "assembler")
+    contention.require_quiet(ladder, "assembler")
 
     if bad:
         for a, z, grew, slower in bad:

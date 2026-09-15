@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
 """Prove that contention.py MEASURES, not just that it decides.
 
-The four cases each run.sh runs against its ladder move the threshold to force
-the decision one way or the other. None of them can see a broken measurement:
-stub busy_cpu_seconds() out to return 0.0 and all four still pass, because
-they never produce contention -- they declare it. That is the fail-open half
-of the guard, and this is what covers it.
+The guard cases each ladder's run.sh runs move the threshold to force the
+decision one way or the other. None of them can see a broken measurement: stub
+busy_cpu_seconds() out to return 0.0 and every one of them still passes,
+because they never produce contention -- they declare it. That is the
+fail-open half of the guard, and this is what covers it.
 
-Two checks, each for a defect the other cannot see.
+Three checks, each for a defect the others cannot see.
+
+  0. rounds() really goes round-robin. This one is structural rather than
+     statistical, so it is first: it needs no free cores and still runs on a
+     machine too busy for the other two. It matters because measurement ORDER
+     is what four gate runs were lost to -- a ladder walked in size order
+     measures its largest point last, on the warmest machine, every time --
+     and "we interleave now" is exactly the kind of claim that keeps passing
+     after somebody writes the loop back the other way for readability. So the
+     jobs record when they ran and the order is asserted, including the
+     reversal on alternate rounds.
 
   1. Load that IS put on the machine is seen. Differential, not absolute: this
      machine is carrying whatever else it is carrying and the only thing that
@@ -26,7 +36,13 @@ Two checks, each for a defect the other cannot see.
      and the defect has to stand well clear of it.
 
 Deliberately not a test of the threshold, of the ladders, or of nix: it spawns
-no evaluator and takes about fifteen seconds.
+no evaluator and takes about twenty seconds.
+
+    usage: selftest.py SCRATCH_DIR
+
+SCRATCH_DIR is somewhere check 0's jobs may append a line to a file. It is the
+caller's, and is neither created nor removed here: whoever owns the directory
+owns its lifetime.
 """
 import os
 import pathlib
@@ -79,17 +95,60 @@ def fail(msg):
 
 def idle_window():
     """Cores of other work, measured over a window in which we do nothing."""
-    return contention.best([SLEEPER, str(contention.MIN_WINDOW)], 1).foreign
+    return contention.busiest(
+        contention.rounds([[SLEEPER, str(contention.MIN_WINDOW)]], 1))
 
 
 def busy_window():
     """The same, over a window in which children of ours burn OWN cores."""
-    return contention.best(
-        [sys.executable, "-c", FORK % (SPIN % contention.MIN_WINDOW, OWN)], 1)
+    return contention.rounds(
+        [[sys.executable, "-c", FORK % (SPIN % contention.MIN_WINDOW, OWN)]], 1)
 
 
 if not os.access(SLEEPER, os.X_OK):
     contention.fault(f"no {SLEEPER} to measure an idle window with")
+if len(sys.argv) != 2:
+    contention.fault("usage: selftest.py SCRATCH_DIR")
+scratch = pathlib.Path(sys.argv[1])
+if not scratch.is_dir():
+    contention.fault(f"{scratch} is not a directory to write check 0's trace into")
+
+# --- 0. the rounds really are interleaved ---------------------------------
+# Three jobs that do nothing but name themselves, so the trace file ends up
+# holding the order they actually ran in. Three rather than two because two
+# cannot tell a reversal apart from a rotation; two rounds rather than more
+# because rounds() pads every round out to MIN_WINDOW and two are enough to
+# separate blocked order, no alternation, and alternation the wrong way round.
+# The file is named after this process and must not already exist: appending to
+# somebody else's trace would read as a wrong order, and truncating one is the
+# shape of cleanup this harness is getting rid of.
+ORDER_ROUNDS = 2
+NAMES = ["alpha", "bravo", "charlie"]
+trace = scratch / f"rounds-order-{os.getpid()}.txt"
+if trace.exists():
+    contention.fault(f"{trace} already exists, so check 0 cannot tell what it "
+                     f"wrote from what was already there")
+# Python rather than `sh -c', so that the caller's directory reaches the job as
+# a quoted literal instead of as shell syntax: a scratch path with a space in
+# it would otherwise send the append somewhere else and this check would report
+# a wrong ORDER for what is really a wrong PATH.
+contention.rounds(
+    [[sys.executable, "-c",
+      f"open({str(trace)!r}, 'a').write({n!r} + chr(10))"] for n in NAMES],
+    ORDER_ROUNDS)
+# Each job ran ORDER_ROUNDS times, so the trace holds that many rounds' worth.
+ran = trace.read_text().split()
+want = []
+for r in range(ORDER_ROUNDS):
+    want.extend(reversed(NAMES) if r % 2 else NAMES)
+print(f"contention self-test: {len(NAMES)} jobs over {ORDER_ROUNDS} rounds ran "
+      f"as {' '.join(ran)}")
+if ran != want:
+    fail(f"rounds() ran its jobs as {' '.join(ran)}, wanted {' '.join(want)}. "
+         f"It is measuring one job at a time, or not alternating the order "
+         f"within a round -- which puts the largest ladder point last on the "
+         f"warmest machine every time, and that is what made the lexer ladder "
+         f"read SUPERLINEAR on a lexer nobody had touched")
 
 free = contention.cores() - idle_window()
 if free < LOAD + 2:
@@ -127,19 +186,20 @@ if during < LOAD * LOW:
          f"is not reporting this machine's load at all")
 
 # --- 2. load that we put on the machine is not ----------------------------
-ours = busy_window()
+ladder = busy_window()
+ours, seen, window = ladder.points[0], contention.busiest(ladder), ladder.windows[0]
 alone = idle_window()
 print(f"contention self-test: {alone:.2f} cores of other work around an idle "
-      f"child, {ours.foreign:.2f} around ours burning {ours.cpu:.1f} CPU "
-      f"seconds in a {ours.window:.1f} s window")
+      f"child, {seen:.2f} around ours burning {ours.cpu:.1f} CPU "
+      f"seconds in a {window:.1f} s window")
 if ours.cpu < OWN * contention.MIN_WINDOW * 0.75:
     contention.fault(
         f"the child meant to burn {OWN} cores only used {ours.cpu:.1f} CPU "
-        f"seconds over {ours.window:.1f} s, so this check has nothing to "
+        f"seconds over {window:.1f} s, so this check has nothing to "
         f"subtract and proves nothing")
-if ours.foreign - alone > OWN_CPU_SLACK:
+if seen - alone > OWN_CPU_SLACK:
     fail(f"a child of ours burning {OWN} cores moved the reading by "
-         f"{ours.foreign - alone:.2f}; the guard is counting its own "
+         f"{seen - alone:.2f}; the guard is counting its own "
          f"measurement as somebody else's load, which would refuse every "
          f"ladder forever")
 print(f"the contention measurement sees other work and not its own")

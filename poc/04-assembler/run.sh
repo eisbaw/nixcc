@@ -441,7 +441,7 @@ echo "${#names[@]} mutations, each detected with its own failure"
 # the point of poc/lib -- but the self-test is cheap and catches a guard that
 # has stopped seeing load at all, which would silently make this ladder's
 # verdict meaningless.
-python3 "$root/lib/selftest.py"
+python3 "$root/lib/selftest.py" "$work"
 
 status=0
 python3 "$poc/scale.py" "$poc" "${ladder[@]}" || status=$?
