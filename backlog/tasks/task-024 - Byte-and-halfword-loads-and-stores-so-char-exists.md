@@ -4,7 +4,7 @@ title: 'Byte and halfword loads and stores, so char exists'
 status: Done
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 09:43'
+updated_date: '2026-09-15 15:49'
 labels:
   - poc
   - matcher
@@ -27,7 +27,7 @@ Needs the CVT opcodes as well as the loads and stores: lcc inserts CVTCI4/CVTIC4
 - [x] #1 A C function that walks a char array, reads a byte and stores a byte compiles and runs in the Nix emulator with the right result
 - [x] #2 Halfwords too, or the rule table says in one place why they are out of scope
 - [x] #3 poc/05-loop's demo can build its message a byte at a time
-- [ ] #4 Signed and unsigned narrow loads select lb/lh versus lbu/lhu per the IR opcode (INDIRI1/INDIRU1), verified by inspecting the emitted instruction rather than by a differing answer -- see the note below for why no differing answer exists yet
+- [x] #4 Signed and unsigned narrow loads select lb/lh versus lbu/lhu per the IR opcode (INDIRI1/INDIRU1), verified by inspecting the emitted instruction rather than by a differing answer -- see the note below for why no differing answer exists yet
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -73,6 +73,26 @@ The criterion asked for lb vs lbu 'checked by a case whose answer differs'. No s
 So the criterion was unsatisfiable, not merely unmet, and it is replaced with one that checks the selection directly. Two implementers have now declined to rewrite a criterion to fit what they built, and both times they were right and the criterion was mine.
 
 This is also the same fact as the reported waste: the load extends and then the conversion extends again, which is 23 of chars.c's 91 instructions. Fusing them is task-033, and the moment they fuse the distinction becomes observable -- so the 'answer differs' test belongs there, where it can actually be written. Carried onto task-033.
+
+ORCHESTRATOR: the replacement criterion is now verified and ticked, and the reason it was briefly unticked was my error -- removing the old AC renumbered the list, so my --check-ac hit the wrong index and marked the task Done with an unchecked criterion. That is the exact defect flagged on task-001 early in this project: Done with criteria unchecked, so nothing distinguishes done from not-done.
+
+Rather than tick it on the rebound I verified it, since I wrote the criterion after the fact and nobody had checked it:
+
+  signed char   -> INDIRI1 -> lb
+  unsigned char -> INDIRU1 -> lbu
+  short         -> INDIRI2 -> lh
+
+Selection is correct per IR opcode, confirmed by inspecting emitted assembly.
+
+The same dump also shows the redundancy concretely, for whoever picks up task-033:
+
+  lb   s1,0(s1)
+  slli s1,s1,24
+  srai s1,s1,24
+
+The load already sign-extends; the shift pair is CVII4 re-normalising a register that was already normalised. That is simultaneously the waste task-033 targets and the mechanism that makes lb and lbu indistinguishable today -- swap them and the shifts erase the difference. Fusing the load with its conversion removes the pair AND makes the distinction observable, which is why the withdrawn 'answer differs' test belongs there.
+
+Checked for a miscompile while I was in there and found none: mv a0,s1 lands the result before the epilogue restores s1.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
