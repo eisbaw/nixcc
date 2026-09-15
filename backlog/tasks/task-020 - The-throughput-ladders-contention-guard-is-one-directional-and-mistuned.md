@@ -4,7 +4,7 @@ title: The throughput ladders' contention guard is one-directional and mistuned
 status: Done
 assignee: []
 created_date: '2026-09-14 21:31'
-updated_date: '2026-09-15 00:38'
+updated_date: '2026-09-15 05:16'
 labels:
   - poc
   - testing
@@ -78,4 +78,10 @@ GOTCHAS, in the order they cost time.
 NOT FIXED, deliberately. iowait counts as idle, so a machine saturating the memory bus through writeback reads quiet; counting it would be conservative but iowait is a per-CPU heuristic that is not monotonic, so it is recorded as the known hole rather than fed into a threshold. And there is still no Python linter in the dev shell: statix, deadnix and shellcheck cover Nix and shell, nothing covers the four .py files. ruff would have caught the unused imports this change churned.
 
 ACCEPTANCE EVIDENCE. Ten consecutive 'just e2e' runs green, 01:54 to 02:36, each rendering both ladders' verdicts (lexer PASS over a 13.9x span, matcher PASS over 8.1x, 10 and 22 mutations detected, lint clean, 3 PoCs passed), measured against 2.10 to 3.45 cores of other work. An earlier batch of six, while another project's jobs were on the machine, went four green and two NO VERDICT at 3.82 and 4.09 cores -- the guard being conservative rather than wrong, since the distortion measured at that load is 1.05 to 1.19 against a 1.35 tolerance.
+
+ORCHESTRATOR: the runaway is dead. PID 2585897, traceviz_dump.sh from the retimer-sim project, had been at 98.5% CPU for 4 days 7 hours, orphaned to PPID 1 with its originating session long gone. Killed with the user's explicit authorisation on 2026-09-15; load average fell from the 9-20 range to 3.62/4.34/4.04 immediately.
+
+This matters for the threshold recorded above. BUSY_FRACTION was set to 0.25 (3.5 of 14 cores) against a machine that permanently carried a full core of unrelated work, and the 17-run measurement table behind that choice was taken under the same condition. The threshold is not wrong -- it was deliberately set below the observed distortion boundary of 4.1 cores, and that reasoning holds regardless -- but the 'roughly one gate run in three refuses' figure was measured in a world that no longer exists and should be expected to improve. Do not retune on this basis without re-measuring; the guard failing safe costs a re-run, while a wrong verdict costs a wrong decision.
+
+The iowait hole is unaffected: a writeback-saturated machine still reads quiet.
 <!-- SECTION:NOTES:END -->

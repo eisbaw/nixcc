@@ -4,7 +4,7 @@ title: 'A global at a constant offset is refused, not compiled'
 status: In Progress
 assignee: []
 created_date: '2026-09-15 02:02'
-updated_date: '2026-09-15 04:47'
+updated_date: '2026-09-15 05:43'
 labels:
   - poc
   - matcher
@@ -25,9 +25,9 @@ Found by TASK-004.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A C program that reads and writes a global array at a constant index compiles, assembles and runs in the Nix emulator with the right value
-- [ ] #2 The offset is resolved from the symbol table at layout time, not hand-computed
-- [ ] #3 A must-fail case covers a symbol expression whose base is undefined, with a diagnostic that names the base rather than the whole expression
+- [x] #1 A C program that reads and writes a global array at a constant index compiles, assembles and runs in the Nix emulator with the right value
+- [x] #2 The offset is resolved from the symbol table at layout time, not hand-computed
+- [x] #3 A must-fail case covers a symbol expression whose base is undefined, with a diagnostic that names the base rather than the whole expression
 - [ ] #4 poc/05-loop/hello.c can take its buffer as a global again, and the comment pointing at this task goes away
 <!-- AC:END -->
 
@@ -40,4 +40,23 @@ Plan (implementer):
 - poc/04-assembler/parse.nix: widen the `.word'/.half/.byte operand pattern so a symbol expression reaches the assembler instead of being rejected as "neither a number nor a symbol".
 - Diagnostic: an undefined BASE is named as the base, not as the whole expression. must-fail case + control, message pinned by messages.sh.
 - Differential: put a symbol expression in progs/ so GNU as assembles the same bytes; pin its addresses in cases.nix; add a mutation that breaks the offset and must be caught.
+
+IMPLEMENTED in 5f954f6. Gate: `nix develop --command just e2e' exit 0 -- 5 PoCs passed, lint clean, both ladders PASS.
+
+WHERE THE FIX LIVES. poc/04-assembler/asm.nix only; poc/03-matcher/rules.nix and emit.nix are unchanged, which is the evidence that the seam is where the task said it was. One `lookup' serves la, call, a branch target and .word, so `msg+8' resolves the same way on all four paths.
+
+THE AMBIGUITY DECISION, which is not in the task and matters. An operand can be read as a whole symbol or as base+offset. The first draft tried the whole operand first and picked; review pointed out that when both readings answer and disagree -- labels `f' and `f-1' both defined -- that is the only silent wrong answer in an assembler that otherwise refuses everything, and that the precedence was written as a list mainly so a mutation could reverse it. It now REFUSES the ambiguity. Order stopped being semantics, the list went away, and so did the mutation that only existed to test it.
+
+SPELLING ACCEPTED: base+N and base-N, N plain decimal. GNU as also takes sym+0x8, sym + 8, sym+4+4 and reads a leading zero as OCTAL. Each is refused by name rather than resolved differently -- filed as task-030, which also carries the duplicate integer parser (parse.nix's parseInt against asm.nix's decimalOf).
+
+TWO BUGS FOUND BY REVIEW AND FIXED HERE.
+1. branchOff/jumpOff built their diagnostic from `symbols.${sym}', which has no key for an expression, so an out-of-range `beq sym+8' died with `attribute missing'. poc/05-loop/check.nix had the identical expression and is about to reach it when hello.c takes its buffer back as a global.
+2. MEASURED, and a carry-forward for every must-fail suite in this tree: builtins.tryEval does NOT catch `attribute missing'. `builtins.tryEval (builtins.getAttr "nope" {})' aborts the evaluation rather than returning success=false. So that error class escapes must-fail.nix entirely -- it is not reported as a wrongly-accepted case, it kills the run. Any guard whose failure mode is a missing attribute is untested by tryEval and needs messages.sh or a check.nix pin.
+
+GOTCHAS.
+- The linker relaxes `la rd,sym' to `addi rd,gp,off' when sym is within 2 KB of __global_pointer$, and none of poc/03-matcher/drivers/*.s loads gp. ir/gsym.c's `la s1,tbl+4' became `addi s1,gp,-2044' and the store faulted in the emulator. -mno-relax/--no-relax in run.sh is the smaller lie; task-031 is the fix. The existing corpus escaped only by luck -- expr's `la s1,g' lands outside the window.
+- `nix flake check' reads the GIT tree, so a new file must be `git add'ed before the gate will see it. Cost one full e2e run.
+- lcc folds a string literal's subscript into an expression over a NUMERIC base, `ADDRGP4 2+4'. emit.nix's isLabelName does not recognise it, so it reaches the assembler unmangled and is refused. Loud, not silent, but it is the spelling every string literal produces -- filed as task-032, and it blocks task-028.
+
+MUTATION COVERAGE, honestly. poc/04-assembler is at 28 mutations. Seven are new and aimed at this change: displacement dropped, sign inverted, feature removed entirely, ambiguity resolved instead of refused, leading zero accepted, the base not named in the diagnostic, and the .word operand class narrowed back. What has NO aimed mutation is `symexprWords', the fourteen pinned encodings: every mutation that moves a word also moves an address in `symbolExpressions', which check.nix reports first and deliberately so. That table is carried by the byte-for-byte differential against GNU as and by the address pins. Said out loud in run.sh rather than papered over.
 <!-- SECTION:NOTES:END -->
