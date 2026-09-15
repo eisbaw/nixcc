@@ -4,10 +4,12 @@ title: A call whose result is discarded has no rule
 status: To Do
 assignee: []
 created_date: '2026-09-15 02:03'
+updated_date: '2026-09-15 04:40'
 labels:
   - poc
   - matcher
 dependencies: []
+priority: high
 ---
 
 ## Description

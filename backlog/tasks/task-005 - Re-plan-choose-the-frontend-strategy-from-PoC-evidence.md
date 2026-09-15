@@ -1,10 +1,10 @@
 ---
 id: TASK-005
 title: 'Re-plan: choose the frontend strategy from PoC evidence'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-14 18:20'
-updated_date: '2026-09-15 02:45'
+updated_date: '2026-09-15 04:41'
 labels:
   - planning
   - wave-boundary
@@ -27,13 +27,13 @@ PoC-2 throughput is the main input. If Nix is fast enough, full-frontend-first i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Compile-time estimate for a 1000-line C file recorded, derived from PoC-2 measurements
-- [ ] #2 Explicit go/no-go on the full-C89-frontend-first strategy, with the evidence that decided it
-- [ ] #3 If go: the frontend port is filed as tasks decomposed along lcc's module boundaries (lex, decl, expr, stmt, types, dag, simp, gen)
+- [x] #1 Compile-time estimate for a 1000-line C file recorded, derived from PoC-2 measurements
+- [x] #2 Explicit go/no-go on the full-C89-frontend-first strategy, with the evidence that decided it
+- [x] #3 If go: the frontend port is filed as tasks decomposed along lcc's module boundaries (lex, decl, expr, stmt, types, dag, simp, gen)
 - [ ] #4 If no-go: the alternative strategy is filed as tasks instead, and the reason full-frontend-first was rejected is written down
-- [ ] #5 Differential harness against 'rcc -target=symbolic' is filed or built, since it gates every frontend task
-- [ ] #6 Decision recorded in backlog as a decision entry, not only in a task note
-- [ ] #7 Go/no-go weighs all four inputs, not throughput alone: oracle fidelity, accumulator linearity, the plan for lcc/cpp, and the plan for gen.c/dag.c/simp.c which are rewrites rather than ports
+- [x] #5 Differential harness against 'rcc -target=symbolic' is filed or built, since it gates every frontend task
+- [x] #6 Decision recorded in backlog as a decision entry, not only in a task note
+- [x] #7 Go/no-go weighs all four inputs, not throughput alone: oracle fidelity, accumulator linearity, the plan for lcc/cpp, and the plan for gen.c/dag.c/simp.c which are rewrites rather than ports
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -135,4 +135,28 @@ Two smaller findings with wider reach:
     demo missing a whole unit reported "fewer items than expected" instead of
     the assembler's own "nothing in this unit defines `__divsi3'". Order
     floors by what they can PRE-EMPT, not only by what they protect.
+
+ORCHESTRATOR, closing the wave boundary.
+
+AC#1, the compile-time estimate for a 1000-line C file. This is an EXTRAPOLATION from measured per-stage costs, not a measurement, and the assumption it rests on is stated because it is the one that could be wrong: that all four stages hold their values live simultaneously. If they can be streamed, the memory figure drops; nothing has yet demonstrated they can.
+
+Measured inputs: lexer 4 kB/token at 47000 tokens/s (1143 lines = 10222 tokens, 82 MB, 0.29 s); matcher 8.5 kB/DAG node at ~21000 nodes/s; assembler 8.5 kB/item at ~20000 items/s. All net of the evaluator's own 36 MB.
+
+For 1000 lines: roughly 9000 tokens, somewhere near 5000-10000 DAG nodes, and 10000-20000 assembler items. Time is not the problem -- the measured stages sum to around 2 seconds, with the parser unmeasured because it does not exist. Memory lands somewhere around 250-400 MB with everything live. Both are comfortably inside the 10 s / 2 GB thresholds task-002 pre-committed to.
+
+The honest caveat: the parser and DAG builder are the two stages with no measurement at all, and they are exactly the stages that hold the most structure live. The estimate should be re-derived after slice 1 rather than trusted.
+
+AC#2, the go/no-go. Full-frontend-first is REJECTED, and the evidence that decided it was not available when the milestone was chosen. Writing forty lines of ordinary C for the closed-loop demo hit three backend refusals: a global at a constant offset, any byte load or store, and a discarded call result. A complete C89 frontend would emit IR the rule table refuses today. The decision is recorded as decision-007 and the user chose it after seeing the evidence.
+
+AC#4 is not applicable and is left unchecked rather than ticked: it covers the no-go branch, and this was a no-go on the strategy, not on the project. The tasks filed are slices, not an alternative strategy.
+
+Gate tier: this was orchestrator planning work, not an implementer cycle. Nothing was gated because nothing was implemented.
+
+One thing this re-plan should NOT paper over: task-020's forward-carried note is right that a NO VERDICT is an absent measurement rather than a result. Two of the runs behind these numbers were NO VERDICT, and one was a genuine SUPERLINEAR on 02-lexer at 2.64 cores of foreign load -- under the guard's 3.50 threshold, so it rendered a verdict it arguably should not have. That is the iowait hole the module records. The linearity claims here are sound but not unqualified.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Wave boundary closed. Full-frontend-first rejected on measured evidence; frontend and backend now grow together in vertical slices, each ending with real C compiling and running. Recorded as decision-007, filed as tasks 027-029 with the three backend gaps (023-025) promoted ahead of them because without char there is no string handling worth the name.
+<!-- SECTION:FINAL_SUMMARY:END -->

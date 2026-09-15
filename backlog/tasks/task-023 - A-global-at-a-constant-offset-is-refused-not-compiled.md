@@ -4,11 +4,13 @@ title: 'A global at a constant offset is refused, not compiled'
 status: To Do
 assignee: []
 created_date: '2026-09-15 02:02'
+updated_date: '2026-09-15 04:40'
 labels:
   - poc
   - matcher
   - assembler
 dependencies: []
+priority: high
 ---
 
 ## Description
