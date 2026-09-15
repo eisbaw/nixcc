@@ -1,10 +1,10 @@
 ---
 id: TASK-023
 title: 'A global at a constant offset is refused, not compiled'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 02:02'
-updated_date: '2026-09-15 05:43'
+updated_date: '2026-09-15 09:30'
 labels:
   - poc
   - matcher
@@ -28,7 +28,7 @@ Found by TASK-004.
 - [x] #1 A C program that reads and writes a global array at a constant index compiles, assembles and runs in the Nix emulator with the right value
 - [x] #2 The offset is resolved from the symbol table at layout time, not hand-computed
 - [x] #3 A must-fail case covers a symbol expression whose base is undefined, with a diagnostic that names the base rather than the whole expression
-- [ ] #4 poc/05-loop/hello.c can take its buffer as a global again, and the comment pointing at this task goes away
+- [x] #4 poc/05-loop/hello.c can take its buffer as a global again, and the comment pointing at this task goes away
 <!-- AC:END -->
 
 ## Implementation Notes

@@ -4,7 +4,7 @@ title: 'Byte and halfword loads and stores, so char exists'
 status: In Progress
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 07:53'
+updated_date: '2026-09-15 09:29'
 labels:
   - poc
   - matcher
@@ -27,7 +27,7 @@ Needs the CVT opcodes as well as the loads and stores: lcc inserts CVTCI4/CVTIC4
 - [x] #1 A C function that walks a char array, reads a byte and stores a byte compiles and runs in the Nix emulator with the right result
 - [ ] #2 Signed and unsigned char are distinguished: lb against lbu, checked by a case whose answer differs between them
 - [x] #3 Halfwords too, or the rule table says in one place why they are out of scope
-- [ ] #4 poc/05-loop's demo can build its message a byte at a time
+- [x] #4 poc/05-loop's demo can build its message a byte at a time
 <!-- AC:END -->
 
 ## Implementation Notes

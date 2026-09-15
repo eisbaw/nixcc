@@ -1,10 +1,10 @@
 ---
 id: TASK-025
 title: A call whose result is discarded has no rule
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 08:45'
+updated_date: '2026-09-15 09:30'
 labels:
   - poc
   - matcher
