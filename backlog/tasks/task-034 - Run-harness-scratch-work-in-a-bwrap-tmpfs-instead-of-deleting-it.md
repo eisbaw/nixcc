@@ -4,7 +4,7 @@ title: Run harness scratch work in a bwrap tmpfs instead of deleting it
 status: In Progress
 assignee: []
 created_date: '2026-09-15 07:28'
-updated_date: '2026-09-15 14:07'
+updated_date: '2026-09-15 14:29'
 labels:
   - infrastructure
   - harness
@@ -35,13 +35,13 @@ bwrap, not podman. Both are installed (podman 5.7.0), but bwrap is what nix itse
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No delete-shaped command remains in any harness: no rm, rmdir, truncate, git clean, git reset --hard. Grep proves it
-- [ ] #2 Scratch state lives on a tmpfs inside bwrap and is reclaimed on exit with no cleanup command and no EXIT trap
+- [x] #1 No delete-shaped command remains in any harness: no rm, rmdir, truncate, git clean, git reset --hard. Grep proves it
+- [x] #2 Scratch state lives on a tmpfs inside bwrap and is reclaimed on exit with no cleanup command and no EXIT trap
 - [ ] #3 Mutation testing gets a fresh tmpfs per mutation, so stale state between runs is impossible by construction rather than by remembering to clear it
-- [ ] #4 poc/lib/contention.py still reads the host's /proc/stat and nproc from inside the sandbox; a test asserts the values match the host, since a silently namespaced /proc would invalidate every linearity verdict
-- [ ] #5 poc/05-loop's no-toolchain stage binds only nix's runtime closure, so riscv32-none-elf-as and gcc are unreachable by absolute path and not merely absent from PATH. Its comment is updated from 'demonstration' to what it now actually proves
-- [ ] #6 Wall-clock cost of just e2e measured before and after and recorded; a tmpfs HOME disables nix's eval cache, so if that slows things the cache is bound read-only instead of being left to regress silently
-- [ ] #7 A machine without unprivileged user namespaces gets a clear diagnostic naming the requirement, not a confusing failure
+- [x] #4 poc/lib/contention.py still reads the host's /proc/stat and nproc from inside the sandbox; a test asserts the values match the host, since a silently namespaced /proc would invalidate every linearity verdict
+- [x] #5 poc/05-loop's no-toolchain stage binds only nix's runtime closure, so riscv32-none-elf-as and gcc are unreachable by absolute path and not merely absent from PATH. Its comment is updated from 'demonstration' to what it now actually proves
+- [x] #6 Wall-clock cost of just e2e measured before and after and recorded; a tmpfs HOME disables nix's eval cache, so if that slows things the cache is bound read-only instead of being left to regress silently
+- [x] #7 A machine without unprivileged user namespaces gets a clear diagnostic naming the requirement, not a confusing failure
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -109,4 +109,24 @@ NOT ACTED ON, named rather than buried:
   * The 03-matcher semantic mutation ("the divide libcall divides x by itself") still gets a fresh DIRECTORY rather than a fresh tmpfs, and qa-test-runner is right that my stated reason was too strong: I wrote that it "cannot" be handed to mutant.sh because it interleaves with build_and_run, when the sibling harness solved the same problem for gnu_diff by moving the function into a script. It could be done the same way. It is used exactly once per run, so freshness holds either way; the impossibility claim did not, and the comment has been left for the orchestrator to judge rather than quietly softened.
   * poc/05-loop/provenance.sh puts its scratch under the OUTER tmpfs with a per-pid name rather than the per-mutation one. Same shape, same reasoning.
   * Only poc/05-loop/run.sh has a floor on its mutation COUNT; 02, 03 and 04 print the number without asserting it, so a silently dropped mutate call in those three would not be noticed. Pre-existing, not from this change, and worth a task of its own.
+
+CRITERION STATUS, one of seven not met as written.
+
+#1 no delete-shaped command remains, proved by grep -- MET. just no-deletes, run by just lint, and it is now proved to be able to fail: ten fixture lines it must match run before it is trusted, including the tab-indented case an earlier pattern was blind to, plus a floor on the number of files scanned. Verified by hand that a tab-indented rm -rf added to a harness is caught and that removing it makes the check clean again.
+
+#2 scratch on a tmpfs, reclaimed on exit, no cleanup command and no EXIT trap -- MET. All five run.sh and poc/05-loop/provenance.sh source poc/lib/sandbox.sh as their first statement; grep for "trap " across poc/ returns only prose.
+
+#3 a fresh tmpfs per mutation -- NOT MET AS WRITTEN, and I am leaving the criterion alone rather than rewording it. 106 of 107 mutations go through poc/lib/mutant.sh, which runs the copy, the sed and the mutated suite inside a nested bwrap whose tmpfs is mounted over $mut: those are fresh by construction. The one that is not is poc/03-matcher's "the divide libcall divides x by itself", which interleaves with build_and_run -- a function defined in run.sh -- and so gets a directory used exactly once instead. Freshness holds for it (there is no previous run of that directory to inherit from) but a directory is not a tmpfs, and qa-test-runner was right that my first comment overstated the case by calling it impossible: the sibling harness solved the identical problem for gnu_diff by moving the function into a script, and the same could be done here. It is a real remaining gap with a known fix, not an unavoidable one. poc/05-loop/provenance.sh is the same shape on a smaller scale. Whether that is close enough is the orchestrator's call, not mine.
+
+#4 contention.py still reads the host's /proc/stat and nproc, with a test -- MET. poc/lib/selftest.py check -1: the sandbox records both figures on the way in and the check asserts they came back. Falsified by hand in all three directions -- a wrong core count, a wrong busy counter, and the variables absent -- and each fires. One caveat stated in the source rather than glossed: the upper bound on the busy-counter delta tolerates ten minutes of the whole machine, so it is monotonicity that does the work and the ceiling catches only a wildly different counter.
+
+#5 closed-loop binds only nix's runtime closure, unreachable by absolute path, comment updated -- MET, and stronger than the criterion asked. Six host binaries are probed by absolute path from inside and none is present; a positive control asks about nix's own binary first so a probe that has stopped looking cannot report absence; and after review the sandbox also drops /nix/var/nix and unshares the network, which closes import-from-derivation and fetching -- the escape the file's own comment had named while leaving it open. The comment is rewritten from "demonstration" to what it now establishes AND what it still does not: six names is a sampled absence, and a chroot store is still a store.
+
+#6 e2e wall clock measured before and after, eval cache not left to regress -- MET. 7m22, 7m28, 6m15 and 7m09 before; 5m44, 6m30 and 6m17 after, all on this machine. It got faster. The eval-cache worry does not arise: the scratch sandbox replaces /tmp and leaves HOME alone, so nix's cache is untouched, and the ladders use nix eval --expr which does not consult it. The closure-only sandbox inside closed-loop.sh does use a tmpfs HOME and runs seven evals in about 0.6 s.
+
+#7 a machine without unprivileged user namespaces gets a clear diagnostic -- MET. just sandbox-refuses puts a bwrap that fails the way such a kernel does in front of the real one and requires exit 2 plus three fragments, one of which can only reach the output by being quoted through from the stub -- so the reader gets bubblewrap's own reason, not a guess. It cannot pass vacuously: if the stub were not installed the encoder PoC would really run and exit 0.
+
+GATE, on 860a468: exit 0, 5 PoCs passed, lint clean, 6m17, with all 14 guard cases, both new cliff cases, the estimator mutation and 108 mutations across the five PoCs caught. Three attempts in the same window were lost first, all three to the contention self-test's own non-stationarity (task-039), which this batch neither introduced nor fixed. That is worth knowing before anyone reads a single green run as a stable gate: on this machine, right now, roughly one gate run in three is lost to that one check.
+
+The remaining gap on criterion #3 is filed as task-041, with the fix spelled out: move build_and_run into its own script the way poc/04-assembler/gnu-diff.sh was moved in this batch, for exactly the same reason, and the semantic mutation becomes an ordinary mutate() call. Task left In Progress rather than Done, with #3 unchecked, for the orchestrator to judge.
 <!-- SECTION:NOTES:END -->
