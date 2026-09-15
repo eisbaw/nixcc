@@ -111,6 +111,12 @@ poc-loop:
 poc-constants:
     nix develop --command bash poc/06-constants/run.sh
 
+# Exercise the C parser and DAG builder: the listing and lcc's stderr diffed
+# node for node against rcc-rv32, the C outside slice 1 refused, three programs
+# compiled from .c and run on the emulator, memory per source line, mutation test
+poc-parser:
+    nix develop --command bash poc/07-parser/run.sh
+
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:
     #!/usr/bin/env bash
