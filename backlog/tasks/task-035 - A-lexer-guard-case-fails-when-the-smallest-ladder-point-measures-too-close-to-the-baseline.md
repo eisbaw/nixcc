@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-09-15 07:47'
-updated_date: '2026-09-15 13:07'
+updated_date: '2026-09-15 14:04'
 labels:
   - poc
   - testing
@@ -238,4 +238,19 @@ So contention.step_ratio() now measures the RATIO rather than assembling one aft
 Checked against 14 recorded round-robin sessions: the two estimators agree to within about 0.05 on a quiet machine (worst adjacent step 1.02-1.18 for the minima, 0.99-1.16 for the medians; end-to-end 0.87-1.16 and 0.84-1.11). They differ where it matters -- on the run with one flattering reading in it, which is the run that failed the gate.
 
 The tolerances still did not move.
+
+CORRECTION TO THE PROVENANCE OF ONE CITED FIGURE, prompted by the machine going to load 36 under an unrelated PDF-extraction job and by a reminder to check what was measured when.
+
+Commit bf0170b's message says the two estimators were 'checked against fourteen recorded round-robin sessions ... agree to within about 0.05 on a quiet machine'. Eight of those fourteen were recorded at 14:44, on a machine whose worst per-run contention reading was 8.39 cores -- over the 3.50 the ladders refuse at. That set should not have been described as quiet. Split by the threshold the tree actually uses:
+
+    under 3.5 busy cores (9 sessions, worst 3.36):
+       minima-quotient    worst step 1.046-1.134   end-to-end 0.946-1.097
+       per-round median   worst step 1.060-1.137   end-to-end 0.955-1.108
+    over 3.5 busy cores (5 sessions, worst 8.39):
+       minima-quotient    worst step 1.023-1.179   end-to-end 0.873-1.164
+       per-round median   worst step 0.995-1.163   end-to-end 0.836-1.072
+
+The conclusion is unchanged and the nine clean sessions carry it on their own: the two estimators agree closely on a quiet machine and part company on a run with one flattering reading in it. The argument for the median was never the dataset anyway -- it is that a minimum is biased low by an amount that grows with the noise, and the smallest ladder point is both the noisiest and the denominator of two steps. But 'fourteen sessions on a quiet machine' overstates what was recorded, so it is corrected here rather than left standing.
+
+NO TOLERANCE OR THRESHOLD CONSTANT MOVED IN ANY COMMIT OF THIS BATCH. Checked mechanically rather than from memory: a diff of TOLERANCE, END_TO_END_TOLERANCE, MIN_BASELINE_RATIO, MIN_SPAN, BUSY_FRACTION, BUSY_CEILING, MIN_WINDOW and every MAX_* across 678d352~1..HEAD is empty. That is the point of the task's finding -- the constants were right and the measurement order was wrong -- so there is no number in this work that could have been contaminated by a busy window. The figures that ARE cited in source (the pinned per-core costs 1.79/2.40/3.93 s, the six NIX_SHOW_STATS runs, the descending-order control, and the 1.052-1.092 worst-step range quoted above TOLERANCE) were all taken between 11:45 and 13:10 at 0.5 to 2.3 busy cores, and every one of them argues for leaving a constant alone.
 <!-- SECTION:NOTES:END -->

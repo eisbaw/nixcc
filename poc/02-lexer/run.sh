@@ -91,6 +91,30 @@ grep -q "SELF-TEST FAILED" "$work/blinded.log" || {
   cat "$work/blinded.log" >&2; exit 1; }
 echo "  guard: a blinded contention measurement is caught, not waved through"
 
+# And the ESTIMATOR, for the same reason and by the same method. Every
+# linearity verdict in this tree is a comparison against contention.py's
+# step_ratio(), and nothing in the guard cases below can see it: they move the
+# contention threshold, the tolerances and the baseline cliff, and with the
+# median swapped for a minimum every one of them still passes either way.
+# selftest.py check 0b is what notices, and this is what proves it notices.
+# Once rather than in every harness -- poc/lib is shared, and so is the proof.
+estimator=$work/estimator
+mkdir "$estimator"; cp -r "$root/lib" "$estimator/lib"
+sed -i 's|^    return statistics.median(per_round), tuple(per_round)$|    return min(per_round), tuple(per_round)|' \
+  "$estimator/lib/contention.py"
+grep -qx "    return min(per_round), tuple(per_round)" "$estimator/lib/contention.py" || {
+  echo "HARNESS FAULT: step_ratio does not end where this expects it to in" >&2
+  echo "contention.py, so the estimator mutation changed nothing" >&2; exit 1; }
+if python3 "$estimator/lib/selftest.py" "$estimator" > "$work/estimator.log" 2>&1; then
+  echo "MUTATION NOT DETECTED: with the linearity estimator changed from the" >&2
+  echo "median of the per-round ratios to their minimum, the self-test passed" >&2
+  cat "$work/estimator.log" >&2; exit 1
+fi
+grep -q "SELF-TEST FAILED" "$work/estimator.log" || {
+  echo "the mutated estimator failed, but not as a self-test failure:" >&2
+  cat "$work/estimator.log" >&2; exit 1; }
+echo "  guard: a linearity estimator that is not the median is caught"
+
 # Second, that the guard DECIDES the same way whichever verdict it interrupts.
 # Two knobs: the threshold in contention.py says whether the machine counts as
 # busy, and the tolerances in throughput.py say whether the reading counts as
@@ -250,6 +274,8 @@ names=(); fragments=(); outputs=()
 
 # $1 name, $2 fragment that must appear, $3 shell snippet that mutates $mut,
 # $4 shell snippet that runs the mutated suite
+# $5 optional: "no" if $3 changes the INVOCATION rather than the tree, so that
+# the "this mutation edited nothing" check knows not to expect an edit
 mutate() {
   # A tmpfs of its own for every mutation, so no state can survive from the
   # last one -- by construction, rather than by a remove that has to have
@@ -257,12 +283,14 @@ mutate() {
   # and hands back the mutated suite's own exit status.
   local out status=0
   out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
-        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" "${5:-yes}" 2>&1) || status=$?
   case "$status" in
     120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
     121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
          echo "$out" >&2; exit 1 ;;
     122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+    123) echo "HARNESS FAULT: mutation '$1' declared \"${5:-yes}\" for whether it edits the tree" >&2
          exit 1 ;;
   esac
   if [ "$status" = 0 ]; then
@@ -311,10 +339,13 @@ mutate "harness: expected token lists emptied" \
        "sed -i 's|{ inherit what src expect; }|{ inherit what src; expect = [ ]; }|' cases.nix" \
        "$lexer_check"
 
+# The one mutation here that changes the INVOCATION rather than the tree, so
+# it says so: check.nix is handed an empty corpus rather than being edited.
 mutate "harness: round-trip corpus arrives empty" \
        "only 0 source files to round-trip" \
        "true" \
-       "nix eval --impure --raw --expr 'import $mut/check.nix { sources = [ ]; }'"
+       "nix eval --impure --raw --expr 'import $mut/check.nix { sources = [ ]; }'" \
+       no
 
 mutate "harness: reject table emptied" \
        "must-fail tables shrank to 0 rejects" \

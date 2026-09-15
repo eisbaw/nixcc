@@ -40,11 +40,15 @@ order alone moved the verdict from FAIL to a comfortable pass.
 So rounds() measures ROUND-ROBIN: one run of every point, then another round
 of every point, and so on, with the within-round order reversed on alternate
 rounds so that a clock falling away DURING a round does not always land on the
-same end of the ladder. Each point's figure is still the cheapest of its runs,
-so each point is judged on its best observation of the same sequence of
-machine states. Interleaving is also why the ladders no longer ask whether two
-points were comparably measured: every point is now measured in every round,
-which makes the question answer itself.
+same end of the ladder. Interleaving is also why the ladders no longer ask
+whether two points were comparably measured: every point is now measured in
+every round, which makes the question answer itself.
+
+What is DONE with the rounds changed once more after that, and step_ratio()
+below carries the argument: a point's headline figure -- the cheapest of its
+rounds -- is what the table reports and what the baseline cliff is checked
+against, but no linearity verdict is taken from it any more. Those come from
+ratios measured inside a round.
 
 WHAT CONTENTION IS MEASURED AGAINST. Not the load average. A one-minute mean
 lags a burst by most of a minute, which makes it structurally unable to see
@@ -52,10 +56,12 @@ load that arrives after the harness starts -- and the ladders used to read it
 exactly once, before measuring. Instead /proc/stat's system-wide busy counter
 is sampled around every ROUND, and the CPU time of that round's own children
 is subtracted from the delta. What is left, divided by the round's wall time,
-is the number of cores' worth of OTHER work that ran during it. A point's
-figure is the WORST of the rounds it was measured in, which is the
-conservative reading: if load arrived for one round and the cheapest run
-happened to miss it, the point is still declared contended.
+is the number of cores' worth of OTHER work that ran during it. A LADDER's
+figure is the worst of its rounds, which is the conservative reading: if load
+arrived for one round and the cheapest run of a point happened to miss it, the
+whole ladder is still declared contended. The figure belongs to the Ladder
+rather than to any Point, because with the points interleaved "how busy was it
+while THIS point was measured" is not a question with an answer.
 
 Two accountings are being differenced -- /proc/stat's per-core tick counters
 and wait4's rusage -- so they can disagree by a tick or two per core. Beyond
@@ -356,10 +362,15 @@ def rounds(argvs, repeats):
     reversed on alternate rounds so that a clock falling away during a round
     does not always land on the same end of the ladder either.
 
-    Minimum, not mean: we are measuring an algorithm, and noise only ever adds
-    work. Taking it over interleaved rounds is what makes the minimum mean
-    something -- each job's best observation is drawn from the same sequence of
-    machine states as every other job's.
+    Minimum, not mean, for the figure this reports: we are measuring an
+    algorithm, and noise only ever adds work. Taking it over interleaved rounds
+    is what makes that minimum mean something -- each job's best observation is
+    drawn from the same sequence of machine states as every other job's.
+
+    But a minimum is biased low by an amount that grows with the noise, which
+    is why no linearity VERDICT is taken from these figures. step_ratio() says
+    what is, and why; the numbers here are what a reader sees in the table and
+    what the baseline cliff is measured against.
 
     CPU and peak RSS come from os.wait4, which reports this child's own
     figures, rather than from getrusage(RUSAGE_CHILDREN), which is a running
@@ -391,7 +402,7 @@ def rounds(argvs, repeats):
     return Ladder(tuple(points), tuple(foreign), tuple(windows))
 
 
-def step_ratio(base, a, z):
+def step_ratio(ladder, base, a, z, what):
     """How much more ladder point `z` cost than point `a`, and the per-round
     readings it was taken from. Both net of that ROUND's own baseline.
 
@@ -417,14 +428,39 @@ def step_ratio(base, a, z):
     to the drift decision-008 records rather than merely averaged over it.
     Across rounds, a median rejects one bad round in either direction, where a
     minimum only ever rejects in the direction that flatters.
+
+    A round in which a point cost no more than that round's own start-up
+    baseline leaves nothing to take a ratio of, and that has TWO causes for the
+    same reason the cliff at the bottom of a ladder does: a ladder point too
+    small to measure, or a busy machine inflating the baseline. So it branches
+    the same way -- HARNESS FAULT on a quiet machine, NO VERDICT on a busy one.
+    Getting that wrong here would have been the exact miscategorisation
+    task-035 was filed for, reintroduced inside the fix for it: this runs
+    BEFORE require_quiet(), so a fault raised unconditionally would report a
+    busy machine as a broken harness.
     """
     per_round = []
     for i, (bc, ac, zc) in enumerate(zip(base.costs, a.costs, z.costs, strict=True), 1):
         net_a, net_z = ac - bc, zc - bc
         if net_a <= 0 or net_z <= 0:
-            fault(f"in round {i} two ladder points cost {ac:.3f} s and {zc:.3f} s "
-                  f"of CPU against a {bc:.3f} s start-up baseline measured in the "
-                  f"same round, which leaves nothing to take a ratio of")
+            report(ladder)
+            print(f"in round {i} two ladder points cost {ac:.3f} s and {zc:.3f} s "
+                  f"of CPU against the {bc:.3f} s start-up baseline measured in "
+                  f"the same round, which leaves nothing to take a ratio of.")
+            if quiet(ladder):
+                fault(f"The machine was quiet throughout -- at worst "
+                      f"{busiest(ladder):.2f} cores of other work in any round -- "
+                      f"so nothing about this machine explains it and the ladder "
+                      f"is built wrong: a point this close to the evaluator's own "
+                      f"start-up cost is not a measurement of the {what}")
+            print(f"NO VERDICT: the machine was also busy -- up to "
+                  f"{busiest(ladder):.2f} of this machine's {cores()} cores of "
+                  f"other work, over the {limit():.2f} this check will render a "
+                  f"verdict against -- and contention inflates the start-up "
+                  f"baseline, which is what this subtraction is against. Which of "
+                  f"the two it was cannot be told apart from here. Re-run on an "
+                  f"idle machine.")
+            sys.exit(EXIT_NO_VERDICT)
         per_round.append(net_z / net_a)
     return statistics.median(per_round), tuple(per_round)
 

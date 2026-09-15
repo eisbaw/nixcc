@@ -7,7 +7,7 @@ busy_cpu_seconds() out to return 0.0 and every one of them still passes,
 because they never produce contention -- they declare it. That is the
 fail-open half of the guard, and this is what covers it.
 
-Four checks, each for a defect the others cannot see.
+Five checks, each for a defect the others cannot see.
 
  -1. /proc/stat and nproc still describe the HOST. Everything below, and every
      linearity verdict any ladder renders, is read out of a /proc that is now
@@ -17,6 +17,15 @@ Four checks, each for a defect the others cannot see.
      sandbox would change no line of any harness's output while making every
      contention reading a measurement of the wrong machine. So the sandbox
      records the host's figures on its way in and this checks they came back.
+
+  0b. step_ratio() is the median of the per-round ratios and not something
+     else. It is the single most consequential line in this tree -- every
+     linearity verdict is a comparison against it -- and nothing else can see
+     it: the guard cases move the contention threshold, the tolerances and the
+     baseline cliff, and with the estimator changed to a minimum, to a maximum
+     or to the quotient of the two minima, every one of them still passes.
+     Synthetic Points with known costs, checked against a case where those
+     four answers are four different numbers.
 
   0. rounds() really goes round-robin. This one is structural rather than
      statistical, so it is first: it needs no free cores and still runs on a
@@ -130,7 +139,7 @@ if not scratch.is_dir():
 if os.environ.get("NIXCC_SANDBOX"):
     try:
         host_cores = int(os.environ["NIXCC_HOST_CORES"])
-        host_busy = float(os.environ["NIXCC_HOST_BUSY"]) / contention.CLOCK_TICK
+        host_busy = float(os.environ["NIXCC_HOST_BUSY"])
     except (KeyError, ValueError) as e:
         contention.fault(
             f"running inside the harness sandbox, but the host's core count and "
@@ -150,6 +159,13 @@ if os.environ.get("NIXCC_SANDBOX"):
     # more than one core-second per core per second of wall clock. A namespaced
     # or reset /proc/stat shows up as a counter that went backwards or one that
     # bears no relation to the figure taken moments earlier.
+    # The interesting half is monotonicity: a counter that went BACKWARDS is a
+    # /proc that was reset or namespaced. The upper bound is deliberately loose
+    # and does correspondingly little work -- the observed gap across the
+    # sandbox's own start-up is a few tens of core-seconds, and this tolerates
+    # ten minutes of the whole machine, so it catches a wildly different
+    # counter and nothing subtler. Said plainly rather than dressed up as a
+    # plausibility check.
     if not 0 <= seen_busy - host_busy <= host_cores * 600:
         fail(f"/proc/stat read {host_busy:.0f} busy CPU-seconds outside the "
              f"sandbox and {seen_busy:.0f} inside it. The two do not describe "
@@ -192,6 +208,31 @@ if ran != want:
          f"within a round -- which puts the largest ladder point last on the "
          f"warmest machine every time, and that is what made the lexer ladder "
          f"read SUPERLINEAR on a lexer nobody had touched")
+
+# --- 0b. the estimator is the median of the per-round ratios -------------
+# Costs chosen so that the four plausible answers are four different numbers:
+# the per-round ratios are 1, 5 and 12, whose MEDIAN is 5, whose mean is 6,
+# whose minimum is 1 and whose maximum is 12 -- and the quotient of the two
+# points' cheapest rounds, which is what this replaced, is 1. Nothing here
+# spawns a process; it is arithmetic on a NamedTuple, and it runs in
+# microseconds.
+_synthetic = contention.Ladder(points=(), foreign=(0.0,), windows=(1.0,))
+_base = contention.Point("", 0.0, 0.0, 0, (1.0, 1.0, 1.0))
+_a = contention.Point("", 0.0, 0.0, 0, (2.0, 2.0, 2.0))     # net 1, 1, 1
+_z = contention.Point("", 0.0, 0.0, 0, (2.0, 6.0, 13.0))    # net 1, 5, 12
+_got, _spread = contention.step_ratio(_synthetic, _base, _a, _z, "a synthetic ladder")
+print(f"contention self-test: per-round ratios {_spread} judged as {_got}")
+if _spread != (1.0, 5.0, 12.0):
+    fail(f"step_ratio read the per-round ratios as {_spread}, not (1.0, 5.0, 12.0). "
+         f"It is not dividing each round's costs by each other, or not net of "
+         f"that round's own baseline")
+if _got != 5.0:
+    fail(f"step_ratio judged per-round ratios of {_spread} as {_got}, not their "
+         f"median of 5.0. A minimum reads 1.0, a maximum 12.0, a mean 6.0, and "
+         f"the quotient of the two points' cheapest rounds -- which is what this "
+         f"replaced -- reads 1.0. Whichever of those it has become, every "
+         f"linearity verdict in this tree now rests on a different statistic "
+         f"from the one its tolerances were measured against")
 
 free = contention.cores() - idle_window()
 if free < LOAD + 2:

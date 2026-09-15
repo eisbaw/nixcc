@@ -185,12 +185,14 @@ mutate() {
   # and hands back the mutated suite's own exit status.
   local out status=0
   out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
-        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" "${5:-yes}" 2>&1) || status=$?
   case "$status" in
     120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
     121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
          echo "$out" >&2; exit 1 ;;
     122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+    123) echo "HARNESS FAULT: mutation '$1' declared \"${5:-yes}\" for whether it edits the tree" >&2
          exit 1 ;;
   esac
   if [ "$status" = 0 ]; then
@@ -204,43 +206,10 @@ mutate() {
 pure_check="nix eval --impure --raw --expr \"import $mut/check.nix { progs = $mut/progs; }\""
 must_fail="nix eval --impure --raw --expr '(import $mut/must-fail.nix).summary'"
 
-# The differential, on ONE program, against a mutated assembler. `data' is the
-# program that carries alignment padding and a symbol-valued .word, so it is
-# the one whose bytes move for the mutations the pure checks cannot see. It
-# runs the MUTATED diff.py, so that breaking the comparison is itself testable.
-# Exported, and $mut with it, because mutate() now runs each mutation in a
-# child bash inside a mount namespace of its own -- so a function defined here
-# is not in scope there unless it is put in the environment.
-gnu_diff() {
-  local name=$1
-  # Under $mut, which is a tmpfs created fresh for this one mutation: nothing
-  # from a previous differential can be in it, and nothing from this one
-  # outlives the process.
-  local out=$mut/gnu-diff-$name
-  mkdir -p "$out"
-  nix eval --impure --json --expr "
-    let a = import $mut/asm.nix { };
-        p = import $mut/parse.nix { asm = a; };
-        r = a.assemble { items = p.parseFile (/. + \"$mut/progs/$name.s\"); };
-    in { inherit (r) bytes dataBase; }" > "$out/ours.json"
-  python3 - "$out" <<'PYEOF'
-import json, sys
-out = sys.argv[1]
-r = json.load(open(f"{out}/ours.json"))
-json.dump(r["bytes"], open(f"{out}/bytes.json", "w"))
-# Hex with an 0x prefix: GNU ld's -Tdata reads a bare number as HEX, so
-# passing 66048 put .data at 0x66048 and produced a 344 kB image.
-open(f"{out}/database", "w").write("0x%x" % r["dataBase"])
-PYEOF
-  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/whole.o" "$mut/progs/$name.s"
-  riscv32-none-elf-ld --no-relax -Ttext=0x10000 -Tdata="$(cat "$out/database")" \
-    -o "$out/whole.elf" "$out/whole.o" 2>/dev/null
-  riscv32-none-elf-objcopy -O binary "$out/whole.elf" "$out/whole.bin"
-  python3 "$mut/diff.py" "$out/bytes.json" "$out/whole.bin" "$name"
-}
-export -f gnu_diff
-export mut
-diff_check="gnu_diff data"
+# The differential, on ONE program, against a mutated assembler. It runs the
+# MUTATED gnu-diff.sh and the MUTATED diff.py, from inside the mutated tree, so
+# that breaking the comparison is itself testable rather than merely claimed.
+diff_check="bash $mut/gnu-diff.sh $mut data"
 
 # --- the assembler ---
 mutate "asm: the PC-relative base is the next instruction, not the branch's own" \

@@ -353,6 +353,8 @@ names=(); fragments=(); outputs=()
 
 # $1 name, $2 fragment that must appear, $3 shell snippet that mutates $mut,
 # $4 shell snippet that runs the mutated suite
+# $5 optional: "no" if $3 changes the INVOCATION rather than the tree, so that
+# the "this mutation edited nothing" check knows not to expect an edit
 mutate() {
   # A tmpfs of its own for every mutation, so no state can survive from the
   # last one -- by construction, rather than by a remove that has to have
@@ -360,12 +362,14 @@ mutate() {
   # and hands back the mutated suite's own exit status.
   local out status=0
   out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
-        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" "${5:-yes}" 2>&1) || status=$?
   case "$status" in
     120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
     121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
          echo "$out" >&2; exit 1 ;;
     122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+    123) echo "HARNESS FAULT: mutation '$1' declared \"${5:-yes}\" for whether it edits the tree" >&2
          exit 1 ;;
   esac
   if [ "$status" = 0 ]; then

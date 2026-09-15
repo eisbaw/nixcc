@@ -150,7 +150,8 @@ def main(argv):
         # is why dividing this table's two `cpu s' columns does not
         # reproduce the number below -- the per-round readings it came
         # from are printed beside it.
-        slower, spread = contention.step_ratio(base, a["point"], z["point"])
+        slower, spread = contention.step_ratio(
+            ladder, base, a["point"], z["point"], "assembler")
         verdict = ("unjudged" if not quiet else
                    "ok" if slower <= grew * tol else "SUPERLINEAR")
         print(f"  {a['items']:>7} -> {z['items']:>7} items: {grew:.2f}x input, "

@@ -87,12 +87,14 @@ mutate() {
   # and hands back the mutated suite's own exit status.
   local out status=0
   out=$(bwrap --dev-bind / / --tmpfs "$mut" --die-with-parent -- \
-        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" 2>&1) || status=$?
+        bash "$root/lib/mutant.sh" "$poc" "$mut" "$3" "$4" "${5:-yes}" 2>&1) || status=$?
   case "$status" in
     120) echo "HARNESS FAULT: could not copy $poc for mutation '$1'" >&2; exit 1 ;;
     121) echo "HARNESS FAULT: mutation '$1' did not apply cleanly:" >&2
          echo "$out" >&2; exit 1 ;;
     122) echo "HARNESS FAULT: mutation '$1' changed nothing -- its pattern no longer matches" >&2
+         exit 1 ;;
+    123) echo "HARNESS FAULT: mutation '$1' declared \"${5:-yes}\" for whether it edits the tree" >&2
          exit 1 ;;
   esac
   if [ "$status" = 0 ]; then
@@ -319,6 +321,17 @@ mutate "closed loop: the sandbox binds the host, so the toolchain is there after
 mutate "closed loop: the absence check is given no binaries to look for" \
        "is a claim about nothing" \
        "sed -i 's|^for tool in riscv32.*|for tool in nixcc-no-such-binary; do|' closed-loop.sh" \
+       "$closed_loop"
+
+# And the probe itself. Every question that stage asks is answered "absent", so
+# a probe that has stopped looking reports absence six times and prints the
+# greenest line in the suite. builtins.isNull of a string is always false, so
+# this makes the answer "no" whatever is really there -- and the positive
+# control, which asks about nix's own binary from inside the sandbox nix is
+# running in, has to be what notices.
+mutate "closed loop: the reachability probe stops looking and always says absent" \
+       "nix itself is not in the sandbox" \
+       "sed -i 's|builtins.pathExists|builtins.isNull|' closed-loop.sh" \
        "$closed_loop"
 
 mutate "harness: the memory measurement measures something other than the demo" \

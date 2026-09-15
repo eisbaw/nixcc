@@ -15,23 +15,36 @@
 # could open by absolute path. The toolchain was still sitting in the
 # filesystem a dozen characters away.
 #
-# It now runs inside a bubblewrap sandbox that binds NOTHING but nix's own
-# runtime closure -- 63 store paths on this machine, of which the only three
-# whose names mention a compiler are libgcc and libstdc++ runtime libraries --
-# plus the PoC directory it evaluates and the emulator it imports. There is no
+# It now runs inside a bubblewrap sandbox that binds nix's own runtime closure
+# -- three score store paths on this machine, and the only ones whose names
+# mention a compiler at all are gcc's own runtime libraries, libgcc and
+# libstdc++ -- plus the PoC directory it evaluates, the tree that directory
+# sits in, and the emulator it imports. A floor below refuses a closure too
+# small to be the real one, which is the part that cannot go stale. There is no
 # assembler, linker or objcopy in the sandbox's filesystem to find, by name or
 # by path, and the stage checks exactly that: it asks nix itself, from inside,
 # whether the absolute path of each host tool exists. `builtins.pathExists' is
 # the one probe available, because the sandbox is minimal enough that there is
 # no /bin/sh in it either.
 #
-# What it still does not prove is that this particular expression COULD have
-# reached a toolchain: a `nix eval' of a pure expression can only reach a
-# binary through import-from-derivation, so for this expression the property is
-# close to true by construction. What it now does rule out is the thing that
-# has actually gone wrong in this repo before -- a harness that quietly shells
-# out to binutils on the way to its answer -- and it rules it out by absence
-# rather than by naming.
+# The sandbox also unshares the network and does NOT bind /nix/var/nix, so the
+# nix daemon is unreachable and nix falls back to a chroot store inside the
+# tmpfs. That matters because import-from-derivation is the one escape a pure
+# `nix eval' actually has, and an earlier draft of this stage left the daemon
+# socket bound -- which would have let an evaluation realise a derivation on
+# the HOST, with the real toolchain, while this file claimed hermeticity.
+# Checked: `builtins.fetchurl' now fails and `nix store info' reports a chroot
+# store rather than the daemon.
+#
+# BOUND THE CLAIM ANYWAY, because it is a sampled absence and not a proof of
+# absence. Six names are probed. That does not establish that no compiler of
+# any name is in the sandbox -- busybox is in nix's runtime closure and does
+# ship an `sh', though not an assembler. And a chroot store is still a store:
+# nothing here proves an evaluation could not build SOMETHING, only that it
+# could not use this machine's toolchain or its daemon to do it. What the
+# stage does establish is the thing that has actually gone wrong in this repo
+# before -- a harness that quietly shells out to binutils on the way to its
+# answer -- and it establishes it by absence rather than by naming.
 #
 # The expectation is read in a SECOND evaluation, outside the sandbox, and not
 # because that buys independence -- it does not, it imports the same driver.nix
@@ -55,13 +68,19 @@ nix_bin=$(dirname "$nix_real")
 # nix's RUNTIME closure, which is what it needs to run and nothing else. Every
 # path read-only: this evaluation writes nothing outside the tmpfs below.
 guarded=()
+closure=0
 while read -r path; do
   guarded+=(--ro-bind "$path" "$path")
+  closure=$((closure + 1))
 done < <(nix path-info -r "$nix_real")
-[ "${#guarded[@]}" -ge 20 ] || {
-  echo "nix's runtime closure came back as ${#guarded[@]} bind arguments," >&2
-  echo "which is too few to be the real thing -- refusing to claim a sandbox" >&2
-  echo "that may simply be binding the host" >&2; exit 1; }
+# Paths, not array elements: each path contributes three of the latter, so a
+# floor written against ${#guarded[@]} would have been a third of what it read
+# like. The number itself is a floor rather than the count, which was 63 when
+# this was written -- a count in a comment rots, a floor that fails does not.
+[ "$closure" -ge 20 ] || {
+  echo "nix's runtime closure came back as $closure store paths, which is too" >&2
+  echo "few to be the real thing -- refusing to claim a sandbox that may simply" >&2
+  echo "be binding the host" >&2; exit 1; }
 guarded+=(
   # HOME and TMPDIR both under /tmp, which exists on any root and so can be
   # mounted over. A tmpfs on a top-level path of its own works when this is the
@@ -75,7 +94,10 @@ guarded+=(
   # stated here rather than inherited. That is the more hermetic half of the
   # bargain: the stage no longer depends on how the reader configured nix.
   --setenv NIX_CONFIG "experimental-features = nix-command"
-  --ro-bind /nix/var/nix /nix/var/nix
+  # No /nix/var/nix and no network: see the header. Without the first, nix
+  # cannot reach the daemon and uses a chroot store under the tmpfs HOME;
+  # without the second, nothing in the evaluation can fetch.
+  --unshare-net
   --ro-bind "$poc" "$poc"
   --ro-bind "$NIX_RISCV" "$NIX_RISCV"
   --die-with-parent
@@ -92,9 +114,11 @@ poc_parent=$(dirname "$poc")
 # the real tree -- they are not what is being mutated, and a copy of them is a
 # copy that could go stale -- so a sandbox that bound only the copy would fail
 # to follow them, with an error about a path that plainly does exist. Binding
-# them does not loosen what this stage claims: the absence check below runs
-# against the finished bind list, so anything that arrived this way and should
-# not have is caught rather than assumed away.
+# them is a real widening of the bind list, and the absence check below is a
+# probe of six names rather than an audit of everything bound -- so what keeps
+# this honest is that the links are the PoC's own siblings, in a tree with no
+# toolchain in it, and that those six names are probed after the list is
+# finished rather than before.
 for link in "$poc_parent"/*; do
   [ -L "$link" ] || continue
   target=$(readlink -f "$link") || continue
@@ -103,6 +127,47 @@ done
 
 in_sandbox() { bwrap "${guarded[@]}" -- "$nix_bin/nix" "$@"; }
 
+# $1 an absolute path; prints `yes' or `no' for whether it exists inside the
+# sandbox. Anything else -- a sandbox that would not build, a nix that would
+# not start -- is a broken check rather than an absent toolchain, and says so
+# rather than letting empty output read as "not yes, therefore absent".
+reachable() {
+  local expr answer
+  expr="if builtins.pathExists \"$1\" then \"yes\" else \"no\""
+  # stderr discarded for the ANSWER and shown for the DIAGNOSIS. nix prints two
+  # warnings on every call in here -- no network, and no /nix/var/nix so it
+  # uses a chroot store -- and folding them into the answer is how a draft of
+  # this check came to read `warning: ...\nyes' and refuse a sandbox that was
+  # working perfectly. On failure the same evaluation is run once more with its
+  # output visible, so the reason still reaches the reader.
+  if ! answer=$(in_sandbox eval --impure --raw --expr "$expr" 2>/dev/null); then
+    echo "the sandbox could not be entered to ask whether $1 is inside it." >&2
+    echo "Running the same evaluation again with its diagnostics:" >&2
+    in_sandbox eval --impure --raw --expr "$expr" >&2 || true
+    echo "That is a broken check rather than an absent toolchain, so this stage" >&2
+    echo "renders no verdict on the toolchain at all." >&2
+    exit 2
+  fi
+  case "$answer" in
+    yes|no) printf '%s' "$answer" ;;
+    *) echo "the reachability probe for $1 answered '$answer', which is" >&2
+       echo "neither yes nor no; the check is not asking what it thinks" >&2
+       exit 2 ;;
+  esac
+}
+
+# THE POSITIVE CONTROL, and it goes first. Every probe below reports absence,
+# and a probe that can only ever report absence reports it most confidently
+# when it has stopped asking: replace `builtins.pathExists' with `false' and
+# six tools come back missing and this stage prints its greenest line. So ask
+# it about a path that MUST be there -- nix's own binary, which is running the
+# question -- and require a yes before believing any no.
+[ "$(reachable "$nix_real")" = yes ] || {
+  echo "the reachability probe says nix itself is not in the sandbox, which is" >&2
+  echo "being asked from inside the sandbox by that very binary. The probe is" >&2
+  echo "not measuring what is there, so nothing it says about the toolchain" >&2
+  echo "means anything." >&2; exit 2; }
+
 # Absence, not invisibility. PATH would only say that these are not reachable
 # by NAME; this asks nix, from inside the sandbox, whether the absolute path
 # each of them occupies on this host exists there at all.
@@ -110,26 +175,12 @@ absent=0
 for tool in riscv32-none-elf-as riscv32-none-elf-ld riscv32-none-elf-objcopy gcc as ld; do
   abs=$(command -v "$tool" 2>/dev/null) || continue
   abs=$(readlink -f "$abs")
-  # The answer has to be one of two words. A probe that simply FAILED -- a
-  # sandbox that could not be built, a nix that would not start -- produces
-  # empty output, and "empty is not yes" would have read as "absent": the
-  # check would pass most loudly exactly when it had stopped working.
-  probe=$(in_sandbox eval --impure --raw --expr \
-          "if builtins.pathExists \"$abs\" then \"yes\" else \"no\"" 2>&1) || {
-    echo "the sandbox could not be entered to ask whether $tool is inside it:" >&2
-    echo "$probe" >&2
-    echo "That is a broken check rather than an absent toolchain, so this stage" >&2
-    echo "renders no verdict on the toolchain at all." >&2
-    exit 2; }
-  case "$probe" in
-    yes) echo "$tool is still reachable inside the sandbox at $abs," >&2
-         echo "so running the demo in it would prove nothing about the toolchain." >&2
-         exit 1 ;;
-    no)  absent=$((absent + 1)) ;;
-    *)   echo "the reachability probe for $tool answered '$probe', which is" >&2
-         echo "neither yes nor no; the check is not asking what it thinks" >&2
-         exit 2 ;;
-  esac
+  if [ "$(reachable "$abs")" = yes ]; then
+    echo "$tool is still reachable inside the sandbox at $abs," >&2
+    echo "so running the demo in it would prove nothing about the toolchain." >&2
+    exit 1
+  fi
+  absent=$((absent + 1))
 done
 # A loop that checked nothing would also print no complaint. The host has all
 # six of these on PATH inside `nix develop'; fewer than three means the tools

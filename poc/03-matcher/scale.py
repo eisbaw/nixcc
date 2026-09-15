@@ -168,7 +168,8 @@ def main(argv):
         # is why dividing this table's two `cpu s' columns does not
         # reproduce the number below -- the per-round readings it came
         # from are printed beside it.
-        slower, spread = contention.step_ratio(base, a["point"], z["point"])
+        slower, spread = contention.step_ratio(
+            ladder, base, a["point"], z["point"], "labeller")
         # On a busy machine the ratios are still printed -- they are what was
         # measured -- but they are not turned into a verdict in either
         # direction, and `bad' stays empty so nothing downstream reads one.

@@ -34,8 +34,9 @@ for four gate runs and was diagnosed four different ways before the cause
 turned out to be its own measurement ORDER: measuring the points in size order
 measures the largest one last, when the package is hottest and its clock
 lowest, every time. poc/lib/contention.py owns the fix -- round-robin rounds,
-cheapest run per point -- and the evidence, and is shared with the matcher and
-assembler ladders rather than copied into them.
+and a step's cost ratio measured inside a round rather than divided out of two
+separately-optimised figures -- and the evidence, and is shared with the
+matcher and assembler ladders rather than copied into them.
 """
 import pathlib
 import shutil
@@ -54,9 +55,10 @@ except ImportError as e:
           f"poc/lib must sit beside this harness")
     sys.exit(2)
 
-# Every ladder point is measured this many times, one run each per round, and
-# the cheapest run is the measurement. Rounds rather than repeats: see
-# poc/lib/contention.py's rounds(), and MEASUREMENT ORDER above it.
+# Every ladder point is measured this many times, one run each per round. The
+# cheapest run is what the table below reports; the VERDICTS come from ratios
+# taken inside a round, which is contention.step_ratio()'s business. Rounds
+# rather than repeats: see rounds(), and MEASUREMENT ORDER above it.
 REPEATS = 3
 # A doubling of input may cost at most this much more than a doubling of time.
 # Slack for GC timing and scheduler noise; a quadratic lexer misses it by 10x,
@@ -187,7 +189,8 @@ def main(argv):
         # is why dividing this table's two `cpu s' columns does not
         # reproduce the number below -- the per-round readings it came
         # from are printed beside it.
-        slower, spread = contention.step_ratio(base, a["point"], z["point"])
+        slower, spread = contention.step_ratio(
+            ladder, base, a["point"], z["point"], "lexer")
         # On a busy machine the ratios are still printed -- they are what was
         # measured -- but they are not turned into a verdict in either
         # direction, and `bad' stays empty so nothing downstream reads one.

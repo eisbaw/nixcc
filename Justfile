@@ -63,7 +63,13 @@ poc:
       case "$status" in
         0) ;;
         3) refused=$((refused + 1)); echo "== $d rendered NO VERDICT; carrying on" ;;
-        *) exit "$status" ;;
+        *) # Scratch lives on a tmpfs that went with the process, so there is
+           # nothing left to look at unless it was asked for. Say so here
+           # rather than only in poc/lib/sandbox.sh, which is not where anyone
+           # looks on the day a harness fails.
+           echo "== $d failed. Its scratch work was on a tmpfs and is gone;" >&2
+           echo "   re-run with NIXCC_SCRATCH=/some/dir to keep it." >&2
+           exit "$status" ;;
       esac
     done
     [ "$ran" -gt 0 ] || { echo "no PoCs ran -- a green suite that tested nothing" >&2; exit 1; }
@@ -137,8 +143,43 @@ lint:
 no-deletes:
     #!/usr/bin/env bash
     set -uo pipefail
-    pattern='(^|[;&|(` ])(rm|rmdir|shred|truncate)([ ]|$)|git[ ]+clean|git[ ]+reset[ ]+--hard'
-    hits=$(grep -nEH "$pattern" poc/*/*.sh poc/*/*.py Justfile \
+    pattern='(^|[;&|(`]|[[:space:]])(/[^[:space:]]*/)?(rm|rmdir|unlink|shred|truncate)([[:space:]]|$)'
+    pattern="$pattern"'|git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+(clean|reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard)'
+    pattern="$pattern"'|find[[:space:]].*-delete'
+    files=$(ls poc/*/*.sh poc/*/*.py poc/*/*.nix Justfile flake.nix)
+    # A floor on what was looked at, for the reason poc/05-loop/closed-loop.sh
+    # learned the hard way: a grep over a glob that matched nothing prints the
+    # same clean line as a grep that found nothing. A rename or a moved
+    # directory would silently turn this into a claim about no files at all.
+    n=$(echo "$files" | wc -l)
+    [ "$n" -ge 20 ] || {
+      echo "only $n files to scan for delete-shaped commands, which is fewer" >&2
+      echo "than this tree has harnesses. The file list has gone stale, so a" >&2
+      echo "clean result here would be a claim about nothing." >&2; exit 1; }
+    # And a positive control, for the same reason. The pattern is run against
+    # lines that MUST match before it is trusted against lines that must not --
+    # an earlier version anchored on [;&|(` ] with no tab in it, so a
+    # tab-indented `rm -rf' was invisible to the check and to review. The tab
+    # case is spelled $'\t' because a literal one cannot appear in a just
+    # recipe, which is part of why it was missed.
+    probes=()
+    probes+=('rm -rf "$x"')                    # ok: a fixture, quoted, never run
+    probes+=($'\trm -rf "$x"')                 # ok: the tab case, which was missed
+    probes+=('foo && rm -rf bar')              # ok: fixture
+    probes+=('/bin/rm -rf "$x"')               # ok: fixture
+    probes+=('unlink "$f"')                    # ok: fixture
+    probes+=('git clean -fdx')                 # ok: fixture
+    probes+=('git -C /tmp/x clean -fdx')       # ok: fixture
+    probes+=('git reset --hard')               # ok: fixture
+    probes+=('git reset -q --hard')            # ok: fixture
+    probes+=("find . -name '*.o' -delete")     # ok: fixture
+    for probe in "${probes[@]}"; do
+      printf '%s\n' "$probe" | grep -qE "$pattern" || {
+        echo "the delete-shaped pattern does not match \"$probe\", so it is not" >&2
+        echo "looking for what it claims to look for." >&2; exit 1; }
+    done
+    # shellcheck disable=SC2086  # $files is a newline-separated list we built
+    hits=$(grep -nEH "$pattern" $files \
            | grep -vE ':[0-9]+:[[:space:]]*#' | grep -v '# ok:' || true)
     if [ -n "$hits" ]; then
       echo "delete-shaped commands in the harnesses:" >&2
