@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-15 07:47'
-updated_date: '2026-09-15 09:21'
+updated_date: '2026-09-15 09:36'
 labels:
   - poc
   - testing
@@ -87,4 +87,46 @@ That makes three distinct outcomes from this machinery seen in one batch of work
   3. the self-test declares itself broken because the background moved under it (this one)
 
 All three have the same root: a single scalar taken at one moment is being used as if it described a whole window. The bracketing data needed to notice is already collected in case 3 and could be collected cheaply in the others.
+
+FOURTH INSTANCE, and the clearest, because the evidence is printed on the same lines. The lexer ladder rendered a FAIL and the table shows exactly which point was distorted:
+
+       nodes   bytes    ...   cpu s   ...   peak RSS   busy cores
+        2306   62419           0.25         123 MB        0.83
+        4564  119926           0.51         205 MB        3.17   <-- this one
+        8613  223124           1.33         347 MB        0.97
+       16720  430998           2.38         501 MB        0.85
+
+       119926 ->   223124: 1.86x input, 2.62x CPU  SUPERLINEAR
+       FAIL: 119926 -> 223124 bytes grew 1.86x but cost 2.62x CPU
+
+Every other point measured under one busy core; the 119926-byte point measured 3.17. The step that failed is the step out of it, and it failed because the DENOMINATOR was inflated -- 0.51 s where the trend says about 0.70 -- not because the numerator was. A contended point makes the step INTO it look cheap and the step OUT of it look expensive, and only the second is reported.
+
+3.17 is under the 3.50 threshold, so the guard rendered a verdict. That is the threshold doing what it was told: it is a single all-or-nothing cut, and a point at 90% of it is still distorted enough to move a ratio by 40%.
+
+The fix this suggests is cheaper than the memory-pressure work in the earlier note and probably wants doing first: the ladder already records busy cores PER POINT. A step whose two endpoints were measured under materially different contention is not comparable, whatever the absolute numbers were. Refusing a STEP -- rather than the whole ladder -- when its endpoints' contention readings differ by more than some margin would have caught all four instances recorded on this task, and would have kept the three good steps in this run.
+
+Counted across this batch: four gate runs lost to this machinery, in four distinct ways, on a poc/02-lexer and poc/lib that no commit in the batch touches.
+
+THE DIAGNOSIS CHANGES. It is probably not contention at all, and decision-001 already predicted it.
+
+The largest lexer ladder point, across five gate runs in this batch:
+
+    run            busy cores   347 MB point    500 MB point
+    e2e-hello5        0.90/0.64    55870 tok/s     54723 tok/s   PASS
+    e2e-025b          0.77/0.61    78854           61493         PASS
+    e2e-024g          1.67/1.51    46389           50569         PASS
+    e2e-final         0.97/0.85    51906           55710         FAIL
+    e2e-final2        0.54/0.59    76262           54855         FAIL
+
+The 500 MB point is RELIABLY 50-61k tokens/s -- it never once reached the 77-81k the four smaller points sustain, at any level of contention including 0.59 cores, which is an idle machine. That is not noise. The four smaller points run at 76-81k every time.
+
+The noisy one is the PENULTIMATE point, 347 MB, which has measured anywhere from 46k to 79k. The ladder passes or fails on which of those it happens to get: a fast 347 MB reading makes the step into 500 MB look superlinear, a slow one hides it.
+
+So the underlying fact is stable and unreported, and the verdict is a coin flip on a different point's noise.
+
+DECISION-001 ALREADY RECORDS THIS EFFECT: '2.2 MB costs 976 MB and takes 18.3 s where the small-file rate predicts 14.5'. That is the same 25-30% degradation at a large working set, measured a wave earlier and written down as the thing to watch. What is wrong is not the lexer and not the machine -- it is that the ladder's linearity tolerance does not account for an effect this project has already decided is real and expected.
+
+That makes the fix a different one from anything above: either the ladder's largest point has to sit below the working set where the evaluator's own overhead bends the curve, or the tolerance for the last step has to be set from the measured degradation rather than from the same constant as the others. Dropping the largest point would be a loss -- it is the only one that exercises the regime decision-001 cares about -- so the second is probably right, with the number taken from a run on a quiet machine and cited.
+
+The three earlier notes on this task stand as separate symptoms of the guard machinery. This one says the guard was mostly innocent: the ladder is failing on a real, documented, expected property of the evaluator, and reading it as contention sent four investigations in the wrong direction -- including two of mine.
 <!-- SECTION:NOTES:END -->
