@@ -421,7 +421,12 @@ echo "${#names[@]} mutations, each detected with its own failure"
 # the point of poc/lib -- but the self-test is cheap and catches a guard that
 # has stopped seeing load at all, which would silently make this ladder's
 # verdict meaningless.
-python3 "$root/lib/selftest.py" "$work"
+#
+# What happens to each of its three outcomes is poc/lib/selftest.sh's, so that
+# the three harnesses that call it cannot each decide differently.
+# shellcheck source-path=SCRIPTDIR source=../lib/selftest.sh
+. "$root/lib/selftest.sh"
+nixcc_selftest "$root/lib" "$work"
 
 status=0
 python3 "$poc/scale.py" "$poc" "${ladder[@]}" || status=$?
@@ -430,5 +435,6 @@ if [ "$status" = 3 ]; then
   echo "Everything above this line ran and passed; nothing about the assembler's" >&2
   echo "linearity was shown either way. Re-run on an idle machine for that." >&2
 fi
-[ "$status" = 0 ] || exit "$status"
+nixcc_selftest_verdict "$status"
+[ "$nixcc_verdict" = 0 ] || exit "$nixcc_verdict"
 

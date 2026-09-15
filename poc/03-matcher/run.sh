@@ -208,7 +208,12 @@ blinded=$work/blinded
 # guard's DECISION by moving its threshold, so with the measurement stubbed out
 # to report an idle machine every one of them still passes. Which is why the stub is then
 # applied, and has to be caught.
-python3 "$root/lib/selftest.py" "$work"
+#
+# What happens to each of its three outcomes is poc/lib/selftest.sh's, so that
+# the three harnesses that call it cannot each decide differently.
+# shellcheck source-path=SCRIPTDIR source=../lib/selftest.sh
+. "$root/lib/selftest.sh"
+nixcc_selftest "$root/lib" "$work"
 
 mkdir "$blinded"; cp -r "$root/lib" "$blinded/lib"
 sed -i 's|^    return (v\[0\].*|    return 0.0|' "$blinded/lib/contention.py"
@@ -665,5 +670,6 @@ if [ "$status" = 3 ]; then
   echo "Everything above this line ran and passed; nothing about the labeller's" >&2
   echo "linearity was shown either way. Re-run on an idle machine for that." >&2
 fi
-[ "$status" = 0 ] || exit "$status"
+nixcc_selftest_verdict "$status"
+[ "$nixcc_verdict" = 0 ] || exit "$nixcc_verdict"
 

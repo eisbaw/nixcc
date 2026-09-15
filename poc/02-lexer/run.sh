@@ -74,7 +74,12 @@ blinded=$work/blinded
 # guard's DECISION by moving its threshold, so with the measurement stubbed out
 # to report an idle machine every one of them still passes. Which is why the
 # stub is then applied, and has to be caught.
-python3 "$root/lib/selftest.py" "$work"
+#
+# What happens to each of its three outcomes is poc/lib/selftest.sh's, so that
+# the three harnesses that call it cannot each decide differently.
+# shellcheck source-path=SCRIPTDIR source=../lib/selftest.sh
+. "$root/lib/selftest.sh"
+nixcc_selftest "$root/lib" "$work"
 
 mkdir "$blinded"; cp -r "$root/lib" "$blinded/lib"
 sed -i 's|^    return (v\[0\].*|    return 0.0|' "$blinded/lib/contention.py"
@@ -114,6 +119,126 @@ grep -q "SELF-TEST FAILED" "$work/estimator.log" || {
   echo "the mutated estimator failed, but not as a self-test failure:" >&2
   cat "$work/estimator.log" >&2; exit 1; }
 echo "  guard: a linearity estimator that is not the median is caught"
+
+# And the same stub taken ALL THE WAY THROUGH, because the case above does not
+# get there. Inside the sandbox a blinded copy fails at check -1, in 0.035 s,
+# on the /proc cross-check -- long before check 1 sees it. That is a perfectly
+# good catch and it is why the case above is cheap, but it leaves the thing
+# selftest.py's header claims about RETAKING unproved: that a stubbed reading
+# agrees with itself on every attempt, never counts as drift, and is reported
+# as a failure rather than refused. NIXCC_SANDBOX is taken out of the
+# environment so check -1 stands aside and check 1 is reached.
+#
+# MIN_WINDOW is cut to 0.5 s in this copy, and that is sound HERE and nowhere
+# else: the reading is stubbed to a constant, so how long it is taken over
+# cannot change it. It is what makes three full attempts cost about 6 s instead
+# of 25.
+blinded_deep=$work/blinded-deep
+mkdir "$blinded_deep"; cp -r "$root/lib" "$blinded_deep/lib"
+sed -i 's|^    return (v\[0\].*|    return 0.0|;
+        s|^MIN_WINDOW = .*|MIN_WINDOW = 0.5|' "$blinded_deep/lib/contention.py"
+for knob in "    return 0.0" "MIN_WINDOW = 0.5"; do
+  grep -qx "$knob" "$blinded_deep/lib/contention.py" || {
+    echo "HARNESS FAULT: could not set \`$knob' in contention.py, so the" >&2
+    echo "blinding mutation is no longer what this stage thinks it is" >&2; exit 1; }
+done
+deep_status=0
+env -u NIXCC_SANDBOX python3 "$blinded_deep/lib/selftest.py" "$blinded_deep" \
+  > "$work/blinded-deep.log" 2>&1 || deep_status=$?
+[ "$deep_status" = 1 ] || {
+  echo "a stubbed contention measurement, reaching check 1, exited $deep_status;" >&2
+  echo "a reading that disagrees with the machine while agreeing with ITSELF is" >&2
+  echo "a broken measurement (exit 1), not an unanswerable question (exit 3):" >&2
+  cat "$work/blinded-deep.log" >&2; exit 1; }
+for want in "SELF-TEST FAILED" "2 of 2 retakes used" "on 3 of them the baseline"; do
+  grep -q "$want" "$work/blinded-deep.log" || {
+    echo "the blinded measurement failed, but never said \"$want\", so the" >&2
+    echo "retakes it is supposed to have exhausted did not happen:" >&2
+    cat "$work/blinded-deep.log" >&2; exit 1; }
+done
+echo "  guard: a stub agreeing with itself exhausts every retake and still fails"
+
+# And the THIRD outcome, which is the one no stub can reach. Both of
+# selftest.py's measuring checks difference a probe against a baseline taken
+# seconds away from it, so both can be handed a question with no answer rather
+# than one they fail: a background that STEPS between the two baseline readings
+# puts half the step onto the probe and nothing tells them apart. That used to
+# read as SELF-TEST FAILED -- a red gate for a measurement that was working
+# perfectly -- and a gate that goes red for no reason is how people learn to
+# discount red. It renders NO VERDICT now, and this is what says so.
+#
+# The controls are the three blocks above: a stub must still say SELF-TEST
+# FAILED, twice over, and an honest run must still pass. Without them this case
+# would be satisfied by a selftest.py that refused everything.
+#
+# TWENTY cores of imaginary background, which is far more than the wild failure
+# showed, and the size is the point. Bracketing takes the MIDPOINT of the two
+# baselines, so a step of d moves `added' by d/2 and not by d -- the first
+# version of this stepped by 6, left `added' 0.6 cores clear of the band edge,
+# and review measured it failing 2 runs in 11 on a transient. At 20 the reading
+# lands about 6 cores outside the band and no transient this machine produces
+# can carry it back in.
+#
+# Three knobs moved in the copy, all of them real constants in the real files,
+# which is the same method the guard cases below use:
+#
+#   ATTEMPTS to 1   one window rather than three. The retakes exist to absorb a
+#                   transient, and a step put there on purpose is not one.
+#   the free-cores gate off
+#                   it reads the REAL machine and raises a HARNESS FAULT when
+#                   fewer than LOAD + 2 cores are free (task-042), so leaving
+#                   it in would make this case red on a busy machine for a
+#                   reason that has nothing to do with what it tests.
+#   idle_window()   +20 cores from its fourth call on. With ATTEMPTS at 1 and
+#                   the gate off, check 1's calls are the baseline before the
+#                   probe, the probe, and the baseline after it -- so the
+#                   fourth call is the trailing baseline. The step reaches
+#                   later windows too, but check 1 refuses before check 2 can
+#                   run, and the assertion below is what makes sure the step
+#                   landed where this says rather than somewhere else.
+drift=$work/drift
+mkdir "$drift"; cp -r "$root/lib" "$drift/lib"
+sed -i 's|^def idle_window():|def idle_window(_n=[0]):\n    _n[0] += 1|;
+        s|^    return contention.busiest(|    return (20.0 if _n[0] >= 4 else 0.0) + contention.busiest(|;
+        s|^if free < LOAD + 2:|if False:  # the free-cores gate, off in this copy|;
+        s|^ATTEMPTS = .*|ATTEMPTS = 1|' "$drift/lib/selftest.py"
+for knob in "_n\[0\] >= 4" "^if False:" "^ATTEMPTS = 1$"; do
+  grep -q "$knob" "$drift/lib/selftest.py" || {
+    echo "HARNESS FAULT: could not set \`$knob' in selftest.py. The file has" >&2
+    echo "changed shape, so this stage is no longer stepping the baseline it" >&2
+    echo "claims to step" >&2; exit 1; }
+done
+drift_status=0
+python3 "$drift/lib/selftest.py" "$drift" > "$work/drift.log" 2>&1 || drift_status=$?
+[ "$drift_status" = 3 ] || {
+  echo "with the baseline stepped up by 20 cores between the two readings that" >&2
+  echo "bracket the probe, the self-test exited $drift_status; a baseline that" >&2
+  echo "moved that far under a 4-core probe is an unanswerable question, which" >&2
+  echo "is exit 3:" >&2
+  cat "$work/drift.log" >&2; exit 1; }
+grep -q "NO VERDICT" "$work/drift.log" || {
+  echo "the self-test exited 3 without saying NO VERDICT:" >&2
+  cat "$work/drift.log" >&2; exit 1; }
+if grep -q "SELF-TEST FAILED" "$work/drift.log"; then
+  echo "the self-test rendered NO VERDICT and ALSO called itself broken; those" >&2
+  echo "are the two outcomes this whole change exists to tell apart:" >&2
+  cat "$work/drift.log" >&2; exit 1
+fi
+# And that the step landed BETWEEN the two baselines rather than on the probe.
+# Without this the case can keep passing for the wrong reason: add or remove an
+# idle_window() call above check 1 and the step moves onto the probe window, at
+# which point the reading leaves the band through the CEILING instead and the
+# three assertions above are all still satisfied. That is this tree's recurring
+# failure -- a check reporting its cleanest line once it has stopped testing --
+# so the printed spread is read back and required to be most of the step.
+apart=$(sed -n 's/.*, \([0-9.]*\) apart).*/\1/p' "$work/drift.log" | head -1)
+awk -v a="${apart:-0}" 'BEGIN { exit !(a >= 15) }' || {
+  echo "the two baseline readings that bracket the probe came out ${apart:-no} " >&2
+  echo "cores apart, and this stage steps one of them by 20. The step is not" >&2
+  echo "landing between them any more, so whatever made this exit 3 was not" >&2
+  echo "the thing under test:" >&2
+  cat "$work/drift.log" >&2; exit 1; }
+echo "  guard: a baseline that moves under the probe is NO VERDICT, not a failure"
 
 # Second, that the guard DECIDES the same way whichever verdict it interrupts.
 # Two knobs: the threshold in contention.py says whether the machine counts as
@@ -396,5 +521,6 @@ if [ "$status" = 3 ]; then
   echo "Everything above this line ran and passed; nothing about the lexer's" >&2
   echo "linearity was shown either way. Re-run on an idle machine for that." >&2
 fi
-[ "$status" = 0 ] || exit "$status"
+nixcc_selftest_verdict "$status"
+[ "$nixcc_verdict" = 0 ] || exit "$nixcc_verdict"
 
