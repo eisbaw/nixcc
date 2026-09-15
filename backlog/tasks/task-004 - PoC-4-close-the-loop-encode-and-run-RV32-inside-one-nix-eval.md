@@ -1,7 +1,7 @@
 ---
 id: TASK-004
 title: 'PoC-4: close the loop, encode and run RV32 inside one nix eval'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-14 18:20'
 updated_date: '2026-09-15 02:45'
