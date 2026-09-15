@@ -4,7 +4,7 @@ title: 'Assert the mutation COUNT in the lexer, matcher and assembler harnesses'
 status: Done
 assignee: []
 created_date: '2026-09-15 14:07'
-updated_date: '2026-09-15 17:10'
+updated_date: '2026-09-15 17:44'
 labels:
   - poc
   - testing
@@ -97,4 +97,10 @@ CRITERION 3, DEMONSTRATED AGAIN against the equality version, in both directions
 FILED, NOT FIXED: task-044 (mutate() copied four times, so there is nowhere to share a statement about a table and nothing can enforce that a fifth harness declares a count) and task-045 (two more counts that are printed rather than asserted -- `just poc' prints "$ran PoC(s) passed" after checking only that $ran is above zero, and the guard stages in poc/02-lexer and poc/03-matcher count nothing at all).
 
 WHAT THIS STILL DOES NOT BUY, restated after review sharpened it. It counts; it does not check that the RIGHT mutations ran. The distinctness loop above it is weaker than I first wrote: it requires each mutation's fragment to appear in its own output and in no other's, so it catches an exact duplicate -- but a near-duplicate that tests the same defect through a different file produces a different message and passes both checks. Inventing a new failure message is the default, not a bar.
+
+ORCHESTRATOR: accepting the deviation on criterion #2, which asked for a floor and got a declared count checked for equality.
+
+The reasoning is sound and the evidence is concrete: review traced 05-loop's existing '-ge 34' and found nobody had ever lowered it -- two commits ADDED mutations and left the floor behind. A floor only catches the direction that has never happened here, while silently tolerating the one that has. Equality catches both. That is strictly better than what I asked for, so the criterion is amended rather than the code.
+
+This is the fourth time an implementer has flagged a deviation instead of quietly reshaping a criterion to fit. Twice the criterion was mine and wrong, once the work was genuinely incomplete, and now once where the implementer's judgement beat the criterion. All four were right to surface it.
 <!-- SECTION:NOTES:END -->

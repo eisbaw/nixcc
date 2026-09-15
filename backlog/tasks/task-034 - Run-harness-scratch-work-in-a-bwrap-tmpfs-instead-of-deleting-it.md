@@ -4,7 +4,7 @@ title: Run harness scratch work in a bwrap tmpfs instead of deleting it
 status: Done
 assignee: []
 created_date: '2026-09-15 07:28'
-updated_date: '2026-09-15 16:26'
+updated_date: '2026-09-15 17:44'
 labels:
   - infrastructure
   - harness
@@ -133,4 +133,8 @@ The remaining gap on criterion #3 is filed as task-041, with the fix spelled out
 Criterion 3 met by task-041, which moved poc/03-matcher's build_and_run into a script so its semantic mutation could go through poc/lib/mutant.sh like every other one. Every mutation in the mutate() stage now gets a tmpfs of its own, with no exception attached.
 
 Ticked on the reading that 'mutation testing' here means the mutate() stage -- the population this task was counting. The GUARD stage in poc/02-lexer and poc/03-matcher separately copies poc/lib into single-use directories and calls two of those copies mutations in its own output; they are not on a tmpfs. Filed as task-043. If criterion 3 was meant to cover those too, untick it and reopen.
+
+ORCHESTRATOR: accepting criterion #3 on the narrow reading -- 'mutation testing' means the mutate() stage, which is the population the criterion was counting, and 106 of 107 there now get a fresh tmpfs with the last closed by task-041.
+
+Recording the residual plainly rather than letting the tick bury it: the GUARD stage still uses single-use directories and calls two of them mutations. That is task-043. I am not untangling this task to cover them, because the criterion's intent was stale state between mutation runs and the guard stage does not carry state between runs -- but anyone reading '#3 met' should know the word 'mutation' is used in two senses in this tree, and only one of them is covered here.
 <!-- SECTION:NOTES:END -->
