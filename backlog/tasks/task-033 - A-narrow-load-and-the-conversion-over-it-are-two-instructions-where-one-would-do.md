@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-15 05:52'
-updated_date: '2026-09-15 07:17'
+updated_date: '2026-09-15 09:43'
 labels:
   - poc
   - matcher
@@ -52,4 +52,6 @@ THE SELF-MOVES ARE A SECOND, SEPARATE PIECE OF WASTE, not part of the fusion. ru
 All four of those moves are currently self-moves, because a one-kid node's kid is reduced at the same depth into the same depth register. So the register the comment worries about is never actually different today -- which means the justification is correct and unexercised at the same time. burg.nix's new table check is what keeps it honest.
 
 WHAT THIS TASK BLOCKS, which was not written down: until the load and the conversion are fused, the SIGN a load carries is unobservable in any executed answer. lcc promotes every narrow load, so an INDIRI1 always arrives under a CVII4 whose slli/srai pair re-normalises the register -- `lb' and `lbu' leave the same 32 bits. Measured: the whole rule table with lb and lbu exchanged still returns 1649 from ir/chars.c. poc/03-matcher/cases.nix's `narrowLoads' table is the ONLY thing checking lb against lbu, and it checks the rule table rather than a result. When this lands, the load becomes the extension and the execution stage starts to see it -- at which point narrowLoads stops being the only witness, and should not be deleted before then.
+
+forward-carried from task-024 via the orchestrator: when you fuse the narrow load with its conversion, the lb/lbu and lh/lhu distinction becomes OBSERVABLE for the first time. Today it is not -- lcc emits CVII4 above INDIRI1 and CVUI4 above INDIRU1, so the conversion re-normalises the register whatever the load did, and swapping the two in the rule table changes no answer anywhere (measured three times: twice by task-024's implementer, once by the orchestrator against the IR itself). Task-024's acceptance criterion originally demanded a case where the answer differs and had to be withdrawn for this reason. Once fused, write that case here -- a signed char holding 0xFF must read as -1 and an unsigned char holding 0xFF must read as 255, and the fused load is the only thing making it so.
 <!-- SECTION:NOTES:END -->

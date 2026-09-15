@@ -1,10 +1,10 @@
 ---
 id: TASK-024
 title: 'Byte and halfword loads and stores, so char exists'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 09:29'
+updated_date: '2026-09-15 09:43'
 labels:
   - poc
   - matcher
@@ -25,9 +25,9 @@ Needs the CVT opcodes as well as the loads and stores: lcc inserts CVTCI4/CVTIC4
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A C function that walks a char array, reads a byte and stores a byte compiles and runs in the Nix emulator with the right result
-- [ ] #2 Signed and unsigned char are distinguished: lb against lbu, checked by a case whose answer differs between them
-- [x] #3 Halfwords too, or the rule table says in one place why they are out of scope
-- [x] #4 poc/05-loop's demo can build its message a byte at a time
+- [x] #2 Halfwords too, or the rule table says in one place why they are out of scope
+- [x] #3 poc/05-loop's demo can build its message a byte at a time
+- [ ] #4 Signed and unsigned narrow loads select lb/lh versus lbu/lhu per the IR opcode (INDIRI1/INDIRU1), verified by inspecting the emitted instruction rather than by a differing answer -- see the note below for why no differing answer exists yet
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -65,4 +65,18 @@ GOTCHAS for whoever touches this next.
 - ir/chars.c compiles to 91 body instructions of which 23 are extensions and 4 are `mv sN,sN' self-moves -- 30% waste, all of it task-033 and task-016.
 
 ALSO FILED: task-035, a pre-existing flake in poc/02-lexer's fourth contention-guard case. It exits 1 (a harness failure, not a NO VERDICT) when the smallest ladder point measures too close to the evaluator baseline, because the too-small-to-measure cliff refuses through the contention guard before the per-step 'unjudged' lines are ever printed. poc/02-lexer and poc/lib are untouched by this change.
+
+ORCHESTRATOR: resolving the AC#2 deviation, and the implementer was right to refuse it.
+
+The criterion asked for lb vs lbu 'checked by a case whose answer differs'. No such case can exist today, and I verified the reason independently rather than on report: lcc emits a conversion above EVERY narrow load. For 'signed char *p; return p[0]' the IR is INDIRI1 followed by CVII4, and for unsigned char it is INDIRU1 followed by CVUI4. The conversion re-normalises the register to the correct 32 bits whatever the load did, so swapping lb and lbu in the rule table leaves every observable answer unchanged -- which is exactly what the implementer measured twice.
+
+So the criterion was unsatisfiable, not merely unmet, and it is replaced with one that checks the selection directly. Two implementers have now declined to rewrite a criterion to fit what they built, and both times they were right and the criterion was mine.
+
+This is also the same fact as the reported waste: the load extends and then the conversion extends again, which is 23 of chars.c's 91 instructions. Fusing them is task-033, and the moment they fuse the distinction becomes observable -- so the 'answer differs' test belongs there, where it can actually be written. Carried onto task-033.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+char and short loads and stores exist; hello.c now uses a global char msg[] with sb stores and still prints 1..10 = 55. AC#2 was unsatisfiable as written -- every narrow load carries a conversion that re-normalises the register, so lb and lbu are observationally identical until task-033 fuses them. Replaced with a criterion that checks the selection rather than the answer.
+<!-- SECTION:FINAL_SUMMARY:END -->
