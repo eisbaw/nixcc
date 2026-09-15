@@ -32,13 +32,13 @@ let
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
   minFunctions = 9;
-  minSelections = 24;
+  minSelections = 34;
   minDuels = 4;
-  minRules = 35;
+  minRules = 60;
   minNodes = 250;
   minRequiredOps = 38;
   minLibcalls = 3;
-  minNarrowLoads = 8;
+  minLowerings = 13;
   minForbidden = 5;
   minFollows = 2;
 
@@ -64,21 +64,20 @@ let
 
   forbidden = b.filter (m: contains m templates) cases.forbiddenMnemonics;
 
-  # Which INSTRUCTION each narrow access lowers to. This is the ONLY check of
-  # a load's sign in the whole suite: lcc promotes every narrow load, so the
-  # conversion over it re-normalises the register and swapping lb for lbu
-  # changes no answer any C program can produce (measured -- see cases.nix's
-  # `narrowLoads'). It becomes observable when task-033 fuses the pair; until
-  # then this table is the substitute for an oracle that does not exist.
+  # Which INSTRUCTION each opcode lowers to. `opCovered' below asserts that
+  # SOME rule for an opcode fired and never which instruction it emits, and
+  # for most of these rows no executed answer does either -- see cases.nix's
+  # `lowerings' for the per-rule measurement of what the emulator can and
+  # cannot see. So this is the only check standing behind them.
   #
   # The template's first TOKEN, not a substring: `lb' is a prefix of `lbu', so
   # a substring test would accept exactly the swap this exists to catch.
   firstToken = t: let m = b.match "([a-z][a-z0-9.]*)[ \t].*" t; in if m == null then "" else b.head m;
-  badNarrow = b.filter
+  badLowering = b.filter
     (l:
       let r = ruleById.${l.rule} or null; in
       r == null || r.op != l.op || firstToken r.tmpl != l.mnemonic)
-    cases.narrowLoads;
+    cases.lowerings;
   badLibcall = b.filter
     (l:
       let r = ruleById.${l.rule} or null; in
@@ -283,9 +282,9 @@ else if b.length cases.requiredOps < minRequiredOps then
 else if b.length cases.libcalls < minLibcalls then
   fault "cases.nix names only ${toString (b.length cases.libcalls)} libcall lowerings, fewer than the ${
     toString minLibcalls} floor"
-else if b.length cases.narrowLoads < minNarrowLoads then
-  fault "cases.nix names only ${toString (b.length cases.narrowLoads)} narrow load/store lowerings, fewer than the ${
-    toString minNarrowLoads} floor -- emptying that list stops the check that lb and lbu are told apart"
+else if b.length cases.lowerings < minLowerings then
+  fault "cases.nix names only ${toString (b.length cases.lowerings)} opcode lowerings, fewer than the ${
+    toString minLowerings} floor -- shortening that list stops the check that lb and lbu are told apart"
 else if b.length cases.forbiddenMnemonics < minForbidden then
   fault "cases.nix forbids only ${toString (b.length cases.forbiddenMnemonics)} mnemonics, fewer than the ${
     toString minForbidden} floor -- emptying that list stops the check that RV32I has no multiplier"
@@ -304,9 +303,9 @@ else if opUnmatched != [ ] then
   throw "matcher: ${b.concatStringsSep ", " (map (c: c.op) opUnmatched)} appear in the corpus but no rule for those opcodes ever matched them"
 else if forbidden != [ ] then
   throw "matcher: a rule template emits ${b.concatStringsSep ", " (map (m: "`${m}'") forbidden)}, which RV32I has not got (decision-003)"
-else if badNarrow != [ ] then
-  throw "matcher: ${(b.head badNarrow).op} must be lowered by rule `${(b.head badNarrow).rule}' to `${
-    (b.head badNarrow).mnemonic}', and is not -- RV32I carries the sign in the instruction, and no executed answer can tell lb from lbu until task-033, so this table is the only thing checking it (task-024)"
+else if badLowering != [ ] then
+  throw "matcher: ${(b.head badLowering).op} must be lowered by rule `${(b.head badLowering).rule}' to `${
+    (b.head badLowering).mnemonic}', and is not -- most of these lowerings are invisible to any executed answer, so this table is the only thing checking them (task-024)"
 else if badLibcall != [ ] then
   throw "matcher: ${(b.head badLibcall).op} must be lowered by rule `${(b.head badLibcall).rule}' to a call on ${
     (b.head badLibcall).symbol}, and is not (decision-003)"

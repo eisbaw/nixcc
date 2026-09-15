@@ -5,7 +5,13 @@
  * visible is the CONVERSION the rule table chooses -- an arithmetic shift
  * against a mask -- and not the load: lcc promotes every narrow load, and the
  * conversion re-normalises the register, so lb and lbu leave the same bits
- * behind. See ir/chars.c's header and cases.nix's `narrowLoads'.
+ * behind. See ir/chars.c's header and cases.nix's `lowerings'.
+ *
+ * THE LAYOUT IS LOAD-BEARING and not merely tidy: shalf and uhalf are placed
+ * so that shalf+2 and sbuf+2 are NOT four-byte aligned. A halfword or byte
+ * store widened to `sw' therefore faults in the emulator rather than quietly
+ * writing three bytes too many, and run.sh requires a clean exit. Pad this
+ * data differently and that catch disappears.
  */
 	.text
 	.globl _start

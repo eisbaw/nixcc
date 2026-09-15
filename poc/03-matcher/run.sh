@@ -407,6 +407,14 @@ mutate "matcher: a signed byte is loaded with lbu, so it stops being signed" \
        "sed -i '/reg_indiri1/ s@\"lb @\"lbu @' rules.nix" \
        "$matcher_check"
 
+# The row with the least else holding it: lowering INDIRU4 to `lbu' passes
+# every other check in the suite AND returns the right answer, because
+# ir/chars.c only ever loads an unsigned int it just stored a small value to.
+mutate "matcher: an unsigned int is loaded a byte at a time" \
+       "INDIRU4 must be lowered by rule \`reg_indiru'" \
+       "sed -i '/reg_indiru\"/ s@\"lw @\"lbu @' rules.nix" \
+       "$matcher_check"
+
 mutate "matcher: a byte store becomes a word store, which writes three bytes too many" \
        "ASGNI1 must be lowered by rule \`stmt_asgni1'" \
        "sed -i '/stmt_asgni1/ s@\"sb @\"sw @' rules.nix" \
@@ -434,10 +442,18 @@ mutate "matcher: a fragment rule may hand its users the register its kid used" \
        "sed -i 's@^else if aliasing != \[ \] then@else if false then@' burg.nix" \
        "$must_fail"
 
-mutate "harness: the narrow load/store table is emptied" \
-       "narrow load/store lowerings, fewer than the" \
-       "sed -i 's@^  narrowLoads = \[@  narrowLoads = [ ]; unusedNarrowLoads = [@' cases.nix" \
+mutate "harness: the opcode-lowering table is emptied" \
+       "opcode lowerings, fewer than the" \
+       "sed -i 's@^  lowerings = \[@  lowerings = [ ]; unusedLowerings = [@' cases.nix" \
        "$matcher_check"
+
+# Only messages.sh can see this one. With the table check off, an unknown
+# predicate reaches `holds' and still throws -- so must-fail.nix is satisfied
+# and the diagnostic is the one thing that changed.
+mutate "matcher: an unknown rule predicate is caught by the labeller, not the table" \
+       "'a predicate the matcher does not implement' threw, but the message does not contain" \
+       "sed -i 's@^else if unknownWhen != \[ \] then@else if false then@' burg.nix" \
+       "bash $mut/messages.sh $mut"
 
 mutate "harness: the opcode-coverage table is emptied" \
        "turns the opcode-coverage check into a no-op" \
@@ -465,7 +481,7 @@ mutate "matcher: a bad rule table is accepted instead of refused" \
        "$must_fail"
 
 mutate "matcher: diagnostics lose their detail" \
-       "the message does not contain" \
+       "'two rules share an id' threw, but the message does not contain" \
        'sed -i "s@is used twice@is not allowed@" burg.nix' \
        "bash $mut/messages.sh $mut"
 

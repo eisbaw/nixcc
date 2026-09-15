@@ -40,21 +40,33 @@
     "CNSTI1"
   ];
 
-  # SIGN, and the ONLY place in this suite that can check it. `lb'
-  # sign-extends its byte into the register and `lbu' zero-extends it, and
-  # nothing this compiler can be asked to run tells them apart: lcc promotes
-  # every narrow load, so an INDIRI1 always arrives under a CVII4 whose
-  # slli/srai pair re-normalises the register and erases whatever the load
-  # did. MEASURED -- the whole table with lb and lbu exchanged still returns
-  # 1649 from ir/chars.c. The execution stage is blind to this until task-033
-  # fuses the load and the conversion into one instruction, and then the load
-  # IS the extension and the answer starts to move.
+  # WHICH INSTRUCTION EACH OPCODE LOWERS TO, and mostly the only place that
+  # can say so. `opCovered' asserts that SOME rule for an opcode fired; it
+  # never asserts which instruction that rule emits, and for most of the rows
+  # below no executed answer does either.
   #
-  # So this table is not a restatement of rules.nix, it is the substitute for
-  # an oracle that does not exist yet. `mnemonic' is compared against the
-  # template's first TOKEN, not as a substring, because `lb' is a prefix of
-  # `lbu' and a substring test would pass the swap it exists to catch.
-  narrowLoads = [
+  # Measured, one rule at a time, by running ir/chars.c with the rule's
+  # template changed and reading the emulator's exit code:
+  #
+  #   VISIBLE to the execution stage   reg_cvii4_1, reg_cvii4_2 (srai->srli),
+  #                                    reg_cvui4_4, reg_cviu4_4 (mv->andi)
+  #   BLIND                            every load and store row, and every
+  #                                    narrowing conversion
+  #
+  # The loads are blind because lcc promotes every narrow access, so an
+  # INDIRI1 always arrives under a CVII4 whose shift pair RE-NORMALISES the
+  # register: `lb' and `lbu' leave the same 32 bits. The whole table with lb
+  # and lbu exchanged still returns 1649. The narrowing conversions are blind
+  # because `sb' and `sh' truncate anyway. Only a signed WIDENING is
+  # observable today, and the rest becomes observable when task-033 fuses the
+  # load and the conversion.
+  #
+  # So this is not a restatement of rules.nix, it is the substitute for an
+  # oracle that does not exist yet -- and it catches a one-sided edit, which
+  # is the realistic mistake. `mnemonic' is compared against the template's
+  # first TOKEN, not as a substring, because `lb' is a prefix of `lbu' and a
+  # substring test would pass the very swap this exists to catch.
+  lowerings = [
     { op = "INDIRI1"; rule = "reg_indiri1"; mnemonic = "lb"; }
     { op = "INDIRU1"; rule = "reg_indiru1"; mnemonic = "lbu"; }
     { op = "INDIRI2"; rule = "reg_indiri2"; mnemonic = "lh"; }
@@ -63,9 +75,14 @@
     { op = "ASGNU1"; rule = "stmt_asgnu1"; mnemonic = "sb"; }
     { op = "ASGNI2"; rule = "stmt_asgni2"; mnemonic = "sh"; }
     { op = "ASGNU2"; rule = "stmt_asgnu2"; mnemonic = "sh"; }
-    # The conversions are the half the execution stage CAN see, and they are
-    # the same kind of fact: a signed widening is an arithmetic shift and an
-    # unsigned one is a mask, and swapping those does move the answer.
+    # The WORD forms lcc emits for unsigned int. They are here because they
+    # are the rows with the least else holding them: nothing else in this
+    # file names an instruction for them, and lowering INDIRU4 to `lbu'
+    # passed every other check in the suite AND returned the right answer.
+    { op = "INDIRU4"; rule = "reg_indiru"; mnemonic = "lw"; }
+    { op = "ASGNU4"; rule = "stmt_asgnu"; mnemonic = "sw"; }
+    # The conversions. Two of these four are execution-visible and two are
+    # not; see the measurement above.
     { op = "CVII4"; rule = "reg_cvii4_1"; mnemonic = "slli"; }
     { op = "CVUI4"; rule = "reg_cvui4_1"; mnemonic = "andi"; }
     { op = "CVUU1"; rule = "reg_cvuu1"; mnemonic = "andi"; }
@@ -409,11 +426,12 @@
         "andi s3,s3,255"
         "srli s3,s3,16"
       ];
-      # `lw' is absent from the NARROW accesses by construction, so what is
-      # checked instead is that nothing packs a byte into a word the way
-      # poc/05-loop used to have to: no shift by 8, and no `sw' into the
-      # buffers this function writes with `sb' and `sh'.
-      absent = [ "%" "slli s2,s2,8" ];
+      # `sw sN,0(s1)' is the line that appears if a byte or halfword store
+      # is widened: s1 is where this function materialises a global's
+      # address, and every store through it must be narrow. A shift-by-8
+      # would have been a vacuous assertion -- no rule in the table can emit
+      # one -- so it is not here.
+      absent = [ "%" "sw s2,0(s1)" ];
       instructions = 91;
       follows = [ ];
     }

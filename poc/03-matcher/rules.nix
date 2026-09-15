@@ -151,9 +151,15 @@ in
     # THE SIGN IS IN THE INSTRUCTION, not in a conversion after it. `lb'
     # sign-extends its byte into the whole register and `lbu' zero-extends
     # it, so signed and unsigned char are two different rows here and not one
-    # row plus a fix-up. Swap the pair and a char holding 0xff reads as -1
-    # where it should read as 255, which is a wrong ANSWER and not merely a
-    # wrong width -- ir/chars.c is built so it changes.
+    # row plus a fix-up.
+    #
+    # Swapping the pair is nonetheless INVISIBLE to anything that runs today,
+    # and the honest place to say so is here. lcc promotes every narrow load,
+    # so the conversion above re-normalises the register and `lb' and `lbu'
+    # leave the same 32 bits; measured, the whole table with the two
+    # exchanged still returns 1649 from ir/chars.c. cases.nix's `lowerings'
+    # is what checks it, against this table, until task-033 fuses the load
+    # and the conversion and the load becomes the extension.
     #
     # Stores do not care: `sb' writes the low byte whatever is above it, so
     # the signed and unsigned rows differ only in which opcode they match.
