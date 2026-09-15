@@ -3,10 +3,10 @@ id: TASK-041
 title: >-
   Give the matcher's semantic mutation a tmpfs too, by moving build_and_run into
   a script
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 14:28'
-updated_date: '2026-09-15 16:14'
+updated_date: '2026-09-15 16:26'
 labels:
   - poc
   - testing
@@ -28,10 +28,10 @@ Two things to be careful of. build_and_run is the ONLY semantic oracle in the ma
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 poc/03-matcher's semantic mutation goes through poc/lib/mutant.sh like every other mutation in the tree, and so gets a tmpfs of its own
-- [ ] #2 build_and_run lives in its own script, called from the mutated tree, so a mutation that edits it is the copy that runs
-- [ ] #3 The semantic mutation still fails when check.nix passes it -- the property it exists to demonstrate is re-proved, not assumed to survive the move
-- [ ] #4 task-034 criterion #3 can then be checked with no exception attached
+- [x] #1 poc/03-matcher's semantic mutation goes through poc/lib/mutant.sh like every other mutation in the tree, and so gets a tmpfs of its own
+- [x] #2 build_and_run lives in its own script, called from the mutated tree, so a mutation that edits it is the copy that runs
+- [x] #3 The semantic mutation still fails when check.nix passes it -- the property it exists to demonstrate is re-proved, not assumed to survive the move
+- [x] #4 task-034 criterion #3 can then be checked with no exception attached
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -70,4 +70,18 @@ AND A MUTATION ADDED, which is the half of poc/04-assembler's precedent that mov
 Two comment overclaims corrected, both the same species task-034's notes already caught in this spot. "The one check in the suite a mutation could not reach" is false -- no mutation anywhere in poc/ edits a run.sh, so stage 1's DAG diff, the host-compiler cross-check and mutate()'s own distinctness loop are all still out of reach. And build-and-run.sh is not a check: it reports, and both callers judge. Its header says so now, including that a program which faulted or ran out of budget comes back as a clean exit 0 with a reason that is not "exit".
 
 The instruction floor of 5 moved verbatim and is now described honestly: it catches "essentially nothing came out" and nothing finer -- the smallest function in the corpus is 29 instructions and expr is 66.
+
+CRITERIA.
+
+#1 MET. The semantic mutation goes through poc/lib/mutant.sh like the other 109, and so runs in a bwrap mount namespace with a tmpfs over its tree.
+
+#2 MET, and now shown rather than asserted. build-and-run.sh is called as $mut/build-and-run.sh from inside the mutated tree, and the new "the semantic oracle stops running the program to completion" mutation edits that file and is detected -- which can only happen if the mutated copy is what ran.
+
+#3 MET, and re-proved two ways. In the harness it is re-proved on every run, because the control runs check.nix on the mutated tree before the claim is made and says CONTROL LOST if it fails. Independently, by hand: the sed applied to a fresh copy, check.nix over it exits 0 with "10 functions, 88 assertions over 267 emitted instructions", and build-and-run.sh on the same copy returns {"exitCode":4,...,"reason":"exit"} against cases.nix's 72.
+
+#4 MET FOR THE MUTATE() STAGE, WITH ONE THING NAMED RATHER THAN HIDDEN. Every mutation in the mutate() stage now gets a tmpfs, with no exception -- that is what task-034's criterion 3 is ticked on, and it is the population its author was counting when they wrote "106 of 107 mutations get a fresh tmpfs".
+
+The GUARD stage is a separate population and does not. poc/02-lexer/run.sh copies poc/lib into four plain directories ($blinded, $blinded_deep, $estimator, $drift), poc/03-matcher/run.sh into one, and both copy the whole PoC per guard_case. Two of those print "MUTATION NOT DETECTED" when they fail, so calling them something other than mutations is a stretch. Nothing can leak between runs today -- each name is used once and the scratch root is itself a tmpfs -- but the by-construction part is missing, and so are mutant.sh's exit 122 and mutate()'s status ladder. Filed as task-043.
+
+So: task-034 criterion 3 ticked on the reading that "mutation testing" means the mutate() stage. If you read it more widely, untick it and task-043 is the remaining work. Recorded here rather than settled quietly either way.
 <!-- SECTION:NOTES:END -->

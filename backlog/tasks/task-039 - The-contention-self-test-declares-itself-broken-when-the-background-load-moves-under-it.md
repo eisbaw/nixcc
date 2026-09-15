@@ -3,10 +3,10 @@ id: TASK-039
 title: >-
   The contention self-test declares itself broken when the background load moves
   under it
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 10:48'
-updated_date: '2026-09-15 15:28'
+updated_date: '2026-09-15 15:39'
 labels:
   - poc
   - testing
@@ -31,10 +31,10 @@ Order matters: this must not become a way for a genuinely blinded measurement to
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A self-test whose two bracket readings of the baseline disagree by enough to swamp the probe renders NO VERDICT and exits 3, not SELF-TEST FAILED
-- [ ] #2 The margin is measured on this machine and cited in the source, not chosen to make a red run go green
-- [ ] #3 The blinded-measurement mutation in the lexer and matcher harnesses still reports SELF-TEST FAILED: a stubbed reading agrees with itself, and agreeing with itself must not buy an escape
-- [ ] #4 A run that renders NO VERDICT here does not let the PoC that called it report a pass
+- [x] #1 A self-test whose two bracket readings of the baseline disagree by enough to swamp the probe renders NO VERDICT and exits 3, not SELF-TEST FAILED
+- [x] #2 The margin is measured on this machine and cited in the source, not chosen to make a red run go green
+- [x] #3 The blinded-measurement mutation in the lexer and matcher harnesses still reports SELF-TEST FAILED: a stubbed reading agrees with itself, and agreeing with itself must not buy an escape
+- [x] #4 A run that renders NO VERDICT here does not let the PoC that called it report a pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -106,4 +106,16 @@ REVISED after qa-test-runner and mped-architect. Both found real defects in the 
 8. A UNITS ERROR in the dead-check record: _round()'s skew allowance is 0.28 core-SECONDS, so the floor is about -0.14 cores over a MIN_WINDOW window, not -0.28. Fixed, with the arithmetic shown.
 
 Also from the reviews, not changed and recorded instead: check 2 still raises a HARNESS FAULT when its child under-burns, with no retake, even though an under-burning child on a loaded machine is as transient as the spike the retakes exist for. Appended to task-042, which owns the exit-2-on-a-busy-machine family.
+
+CRITERIA, one by one, with the qualification each needs.
+
+#1 MET, and wider than written. The refusal fires when the reading is outside the accept band AND every attempt that produced it came with a baseline that had moved. A reading that lands INSIDE the band with a drifting baseline passes rather than refusing -- the criterion says 'not SELF-TEST FAILED', which holds, but it is not a blanket refusal on drift and should not be read as one. Requiring both is what keeps a refusal from being reachable on an ordinary run.
+
+#2 MET, and the source cites 34 measurements taken here rather than an argument. Stated plainly because it is the criterion most easily fudged: the limit is bounded BELOW by the worst spread a merely busy machine produced (0.93) and ABOVE by the spread the churning one produced (2.40). The upper bound does come from a run that was red -- and that run was red WRONGLY, which is what this task is about. If you read criterion #2 as forbidding that too, then the honest position is that only the lower bound is measured and the upper one is the event being fixed, and the gap between them is 2.6x.
+
+#3 MET twice over, and the first draft's version of this was not enough. Inside the sandbox the stub is caught by check -1 in 35 ms and never reaches the code this task changed, so a second case runs it with NIXCC_SANDBOX out of the environment: exit 1, SELF-TEST FAILED, both retakes used, all three attempts steady.
+
+#4 MET. Exit 3 from the self-test is carried to the harness's last line and turns a ladder PASS into exit 3. It does NOT turn a ladder FAIL into exit 3, which the first draft did and which made `just poc' print 'Every other check in them passed' about a run where one had not.
+
+EVIDENCE. Two consecutive green gate runs, both `nix develop --command just e2e', exit 0: 7m41 at load average 1.96/2.08/3.14 rising to 2.92/3.22/3.37, and the second at 1.98/2.42/2.66 to 2.64/2.61/2.66. Separately, the new drift guard case run 12 times consecutively: exit 3 every time, with the probe reading between -6.20 and -5.48 against a band floor of 1.6, so the margin is over 7 cores on a 14-core machine. The version review caught had a margin of 0.6 and failed 2 runs in 11.
 <!-- SECTION:NOTES:END -->
