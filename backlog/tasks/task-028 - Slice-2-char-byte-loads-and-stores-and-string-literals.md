@@ -4,7 +4,7 @@ title: 'Slice 2: char, byte loads and stores, and string literals'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 17:11'
+updated_date: '2026-09-15 18:27'
 labels:
   - frontend
   - parser
@@ -92,4 +92,14 @@ CARRIED FORWARD from the task-039/040/041 batch. This slice writes a new harness
 5. TIMING NUMBERS. Everything decision-008 says still holds and nothing in this batch touched it. What this batch adds is that the SELF-TEST's own readings are bracketed and retaken, so a number it prints is the last of up to three attempts. If you quote one, quote the line and not the figure.
 
 6. STILL OPEN AND RELEVANT TO YOU: task-042 (a machine with fewer than six free cores makes the self-test a HARNESS FAULT, exit 2, red -- so a busy machine can still redden a gate for a reason that is not a defect), task-043 (the guard stage's copies are single-use directories rather than tmpfs), task-044 (mutate() copied four times), task-045 (`just poc' and the guard stages still print counts nobody asserts).
+
+FORWARD-CARRIED from task-011 (commit 35844a3). String literals now have a decoded form: `(import ../06-constants/const.nix).evalSCON lexeme' returns { units; width; warnings; }.
+
+THE PART THAT BEARS DIRECTLY ON THIS SLICE. `units' is a list of integers and NOT a Nix string, because a Nix string cannot hold a NUL byte (decision-001) and `"a\0b"' is a perfectly good C literal. It is also the form the emitter wants. `width' is bytes per unit: 1 for a narrow literal, 2 for a wide one (widechar is unsignedshort on this target), so a wide literal is not a byte list and laying it out needs the endianness the assembler already has.
+
+THERE IS NO TERMINATING NUL IN `units'. Adjacent literals are joined by the PARSER, which then appends ONE 0 -- lcc's scon() does the same thing in the same order. So the array type's length is (joined units) + 1, and an emitter that terminates each literal separately will lay out `char s[] = "ab" "cd";' as six bytes instead of five.
+
+Verified against lcc's defstring for 17 string forms including an embedded NUL, escapes above 127, and wide literals; see poc/06-constants/oracle.py.
+
+A literal containing a source byte above 127 currently throws (task-046). \xNN and \NNN reach every byte, so it constrains the corpus rather than the feature.
 <!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: 'Slice 1: parse declarations and integer expressions to DAG'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-15 17:11'
+updated_date: '2026-09-15 18:27'
 labels:
   - frontend
   - parser
@@ -97,4 +97,24 @@ CARRIED FORWARD from the task-039/040/041 batch. This slice writes a new harness
 5. TIMING NUMBERS. Everything decision-008 says still holds and nothing in this batch touched it. What this batch adds is that the SELF-TEST's own readings are bracketed and retaken, so a number it prints is the last of up to three attempts. If you quote one, quote the line and not the figure.
 
 6. STILL OPEN AND RELEVANT TO YOU: task-042 (a machine with fewer than six free cores makes the self-test a HARNESS FAULT, exit 2, red -- so a busy machine can still redden a gate for a reason that is not a defect), task-043 (the guard stage's copies are single-use directories rather than tmpfs), task-044 (mutate() copied four times), task-045 (`just poc' and the guard stages still print counts nobody asserts).
+
+FORWARD-CARRIED from task-011 (commit 35844a3). The constant evaluator exists: poc/06-constants/const.nix, used as `import ../06-constants/const.nix'.
+
+THE SURFACE YOU CALL. `evalToken tok' takes a poc/02-lexer token and dispatches on `kind'. Under it: `evalICON lexeme' returns { value; type; warnings; } where `type' is one of "int", "long", "unsigned int", "unsigned long" (integer constants) or "unsigned short" (a wide character constant, widechar being unsignedshort); `evalSCON lexeme' returns { units; width; warnings; }; `evalFCON' THROWS, naming decision-006 and task-015. A token of any other kind throws too, rather than guessing. The lexer's `explode' is now exported for this, so there is still one definition of it.
+
+TWO REPRESENTATION DECISIONS YOU INHERIT, both deliberate.
+
+`units' is ONE literal's decoded content with NO TERMINATOR, and `width' is bytes per unit (1 narrow, 2 wide). THE PARSER concatenates the unit lists of adjacent string literals and appends ONE 0. That is C's phase 6 and it is where lcc's scon() does it too -- it joins first and terminates once. A per-literal NUL would decode `"ab" "cd"' as a,b,0,c,d,0 instead of a,b,c,d,0. Nothing downstream has been written yet, so if this split is wrong for the DAG builder, say so now rather than working around it.
+
+A constant's VALUE for an unsigned type is its unsigned magnitude (0..4294967295), not a wrapped signed Nix integer. Signed types carry the signed value. Conversion to whatever the expression context wants is yours, not the evaluator's.
+
+`warnings' is a LIST OF STRINGS the evaluator recorded and did not print. lcc's text, verbatim, so it can be diffed. Deciding what to do with them -- print them, count them, gate on them -- is the parser's call; today nothing consumes them outside the tests, and a parser that drops them on the floor would be a silent regression the oracle cannot see.
+
+WHAT THE EVALUATOR DOES NOT DO, so you do not go looking. It does not fold expressions, does not promote, does not convert, and does not join adjacent string literals. It evaluates exactly one lexeme.
+
+TWO TRAPS ALREADY PAID FOR, do not re-pay them. Integer overflow THROWS in Nix, so `accumulate' compares before the multiply against the target ceiling; any arithmetic you add over constant values needs the same discipline, and 4294967295 * something is not safe by inspection. And builtins.tryEval does NOT catch an attribute-missing error (task-037), so every lookup in const.nix carries `or (throw ...)' -- a parser table written as a bare `${}' lookup will escape every must-fail suite you write.
+
+ONE LIMIT: a literal containing a byte above 127 throws (task-046). \xNN and \NNN reach every byte and lcc's own sources are ASCII, so nothing in the subset is blocked, but a corpus with UTF-8 in a string literal will stop you.
+
+HOW TO DIFF A CONSTANT'S SIGNEDNESS against the oracle, since criterion #2 here is a node-for-node diff and you will hit the same problem: an initializer CONVERTS the constant and shows the declared type, so `unsigned long u = 1;' tells you nothing. `int f(int x) { return x < FORM; }' keeps it -- CVIU4 + CNSTU4 + GEU4 against CNSTI4 + GEI4. poc/06-constants/oracle.nix explains it at length. And int against long is NOT observable in this IR at all: both are 4-byte signed and both print CNSTI4.
 <!-- SECTION:NOTES:END -->
