@@ -138,14 +138,26 @@ OWN_CPU_SLACK = 1.5
 #   * 22 runs of check 2 at load average 1.9-5.5, with 1.6 to 3.7 cores of
 #     other work about: 0.01 to 0.93, median 0.16.
 #
-# 0.93 is the worst a merely busy machine produced over those 34 observations;
-# 2.40 is what the churning one produced. BASELINE_MOVED sits in the gap, at
-# more than twice the first and below the second, and both halves are
-# load-bearing: much under 1.9 and it would start refusing ordinary runs, above
-# 2.40 and it would not have caught the event it exists for. Said plainly: 34
-# observations are not a distribution, and 0.80 being 4.4x the next worst says
-# there is a tail here nobody has characterised. This is "nothing has come
-# close", not "it cannot fire".
+# The largest of those was 0.93, and then two gate runs taken afterwards
+# produced 1.01 and 1.17. That trend is the useful part of this paragraph and
+# not a footnote to it: the maximum has risen with every batch of runs -- 0.80,
+# 0.93, 1.01, 1.17 -- which is a tail being sampled, not a machine changing. Do
+# not read any of them as a ceiling, and do not replace this list with whatever
+# the newest run happened to show.
+#
+# So BASELINE_MOVED is 2.0 against an ordinary spread that has reached 1.17,
+# which is a margin of 1.7 and thinner than it first looked. It is still the
+# right number, and the reason is the ORDER of the tests below rather than the
+# size of the gap: a spread this large never refuses anything by itself. The
+# reading has to be out of its accept band FIRST, on every attempt. Drift only
+# decides which of the two things to say about a reading that has already gone
+# wrong -- SELF-TEST FAILED or NO VERDICT -- so the cost of a margin that is
+# too thin is a refusal where a failure was meant, on a machine that was
+# demonstrably churning, and not a false alarm on a healthy run.
+#
+# The churning machine showed 2.40. If an honest run ever does refuse here, the
+# answer is to measure that tail properly and move the limit with a reason, not
+# to raise the number until the red goes away.
 #
 # One constant for both checks, because it is one physical quantity -- how far
 # the background moved between two readings taken about seven seconds apart --
