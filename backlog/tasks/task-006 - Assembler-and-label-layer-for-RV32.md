@@ -1,10 +1,10 @@
 ---
 id: TASK-006
 title: Assembler and label layer for RV32
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-14 18:47'
-updated_date: '2026-09-14 21:51'
+updated_date: '2026-09-15 00:44'
 labels:
   - backend
   - assembler
@@ -31,6 +31,18 @@ This is where the real bugs live -- PC-relative base off-by-one, forward referen
 - [ ] #6 lui/addi constant materialisation is one tested helper, not re-derived per call site, with cases at 0x7ff, 0x800, 0xfffff800, -1 and 0x80000000
 - [ ] #7 Differential test: assembled output matches riscv32-none-elf-as for a program using labels
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. poc/04-assembler/asm.nix: items (insn/label/bytes/align/section/global) -> { bytes; symbols }. Pass 1 is a genericClosure assigning per-section offsets (deepSeq per step, no ++); pass 2 is a map that encodes now every label address is known.
+2. One tested helper hiLo/materialise for lui+addi, shared by li, la and call; cases 0x7ff, 0x800, 0xfffff800, -1, 0x80000000.
+3. PC-relative base = the branch's OWN address; pinned by self-branch (offset 0), +8 forward and -4 backward cases, by the GNU-as diff, and by a mutation that adds 4 to the base.
+4. Branch out of range: THROW with the distance and the label named (same as GNU as), not relax -- relaxation is a layout fixpoint and is filed as a follow-up task. Boundary cases at +-4094/-4096 pass, +-4096/-4098 throw.
+5. poc/04-assembler/parse.nix: assembly text -> items, so poc/03-matcher's real emitted .s is the corpus rather than a hand-made program.
+6. run.sh: (a) differential vs riscv32-none-elf-as -mno-relax, linked at 0x10000, .text bytes compared byte-for-byte; (b) execution oracle -- driver+runtime+emitted function assembled BY US and run in the nix-riscv emulator, exit code vs the matcher's expectation; (c) must-fail suite with control cases; (d) messages.sh for diagnostic text; (e) mutation tests on assembler AND harness.
+7. Justfile: poc-assembler recipe. Full 'nix develop --command just e2e' before commit.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

@@ -58,6 +58,11 @@ poc-lexer:
 poc-matcher:
     nix develop --command bash poc/03-matcher/run.sh
 
+# Exercise the RV32 assembler: layout, labels, lui/addi materialisation,
+# a byte-for-byte differential against GNU as, execution in the Nix emulator
+poc-assembler:
+    nix develop --command bash poc/04-assembler/run.sh
+
 # End-to-end: build the oracles, then run every proof-of-concept
 e2e:
     #!/usr/bin/env bash

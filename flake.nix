@@ -158,6 +158,24 @@
             printf '%s%s' "$report" "$mustFail" | tee $out
           '';
 
+        # The assembler is pure as well: its layout, its label addresses, its
+        # lui/addi expansions and its reject paths are all forced during flake
+        # evaluation. What stays in run.sh is the differential against GNU as,
+        # the execution in the Nix RV32I emulator, the check on the text of
+        # each diagnostic, the mutation test and the scale ladder -- every one
+        # of which runs a subprocess. `just poc-assembler' is the stronger
+        # gate; this one fails at eval time, which is worth having on its own.
+        assembler = pkgs.runCommand "assembler-check"
+          {
+            report = import ./poc/04-assembler/check.nix {
+              progs = ./poc/04-assembler/progs;
+            };
+            mustFail = (import ./poc/04-assembler/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s' "$report" "$mustFail" | tee $out
+          '';
+
         lexer = pkgs.runCommand "lexer-check"
           {
             report = import ./poc/02-lexer/check.nix {

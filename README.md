@@ -92,13 +92,15 @@ nothing.
     just poc-encoder     # differential-test the RV32I encoder against GNU as
     just poc-lexer       # token tables, round-trip, throughput, mutation test
     just poc-matcher     # rule table, labelling, cost duels, emitted code run
+    just poc-assembler   # layout, labels, byte-for-byte diff against GNU as
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
 
 `nix flake check` runs everything that is a pure evaluation: the encoder
-differential test, the lexer's token and round-trip checks, and the matcher's
-rule, labelling and emitted-code checks. Anything that times, executes or
+differential test, the lexer's token and round-trip checks, the matcher's
+rule, labelling and emitted-code checks, and the assembler's layout, label
+addresses and `lui`/`addi` expansions. Anything that times, executes or
 mutates a subprocess — the throughput ladders, the emulator runs, the mutation
 tests — lives in `just poc`.
 
@@ -107,6 +109,7 @@ tests — lives in `just poc`.
     poc/01-encoder/   RV32I instruction encoder in pure Nix, + its oracles
     poc/02-lexer/     C89 lexer in pure Nix, + its tables and throughput ladder
     poc/03-matcher/   lburg-style instruction selector, + real lcc DAGs to run it on
+    poc/04-assembler/ items -> bytes: layout, labels, pseudo-instructions
     poc/lib/          what the timing ladders share: the contention guard
     backlog/          tasks (managed with the backlog CLI, not edited by hand)
     flake.nix         dev shell, the rcc oracle, and the checks output
