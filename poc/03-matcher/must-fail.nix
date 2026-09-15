@@ -22,8 +22,8 @@ let
   parse = import ./parse.nix;
   table = import ./rules.nix;
 
-  minRejects = 28;
-  minControls = 14;
+  minRejects = 32;
+  minControls = 17;
 
   # --- rule-table surgery --------------------------------------------------
   edit = id: f: table // {
@@ -37,6 +37,7 @@ let
 
   expr = ./ir/expr.sym;
   field = ./ir/field.sym;
+  chars = ./ir/chars.sym;
 
   rejects = [
     # --- the rule table is data, so it is also data that can be wrong -------
@@ -140,6 +141,29 @@ let
       expect = "unknown rule predicate";
       run = build { table = edit "con_cnst" (r: r // { when = { inrange = [ 0 1 ]; }; }); } expr;
     }
+    {
+      # Two predicates in one `when' used to apply the first and drop the
+      # rest, silently, because the labeller asked for them in an if/else-if
+      # chain. It is a table fault now, checked once on the table.
+      what = "two predicates in one `when', which are not combined";
+      expect = "exactly one predicate is allowed";
+      run = build { table = edit "con_cnst" (r: r // { when = { range = [ 0 1 ]; srcSize = 4; }; }); } expr;
+    }
+    {
+      # The hazard rules.nix pays a `mv' to avoid, written as a rule so that
+      # the comment explaining it is a throw instead.
+      what = "a fragment rule producing a register from a kid's own register";
+      expect = "the evaluation registers are reused between statements";
+      run = build { table = edit "reg_cviu4_4" (r: r // { cost = 0; tmpl = "%0"; }); } chars;
+    }
+    {
+      # The rule for the OTHER source width still exists and still matches
+      # the same opcode, so this is a refusal that only a table keyed on the
+      # node's own symbol can produce (task-024).
+      what = "a conversion whose source width no rule covers";
+      expect = "the node with no rule at all is CVII4(INDIRI1)";
+      run = build { table = without "reg_cvii4_1"; } chars;
+    }
 
     # --- registers -----------------------------------------------------------
     {
@@ -219,8 +243,20 @@ let
     { what = "the real table compiles the arithmetic case"; run = build { } expr; }
     { what = "the real table compiles the addressing case"; run = build { } field; }
     {
+      what = "the real table compiles the case with both source widths in it";
+      run = build { } chars;
+    }
+    {
       what = "renaming a rule's id, but consistently, is fine";
       run = build { table = edit "reg_indiri" (r: r // { id = "load_word"; }); } expr;
+    }
+    {
+      what = "one predicate in a `when' is fine, only two are not";
+      run = build { table = edit "con_cnst" (r: r // { when = { range = [ (-2048) 2047 ]; }; }); } expr;
+    }
+    {
+      what = "a fragment producing a register from a fixed register name is fine";
+      run = build { table = edit "reg_zero" (r: r // { tmpl = "zero"; }); } expr;
     }
     {
       what = "a zero rule cost is fine, only a negative one is not";

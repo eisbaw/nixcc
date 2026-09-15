@@ -1,10 +1,10 @@
 ---
 id: TASK-024
 title: 'Byte and halfword loads and stores, so char exists'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-15 02:03'
-updated_date: '2026-09-15 04:40'
+updated_date: '2026-09-15 05:43'
 labels:
   - poc
   - matcher
@@ -29,3 +29,15 @@ Needs the CVT opcodes as well as the loads and stores: lcc inserts CVTCI4/CVTIC4
 - [ ] #3 Halfwords too, or the rule table says in one place why they are out of scope
 - [ ] #4 poc/05-loop's demo can build its message a byte at a time
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Plan (implementer):
+- poc/03-matcher/rules.nix gains, as data only: lb/lbu/lh/lhu loads (INDIRI1/INDIRU1/INDIRI2/INDIRU2), sb/sh stores (ASGNI1/ASGNU1/ASGNI2/ASGNU2), the word forms lcc emits for unsigned int (INDIRU4/ASGNU4), the conversions lcc wraps every narrow access in, and a 1-byte constant (CNSTI1).
+- SIGN LIVES IN THE INSTRUCTION, not in a conversion afterwards: lb sign-extends the byte into the whole register and lbu zero-extends it, so signed and unsigned char are two different rows and a case whose answer differs between them is what proves it.
+- The widening conversions need the SOURCE width, which lcc writes as the node's own symbol and NOT in the opcode (CVII4 with 1 is from a byte, with 2 from a halfword). burg.nix's predicate vocabulary gains `srcSize' for that -- frontend vocabulary, so it stays target-independent and burg.nix still knows nothing about RISC-V.
+- Deliberately NOT done: the fused two-level patterns mips.md uses (reg: CVII4(INDIRI1(addr)) -> one lb). burg.nix matches one level, and the unfused form is correct, just three instructions where one would do. Filed rather than smuggled in.
+- New corpus case ir/chars.c: signed and unsigned bytes and halfwords over the SAME data, so lb-against-lbu changes the answer; run in the emulator against the host compiler.
+- Halfwords are in scope and implemented, not documented as out of scope.
+<!-- SECTION:NOTES:END -->

@@ -31,13 +31,14 @@ let
   # last three in cases.nix and emptying every list AND zeroing every floor was
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
-  minFunctions = 8;
+  minFunctions = 9;
   minSelections = 24;
   minDuels = 4;
   minRules = 35;
-  minNodes = 190;
-  minRequiredOps = 20;
+  minNodes = 250;
+  minRequiredOps = 38;
   minLibcalls = 3;
+  minNarrowLoads = 8;
   minForbidden = 5;
   minFollows = 2;
 
@@ -62,6 +63,22 @@ let
   contains = needle: hay: b.length (b.split (b.replaceStrings [ "." "*" "+" "(" ")" "[" "]" "\\" "$" "^" "|" "?" "{" "}" ] [ "\\." "\\*" "\\+" "\\(" "\\)" "\\[" "\\]" "\\\\" "\\$" "\\^" "\\|" "\\?" "\\{" "\\}" ] needle) hay) > 1;
 
   forbidden = b.filter (m: contains m templates) cases.forbiddenMnemonics;
+
+  # Which INSTRUCTION each narrow access lowers to. This is the ONLY check of
+  # a load's sign in the whole suite: lcc promotes every narrow load, so the
+  # conversion over it re-normalises the register and swapping lb for lbu
+  # changes no answer any C program can produce (measured -- see cases.nix's
+  # `narrowLoads'). It becomes observable when task-033 fuses the pair; until
+  # then this table is the substitute for an oracle that does not exist.
+  #
+  # The template's first TOKEN, not a substring: `lb' is a prefix of `lbu', so
+  # a substring test would accept exactly the swap this exists to catch.
+  firstToken = t: let m = b.match "([a-z][a-z0-9.]*)[ \t].*" t; in if m == null then "" else b.head m;
+  badNarrow = b.filter
+    (l:
+      let r = ruleById.${l.rule} or null; in
+      r == null || r.op != l.op || firstToken r.tmpl != l.mnemonic)
+    cases.narrowLoads;
   badLibcall = b.filter
     (l:
       let r = ruleById.${l.rule} or null; in
@@ -266,6 +283,9 @@ else if b.length cases.requiredOps < minRequiredOps then
 else if b.length cases.libcalls < minLibcalls then
   fault "cases.nix names only ${toString (b.length cases.libcalls)} libcall lowerings, fewer than the ${
     toString minLibcalls} floor"
+else if b.length cases.narrowLoads < minNarrowLoads then
+  fault "cases.nix names only ${toString (b.length cases.narrowLoads)} narrow load/store lowerings, fewer than the ${
+    toString minNarrowLoads} floor -- emptying that list stops the check that lb and lbu are told apart"
 else if b.length cases.forbiddenMnemonics < minForbidden then
   fault "cases.nix forbids only ${toString (b.length cases.forbiddenMnemonics)} mnemonics, fewer than the ${
     toString minForbidden} floor -- emptying that list stops the check that RV32I has no multiplier"
@@ -284,6 +304,9 @@ else if opUnmatched != [ ] then
   throw "matcher: ${b.concatStringsSep ", " (map (c: c.op) opUnmatched)} appear in the corpus but no rule for those opcodes ever matched them"
 else if forbidden != [ ] then
   throw "matcher: a rule template emits ${b.concatStringsSep ", " (map (m: "`${m}'") forbidden)}, which RV32I has not got (decision-003)"
+else if badNarrow != [ ] then
+  throw "matcher: ${(b.head badNarrow).op} must be lowered by rule `${(b.head badNarrow).rule}' to `${
+    (b.head badNarrow).mnemonic}', and is not -- RV32I carries the sign in the instruction, and no executed answer can tell lb from lbu until task-033, so this table is the only thing checking it (task-024)"
 else if badLibcall != [ ] then
   throw "matcher: ${(b.head badLibcall).op} must be lowered by rule `${(b.head badLibcall).rule}' to a call on ${
     (b.head badLibcall).symbol}, and is not (decision-003)"

@@ -21,6 +21,7 @@
     { name = "save"; fn = "hold"; what = "more registers held before a mid-forest label than after it"; }
     { name = "argcall"; fn = "nested"; what = "a libcall inside a call's FIRST argument, which is legal"; }
     { name = "gsym"; fn = "pick"; what = "a global at a constant index, which lcc folds into one ADDRGP4 sym+N"; }
+    { name = "chars"; fn = "scan"; what = "char and short: byte and halfword loads and stores, and the conversions over them"; }
   ];
 
   # Acceptance criterion 4 and 9: these opcodes must appear in the corpus DAGs
@@ -31,6 +32,44 @@
     "ADDI4" "ADDP4" "SUBI4" "LSHI4" "MULI4" "DIVI4" "MODI4"
     "CALLI4" "RETI4" "ARGI4" "JUMPV"
     "LEI4" "LTI4" "GEI4" "EQI4"
+    # task-024: the narrow accesses, the word forms lcc emits for unsigned
+    # int, and the conversions it wraps every one of them in.
+    "INDIRI1" "INDIRU1" "INDIRI2" "INDIRU2" "INDIRU4"
+    "ASGNI1" "ASGNU1" "ASGNI2" "ASGNU2" "ASGNU4"
+    "CVII4" "CVUI4" "CVIU4" "CVII2" "CVUU1" "CVUU2"
+    "CNSTI1"
+  ];
+
+  # SIGN, and the ONLY place in this suite that can check it. `lb'
+  # sign-extends its byte into the register and `lbu' zero-extends it, and
+  # nothing this compiler can be asked to run tells them apart: lcc promotes
+  # every narrow load, so an INDIRI1 always arrives under a CVII4 whose
+  # slli/srai pair re-normalises the register and erases whatever the load
+  # did. MEASURED -- the whole table with lb and lbu exchanged still returns
+  # 1649 from ir/chars.c. The execution stage is blind to this until task-033
+  # fuses the load and the conversion into one instruction, and then the load
+  # IS the extension and the answer starts to move.
+  #
+  # So this table is not a restatement of rules.nix, it is the substitute for
+  # an oracle that does not exist yet. `mnemonic' is compared against the
+  # template's first TOKEN, not as a substring, because `lb' is a prefix of
+  # `lbu' and a substring test would pass the swap it exists to catch.
+  narrowLoads = [
+    { op = "INDIRI1"; rule = "reg_indiri1"; mnemonic = "lb"; }
+    { op = "INDIRU1"; rule = "reg_indiru1"; mnemonic = "lbu"; }
+    { op = "INDIRI2"; rule = "reg_indiri2"; mnemonic = "lh"; }
+    { op = "INDIRU2"; rule = "reg_indiru2"; mnemonic = "lhu"; }
+    { op = "ASGNI1"; rule = "stmt_asgni1"; mnemonic = "sb"; }
+    { op = "ASGNU1"; rule = "stmt_asgnu1"; mnemonic = "sb"; }
+    { op = "ASGNI2"; rule = "stmt_asgni2"; mnemonic = "sh"; }
+    { op = "ASGNU2"; rule = "stmt_asgnu2"; mnemonic = "sh"; }
+    # The conversions are the half the execution stage CAN see, and they are
+    # the same kind of fact: a signed widening is an arithmetic shift and an
+    # unsigned one is a mask, and swapping those does move the answer.
+    { op = "CVII4"; rule = "reg_cvii4_1"; mnemonic = "slli"; }
+    { op = "CVUI4"; rule = "reg_cvui4_1"; mnemonic = "andi"; }
+    { op = "CVUU1"; rule = "reg_cvuu1"; mnemonic = "andi"; }
+    { op = "CVII1"; rule = "reg_cvii1"; mnemonic = "slli"; }
   ];
 
   # RV32I has no M extension (decision-003). The oracle prints MUL/DIV inline
@@ -147,6 +186,62 @@
     {
       what = "so materialising its address is the same single `la'";
       file = "gsym"; forest = 0; node = "2"; nt = "reg"; rule = "reg_from_acon"; cost = 2;
+    }
+    {
+      what = "a signed char is loaded with lb, which sign-extends it";
+      file = "chars"; forest = 4; node = "7"; nt = "reg"; rule = "reg_indiri1"; cost = 5;
+    }
+    {
+      what = "and an unsigned one with lbu, from the same addressing mode at the same price";
+      file = "chars"; forest = 4; node = "13"; nt = "reg"; rule = "reg_indiru1"; cost = 5;
+    }
+    {
+      # The two conversions over those two loads cost DIFFERENT amounts, and
+      # that is the RV32I fact: widening a signed byte is a shift pair and
+      # widening an unsigned one is a single `andi'.
+      what = "widening the signed byte is a shift pair, so two instructions";
+      file = "chars"; forest = 4; node = "6"; nt = "reg"; rule = "reg_cvii4_1"; cost = 7;
+    }
+    {
+      what = "widening the unsigned byte is one mask, so one";
+      file = "chars"; forest = 4; node = "12"; nt = "reg"; rule = "reg_cvui4_1"; cost = 6;
+    }
+    {
+      what = "a halfword load carries its sign the same way, through lh";
+      file = "chars"; forest = 7; node = "7"; nt = "reg"; rule = "reg_indiri2"; cost = 3;
+    }
+    {
+      what = "and lhu for the unsigned one";
+      file = "chars"; forest = 7; node = "10"; nt = "reg"; rule = "reg_indiru2"; cost = 3;
+    }
+    {
+      # The conversion opcode is CVII4 here and at the byte above it, and the
+      # shift amount differs. What tells them apart is the node's own symbol,
+      # which is the whole reason `srcSize' is a predicate.
+      what = "widening a signed halfword shifts by 16, where the byte shifted by 24";
+      file = "chars"; forest = 7; node = "6"; nt = "reg"; rule = "reg_cvii4_2"; cost = 5;
+    }
+    {
+      what = "storing a byte is `sb', whatever the value above the byte is";
+      file = "chars"; forest = 7; node = "12"; nt = "stmt"; rule = "stmt_asgni1"; cost = 4;
+    }
+    {
+      what = "a character constant is typed by its destination, so CNSTI1 and not CNSTI4";
+      file = "chars"; forest = 7; node = "14"; nt = "con"; rule = "con_cnst1"; cost = 0;
+    }
+    {
+      # int-to-unsigned at the same width changes nothing about the bits, and
+      # the rule still emits a move rather than folding to nothing -- see the
+      # conversion block in rules.nix for why.
+      what = "int to unsigned at width 4 is a reinterpretation, priced as one move";
+      file = "chars"; forest = 8; node = "4"; nt = "reg"; rule = "reg_cviu4_4"; cost = 2;
+    }
+    {
+      # Narrowing does not need the predicate: CVII1 says "to one signed
+      # byte" in the opcode, and where it came FROM does not change the
+      # shift. The pair beside it above does need one.
+      what = "narrowing an int to a signed char needs no source width at all";
+      file = "chars"; forest = 7; node = "17"; nt = "reg"; rule = "reg_cvii1"; cost = 3;
     }
     {
       what = "pointer + constant field offset IS an addressing mode, and free";
@@ -293,6 +388,35 @@
       instructions = 17;
       follows = [ ];
     }
+    {
+      file = "chars";
+      # One line per narrow access, and the four loads in BOTH signednesses.
+      # This is where a swapped lb/lbu becomes visible as EMITTED TEXT, since
+      # it is invisible in the answer (see `narrowLoads' above for why) --
+      # though it is `narrowLoads' and not this list that says which opcode
+      # each mnemonic belongs to.
+      present = [
+        "lb s3,0(s3)"
+        "lbu s3,0(s3)"
+        "lh s3,0(s3)"
+        "lhu s3,0(s3)"
+        "sb s2,0(s1)"
+        "sh s2,0(s1)"
+        # The extensions RV32I has no instruction for: a shift pair for a
+        # signed widening, a mask for an unsigned byte one.
+        "slli s3,s3,24"
+        "srai s3,s3,24"
+        "andi s3,s3,255"
+        "srli s3,s3,16"
+      ];
+      # `lw' is absent from the NARROW accesses by construction, so what is
+      # checked instead is that nothing packs a byte into a word the way
+      # poc/05-loop used to have to: no shift by 8, and no `sw' into the
+      # buffers this function writes with `sb' and `sh'.
+      absent = [ "%" "slli s2,s2,8" ];
+      instructions = 91;
+      follows = [ ];
+    }
   ];
 
   # --- execution (run.sh) --------------------------------------------------
@@ -310,5 +434,27 @@
     { file = "save"; expect = 55; why = "hold(6,7) = 6 + (6 ? 7*7 : 6) = 55"; }
     { file = "argcall"; expect = 37; why = "nested(6) = h(6*6, 1) = 37"; }
     { file = "gsym"; expect = 116; why = "pick(20) on tbl={4,0,100,0}: tbl[1]=20, tbl[3]=20+100=120, and 120-tbl[0]=116"; }
+    {
+      file = "chars";
+      expect = 1649;
+      # The signed and unsigned readings of the SAME bytes, which is the
+      # number lb-against-lbu changes: over 0xf0,0x01,0x7f,0x80 the signed
+      # sum is -16+1+127-128 = -16 and the unsigned one 240+1+127+128 = 496,
+      # so the loop contributes 480 and a swapped pair moves the answer by
+      # 512. The halfword 0x8001 reads -32767 and 32769, adding 2, so
+      # s = 482; then 482 + sbuf[0]=7 + shalf[1]=482 + u=226 + uhalf[1]=482.
+      # 0xf0,0x01,0x7f,0x80 read signed sum to -16 and read unsigned to 496,
+      # so the loop contributes 480; the halfword 0x8001 reads -32767 and
+      # 32769, adding 2. That gives s = 482, and the return is
+      # 482 + sbuf[0]=7 + sbuf[2]=(signed char)482=-30 + shalf[1]=482
+      # + u=226 + uhalf[1]=482.
+      #
+      # What this number does NOT depend on is which of lb/lbu each load
+      # used: every one of them is promoted by a conversion that
+      # re-normalises the register. Swapping the pair leaves 1649. The load's
+      # sign is checked in `narrowLoads' above, against the table, for
+      # exactly that reason.
+      why = "scan(4): 480 from the byte pairs, 2 from the halfword pair, then 482+7-30+482+226+482";
+    }
   ];
 }

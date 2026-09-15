@@ -398,6 +398,47 @@ mutate "matcher: a global's constant displacement is dropped on the way to the a
        "sed -i 's@else sym)@else b.head (b.split \"[+]\" sym))@' emit.nix" \
        "$matcher_check"
 
+# --- char and short (task-024) ---
+# RV32I puts the sign in the LOAD, so lb and lbu are the whole difference
+# between -1 and 255 for the same byte. The rule table is what decides that,
+# which is why this is checked against the table and not against emitted text.
+mutate "matcher: a signed byte is loaded with lbu, so it stops being signed" \
+       "INDIRI1 must be lowered by rule \`reg_indiri1'" \
+       "sed -i '/reg_indiri1/ s@\"lb @\"lbu @' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: a byte store becomes a word store, which writes three bytes too many" \
+       "ASGNI1 must be lowered by rule \`stmt_asgni1'" \
+       "sed -i '/stmt_asgni1/ s@\"sb @\"sw @' rules.nix" \
+       "$matcher_check"
+
+# lcc writes a conversion's SOURCE width in the node's symbol and its
+# destination in the opcode, so CVII4 from one byte and CVII4 from two are the
+# same opcode and different shift amounts. Drop the predicate and the byte's
+# rule answers for the halfword.
+mutate "matcher: a widening conversion ignores the width it is converting FROM" \
+       "expected reg_cvii4_2@5, got reg_cvii4_1@5" \
+       "sed -i 's@when = { srcSize = 1; };@when = null;@' rules.nix" \
+       "$matcher_check"
+
+# The two table-validation guards this change added. Neither can be reached by
+# compiling anything: they are properties of the TABLE, so the only way to see
+# them fail is to switch them off and watch must-fail.nix stop refusing.
+mutate "matcher: two predicates in one \`when' are accepted, and only one applied" \
+       "compiled fine: two predicates in one" \
+       "sed -i 's@^else if multiWhen != \[ \] then@else if false then@' burg.nix" \
+       "$must_fail"
+
+mutate "matcher: a fragment rule may hand its users the register its kid used" \
+       "compiled fine: a fragment rule producing a register" \
+       "sed -i 's@^else if aliasing != \[ \] then@else if false then@' burg.nix" \
+       "$must_fail"
+
+mutate "harness: the narrow load/store table is emptied" \
+       "narrow load/store lowerings, fewer than the" \
+       "sed -i 's@^  narrowLoads = \[@  narrowLoads = [ ]; unusedNarrowLoads = [@' cases.nix" \
+       "$matcher_check"
+
 mutate "harness: the opcode-coverage table is emptied" \
        "turns the opcode-coverage check into a no-op" \
        "sed -i 's|^  requiredOps = \[|  requiredOps = [ ]; unusedOps = [|' cases.nix" \
@@ -419,7 +460,7 @@ mutate "harness: the after-a-label assertions are emptied" \
        "$matcher_check"
 
 mutate "matcher: a bad rule table is accepted instead of refused" \
-       "should have been refused but compiled fine" \
+       "compiled fine: a declared nonterminal no rule can produce" \
        "sed -i 's|^else if deadNt != \[ \] then|else if false then|' burg.nix" \
        "$must_fail"
 

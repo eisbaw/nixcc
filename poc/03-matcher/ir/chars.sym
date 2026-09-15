@@ -1,0 +1,126 @@
+address sbuf+2 type=signed char sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address ubuf+1 type=unsigned char sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address shalf+2 type=short sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address uhalf+2 type=unsigned short sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address ubuf+1 type=unsigned char sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address sbuf+2 type=signed char sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address shalf+2 type=short sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address uhalf+2 type=unsigned short sclass=extern scope=GLOBAL flags=computed ref=1.000000
+export scan
+segment text
+function scan type=int function(int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller n type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+callee n type=int sclass=register scope=PARAM flags=0 offset=0 ref=10.000000
+blockbeg off=0
+local i type=int sclass=register scope=LOCAL flags=0 offset=0 ref=51.000000
+local s type=int sclass=register scope=LOCAL flags=0 offset=4 ref=28.000000
+local u type=unsigned int sclass=auto scope=LOCAL flags=0 offset=8 ref=2.000000
+blockbeg off=12
+blockend off=12
+blockend off=12
+ 2. ADDRFP4 n
+4. ADDRFP4 n
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRLP4 s
+3. CNSTI4 count=2 0
+1' ASGNI4 #2 #3 4 4
+5. ADDRLP4 i
+4' ASGNI4 #5 #3 4 4
+ 2. ADDRGP4 3
+1' JUMPV #2
+ 2:
+ 2. ADDRLP4 count=2 s
+5. INDIRI4 #2
+10. ADDRLP4 count=2 i
+9. INDIRI4 count=3 #10
+11. ADDRGP4 sbuf
+8. ADDP4 #9 #11
+7. INDIRI1 #8
+6. CVII4 #7 1
+4. ADDI4 #5 #6
+15. ADDRGP4 ubuf
+14. ADDP4 #9 #15
+13. INDIRU1 #14
+12. CVUI4 #13 1
+3. ADDI4 #4 #12
+1' ASGNI4 #2 #3 4 4
+18. CNSTI4 1
+17. ADDI4 #9 #18
+16' ASGNI4 #10 #17 4 4
+ 3:
+ 3. ADDRLP4 i
+2. INDIRI4 #3
+5. ADDRFP4 n
+4. INDIRI4 #5
+1' LTI4 #2 #4 2
+ 2. ADDRLP4 count=3 s
+5. INDIRI4 #2
+8. ADDRGP4 shalf
+7. INDIRI2 #8
+6. CVII4 #7 2
+4. ADDI4 #5 #6
+11. ADDRGP4 uhalf
+10. INDIRU2 #11
+9. CVUI4 #10 2
+3. ADDI4 #4 #9
+1' ASGNI4 #2 #3 4 4
+13. ADDRGP4 sbuf
+14. CNSTI1 7
+12' ASGNI1 #13 #14 1 1
+16. ADDRGP4 sbuf+2
+18. INDIRI4 #2
+17. CVII1 #18 4
+15' ASGNI1 #16 #17 1 1
+ 2. ADDRGP4 ubuf+1
+6. ADDRLP4 s
+5. INDIRI4 #6
+4. CVIU4 #5 4
+3. CVUU1 #4 4
+1' ASGNU1 #2 #3 1 1
+ 2. ADDRGP4 shalf+2
+5. ADDRLP4 s
+4. INDIRI4 #5
+3. CVII2 #4 4
+1' ASGNI2 #2 #3 2 2
+ 2. ADDRGP4 uhalf+2
+6. ADDRLP4 s
+5. INDIRI4 #6
+4. CVIU4 #5 4
+3. CVUU2 #4 4
+1' ASGNU2 #2 #3 2 2
+ 2. ADDRLP4 count=2 u
+6. ADDRGP4 ubuf+1
+5. INDIRU1 #6
+4. CVUI4 #5 1
+3. CVIU4 #4 4
+1' ASGNU4 #2 #3 4 4
+14. ADDRLP4 s
+13. INDIRI4 #14
+17. ADDRGP4 sbuf
+16. INDIRI1 #17
+15. CVII4 #16 1
+12. ADDI4 #13 #15
+20. ADDRGP4 sbuf+2
+19. INDIRI1 #20
+18. CVII4 #19 1
+11. ADDI4 #12 #18
+23. ADDRGP4 shalf+2
+22. INDIRI2 #23
+21. CVII4 #22 2
+10. ADDI4 #11 #21
+25. INDIRU4 #2
+24. CVUI4 #25 4
+9. ADDI4 #10 #24
+28. ADDRGP4 uhalf+2
+27. INDIRU2 #28
+26. CVUI4 #27 2
+8. ADDI4 #9 #26
+7' RETI4 #8
+ 1:
+maxoff=12
+import uhalf
+import shalf
+import ubuf
+import sbuf
+progend

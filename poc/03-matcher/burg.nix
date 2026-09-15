@@ -67,6 +67,37 @@ let
   negative = b.filter (r: r.cost < 0) table.rules;
   undeclared = b.filter (n: !(ntSet ? ${n})) [ table.start table.regNt ];
 
+  # The predicate vocabulary, declared rather than discovered. `holds' used to
+  # be an if/else-if chain ending in a throw, which was total while there was
+  # one predicate and stopped being total the moment there were two: a `when'
+  # carrying both `range' and a typo applied the first and ignored the rest,
+  # silently. Checking it on the TABLE also honours what this file says about
+  # itself forty lines up -- everything checkable about the table is checked
+  # here, not from inside the labeller.
+  predicates = [ "range" "srcSize" ];
+  # `when = null' means the same as no `when' at all -- that is what the
+  # labeller's own `r.when or null' already says -- so it is not a rule with
+  # zero predicates, it is a rule without one.
+  withWhen = b.filter (r: (r.when or null) != null) table.rules;
+  multiWhen = b.filter (r: b.length (b.attrNames r.when) != 1) withWhen;
+  unknownWhen = b.filter
+    (r: b.any (k: !(b.elem k predicates)) (b.attrNames r.when))
+    withWhen;
+
+  # A FRAGMENT rule -- no newline in its template -- produces its expansion as
+  # the result TEXT rather than a register it wrote into. If such a rule
+  # produces the REGISTER nonterminal and its text is a kid's (`%0' or `%1'),
+  # every later use of this node reads whatever register the KID happened to
+  # be reduced into, and the evaluation registers are reused between
+  # statements: a silently clobbered value, which is the one failure mode this
+  # file exists to make loud. `reg: CNSTI4 "zero"' is safe because `zero' is a
+  # register that is always what it says. `reg: CVIU4(reg) "%0"' is not, which
+  # is why rules.nix pays a `mv' for a conversion that changes no bits.
+  isFragment = r: b.length (b.split "\n" r.tmpl) == 1;
+  aliasing = b.filter
+    (r: r.nt == table.regNt && isFragment r && b.match ".*%[01].*" r.tmpl != null)
+    table.rules;
+
   opRules = b.groupBy (r: r.op) (b.filter (r: r ? op) table.rules);
   chainRules = b.filter (r: !(r ? op)) table.rules;
 
@@ -96,7 +127,18 @@ let
         lo = b.elemAt when.range 0;
         hi = b.elemAt when.range 1;
       in v != null && v >= lo && v <= hi
-    else throw "burg: unknown rule predicate ${toString (b.attrNames when)}";
+    # A conversion's SOURCE width. lcc puts a conversion's destination width
+    # in the opcode (CVII4 converts TO a 4-byte int) and its source width in
+    # the node's first symbol, so CVII4 with `1' and CVII4 with `2' are the
+    # same opcode and different instructions on any target without a
+    # sign-extend. That is frontend vocabulary -- lcc/src/ops.h, shared by
+    # every machine description -- which is why it can live here, next to
+    # `isCall' and `isArg', without this file learning anything about RISC-V.
+    else if when ? srcSize then
+      let m = if node.syms == [ ] then null else b.match "([0-9]+)" (b.head node.syms); in
+      m != null && b.fromJSON (b.head m) == when.srcSize
+    else throw "burg: internal error -- predicate `${
+      b.head (b.attrNames when)}' passed the table's own validation but has no implementation here";
 
   # --- labelling ----------------------------------------------------------
   # `labelForest f` -> { "<node id>" = { "<nt>" = { cost; rule; }; }; }
@@ -310,9 +352,33 @@ let
           };
         in
         if entry == null then
-          throw "burg: no rule produces `${goal}' from ${node.op}${
-            if node.kids == [ ] then "" else "(${b.concatStringsSep "," (map (k: forest.byId.${k}.op) node.kids)})"
-          } in forest ${toString forest.index}"
+          let
+            # The node reported here is the one whose GOAL became unreachable,
+            # and that is usually a PARENT of the node the table actually has
+            # no row for: labelling is bottom-up, so a kid that produces no
+            # nonterminal at all makes every ancestor unreachable too. Walk
+            # down to the deepest such kid and name it, or the reader is sent
+            # to a row of the table that is perfectly fine.
+            #
+            # This terminates for a reason that is upstream of here, not
+            # because of nesting depth: parse.nix refuses a forest with a
+            # dangling kid reference or a repeated node number, and a cycle
+            # would already have died as "infinite recursion" inside the
+            # self-referential label table during LABELLING, long before any
+            # of this ran. One path down, not a fan-out, so a shared DAG
+            # cannot make it exponential either.
+            describe = nd: "${nd.op}${
+              if nd.kids == [ ] then "" else "(${b.concatStringsSep "," (map (k: forest.byId.${k}.op) nd.kids)})"
+            }";
+            deepestBarren = nd:
+              let below = b.filter (k: labels.${k} == { }) nd.kids; in
+              if below == [ ] then nd else deepestBarren forest.byId.${b.head below};
+            barren = deepestBarren node;
+          in
+          throw ("burg: no rule produces `${goal}' from ${describe node} in forest ${
+            toString forest.index}"
+          + (if barren.id == node.id then ""
+          else "; the node with no rule at all is ${describe barren} (#${barren.id})"))
         else if goal == table.regNt && (st.cse ? ${id}) then
           { inherit st; code = [ ]; text = st.cse.${id}; }
         else if reachedOutOfOrder then
@@ -445,6 +511,14 @@ else if deadNt != [ ] then
   throw "burg: nonterminal `${b.head deadNt}' is declared but no rule produces it"
 else if undeclared != [ ] then
   throw "burg: the table's start or register nonterminal `${b.head undeclared}' is not declared"
+else if unknownWhen != [ ] then
+  throw "burg: rule `${ruleName (b.head unknownWhen)}' carries an unknown rule predicate; this matcher implements ${
+    b.concatStringsSep ", " (map (p: "`${p}'") predicates)}"
+else if multiWhen != [ ] then
+  throw "burg: rule `${ruleName (b.head multiWhen)}' has ${
+    toString (b.length (b.attrNames (b.head multiWhen).when))} predicates in one `when'; exactly one predicate is allowed, because they are not combined"
+else if aliasing != [ ] then
+  throw "burg: rule `${ruleName (b.head aliasing)}' produces `${table.regNt}' from a template with no instruction in it, so this node's value would be whatever register its kid was reduced into -- and the evaluation registers are reused between statements"
 else if negative != [ ] then
   throw "burg: rule `${ruleName (b.head negative)}' has a negative cost, which the chain closure cannot converge on"
 else if missingApi != [ ] then
