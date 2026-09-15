@@ -3,10 +3,10 @@ id: TASK-035
 title: >-
   A lexer guard case fails when the smallest ladder point measures too close to
   the baseline
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 07:47'
-updated_date: '2026-09-15 11:13'
+updated_date: '2026-09-15 13:07'
 labels:
   - poc
   - testing
@@ -49,9 +49,9 @@ Found while running the gate for task-024.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The guard case passes on an idle machine and on a busy one, whichever refusal path the ladder takes
-- [ ] #2 If the too-small-to-measure cliff can still be reported as contention, the diagnostic says which of the two it is
-- [ ] #3 The matcher and assembler ladders are checked for the same hole and either fixed or shown not to have it
+- [x] #1 The guard case passes on an idle machine and on a busy one, whichever refusal path the ladder takes
+- [x] #2 If the too-small-to-measure cliff can still be reported as contention, the diagnostic says which of the two it is
+- [x] #3 The matcher and assembler ladders are checked for the same hole and either fixed or shown not to have it
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -212,4 +212,30 @@ TWO LIMITS THE REVIEW SURFACED, now written into contention.py's LIMITS rather t
   * Round-robin's residual is ASSUMED to be noise, not shown to be. Every point now runs immediately after a differently sized one, so each pays a cache-eviction cost the others set -- closer to a fixed adder than a proportional one, which costs the small points relatively more and bends the ratios towards SUBLINEAR. That is the direction the module's own docstring calls dangerous. task-038 (count retired instructions) is the fix; this is why it is filed rather than shrugged off.
 
 NOT ACTED ON, and named rather than buried: qa-test-runner found that selftest.py check 1's SECOND assertion ('the measurement is not reporting this machine's load at all') is effectively unreachable, since reaching it means the first already passed. Pre-existing, and touching self-test semantics risks the blinded-mutation contract that the lexer and matcher harnesses depend on, so it is carried onto task-039 with the rest of the self-test work rather than changed here.
+
+Landed as 678d352. Gate output on that commit: 7m09, exit 0, 5 PoCs passed, lint clean, 14 guard cases (7 lexer, 7 matcher) and 106 mutations across the five PoCs all caught, on a machine carrying 1 to 6.75 cores of other work during the run.
+
+Criterion status, and one of them is NOT met as written:
+  #1 MET, though by removing the ambiguity rather than tolerating it. The guard cases pass on an idle machine and on a busy one because the cliff is now pinned out of reach in the four contention cases and driven deliberately in two new ones -- so a case no longer takes 'whichever refusal path' by accident. Read strictly, the criterion asks for the guard case to accept either path; what landed makes the path deterministic instead. That is stronger, but it is a different thing from what the criterion says, so it is flagged rather than ticked quietly.
+  #2 MET. contention.too_small() names the cause: HARNESS FAULT and 'the ladder wants a bigger smallest point, not a quieter machine' on a quiet machine, NO VERDICT and 'cannot be told apart from here' on a busy one, with the per-round contention table printed either way. Two guard cases force each branch and each forbids the other's fragment.
+  #3 MET. The matcher had the same hole and is fixed identically, cliff cases included. The assembler has no guard_case block -- it delegates that proof to the matcher's -- but its scale.py carried the same cliff and now uses the shared one; checked and reported rather than assumed.
+
+The headline complaint on this task -- the intermittent red -- is fixed by the round-robin change rather than by any of the three criteria, which were written against the first of five diagnoses.
+
+REOPENED BRIEFLY AFTER 678d352: the estimator was still wrong in one place, and a gate run found it.
+
+The lexer ladder rendered a FAIL on the END-TO-END step, 20.85x CPU for 13.89x input, a ratio of 1.50 against the 1.5 ceiling. The table beneath it:
+
+    31 kB point   0.15 / 0.22 / 0.23 s CPU across the three rounds
+    431 kB point  2.70 / 2.73 / 3.18
+
+Nothing there is a superlinear lexer. What it is: the ROUND-ROBIN change made every point's headline figure the cheapest of its rounds, and a minimum is biased low by an amount that grows with the noise. The 31 kB point runs for 0.13 s, where evaluator start-up transients are a large fraction of the measurement, so its minimum is flattered far more than the 431 kB point's -- and it is the denominator of BOTH the first adjacent step and the end-to-end step, so one lucky reading of it moves two verdicts at once.
+
+Read as three complete ratios instead, one per round, the same three rounds give 1.53, 1.07 and 1.13. The median is 1.13.
+
+So contention.step_ratio() now measures the RATIO rather than assembling one afterwards out of two independently-minimised numbers: net of each round's own baseline, once per round, median across rounds. Two reasons rather than one. Within a round the endpoints are measured seconds apart on the same clock, so their ratio is invariant to the drift decision-008 records rather than merely averaged over it; across rounds a median rejects a bad round in EITHER direction, where a minimum only ever rejects in the direction that flatters. The per-round ratios are printed beside each step, so a reader can see the spread the verdict was taken from -- and can see why dividing the table's two cpu columns does not reproduce it.
+
+Checked against 14 recorded round-robin sessions: the two estimators agree to within about 0.05 on a quiet machine (worst adjacent step 1.02-1.18 for the minima, 0.99-1.16 for the medians; end-to-end 0.87-1.16 and 0.84-1.11). They differ where it matters -- on the run with one flattering reading in it, which is the run that failed the gate.
+
+The tolerances still did not move.
 <!-- SECTION:NOTES:END -->

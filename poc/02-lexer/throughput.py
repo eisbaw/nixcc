@@ -181,14 +181,21 @@ def main(argv):
     steps.append((rows[0], rows[-1], END_TO_END_TOLERANCE))
     for a, z, tol in steps:
         grew = z["bytes"] / a["bytes"]
-        slower = z["work"] / a["work"]
+        # The ratio is measured within each round and the median taken,
+        # rather than divided out of two independently-minimised figures;
+        # poc/lib/contention.py's step_ratio() says what that is for. It
+        # is why dividing this table's two `cpu s' columns does not
+        # reproduce the number below -- the per-round readings it came
+        # from are printed beside it.
+        slower, spread = contention.step_ratio(base, a["point"], z["point"])
         # On a busy machine the ratios are still printed -- they are what was
         # measured -- but they are not turned into a verdict in either
         # direction, and `bad' stays empty so nothing downstream reads one.
         verdict = ("unjudged" if not quiet else
                    "ok" if slower <= grew * tol else "SUPERLINEAR")
         print(f"  {a['bytes']:>8} -> {z['bytes']:>8}: {grew:.2f}x input, "
-              f"{slower:.2f}x CPU  {verdict}")
+              f"{slower:.2f}x CPU  {verdict:<12} "
+              f"per round {'/'.join(f'{r:.2f}' for r in spread)}")
         if verdict == "SUPERLINEAR":
             bad.append((a["bytes"], z["bytes"], grew, slower))
 

@@ -185,6 +185,7 @@ passes. selftest.py is the half that notices, and run.sh proves it notices by
 stubbing exactly that.
 """
 import os
+import statistics
 import shlex
 import sys
 import time
@@ -208,7 +209,7 @@ BUSY_CEILING = 3.5
 # rounds(), which pads a short round rather than adding runs to it.
 MIN_WINDOW = 2.0
 
-_CLOCK_TICK = os.sysconf("SC_CLK_TCK")
+CLOCK_TICK = os.sysconf("SC_CLK_TCK")
 
 
 class Point(NamedTuple):
@@ -273,7 +274,7 @@ def busy_cpu_seconds():
         raise ValueError(f"/proc/stat began with {' '.join(fields[:3])!r}")
     # user nice system idle iowait irq softirq steal
     v = [int(x) for x in fields[1:9]]
-    return (v[0] + v[1] + v[2] + v[5] + v[6] + v[7]) / _CLOCK_TICK
+    return (v[0] + v[1] + v[2] + v[5] + v[6] + v[7]) / CLOCK_TICK
 
 
 def _sample():
@@ -336,7 +337,7 @@ def _round(argvs, label):
     # measured, sign and all. More than that and the two do not describe the
     # same machine -- a suspend, a core going offline, a masked /proc -- and
     # there is no reading to report rather than a reassuring one.
-    skew = 2.0 * cores() / _CLOCK_TICK
+    skew = 2.0 * cores() / CLOCK_TICK
     if other < -skew:
         fault(f"/proc/stat accounted {other:.2f} core-seconds LESS work than "
               f"the children of {label} used over {span:.2f} s; the kernel's "
@@ -388,6 +389,44 @@ def rounds(argvs, repeats):
         # survived it.
         points.append(Point(out, wall, cpu, rss, tuple(r[2] for r in job)))
     return Ladder(tuple(points), tuple(foreign), tuple(windows))
+
+
+def step_ratio(base, a, z):
+    """How much more ladder point `z` cost than point `a`, and the per-round
+    readings it was taken from. Both net of that ROUND's own baseline.
+
+    The ratio is the quantity a linearity tolerance is applied to, so the ratio
+    is what is measured -- rather than being assembled afterwards out of two
+    numbers that were each optimised over the rounds independently. That
+    distinction is not academic, and it cost a gate run to find.
+
+    Each point's headline figure is the cheapest of its rounds. Taking a
+    minimum is biased low, and the bias is larger the noisier the measurement
+    -- which means larger for the SHORT points, whose cost is a few tenths of a
+    second and so is dominated by start-up transients. The smallest ladder
+    point is both the noisiest and the denominator of the first adjacent step
+    AND of the end-to-end step, so one flattering reading of it moves two
+    verdicts at once. Measured, in a gate run of the lexer ladder: the 31 kB
+    point read 0.15, 0.22 and 0.23 s of CPU across three rounds while the
+    431 kB point read 2.70, 2.73 and 3.18. Quotient of the minima: 1.50 against
+    a 1.5 ceiling, a FAIL. The same three rounds read as three complete ratios:
+    1.53, 1.07 and 1.13.
+
+    So the median of those, and for two reasons. Within a round the endpoints
+    are measured seconds apart on the same clock, so their ratio is invariant
+    to the drift decision-008 records rather than merely averaged over it.
+    Across rounds, a median rejects one bad round in either direction, where a
+    minimum only ever rejects in the direction that flatters.
+    """
+    per_round = []
+    for i, (bc, ac, zc) in enumerate(zip(base.costs, a.costs, z.costs, strict=True), 1):
+        net_a, net_z = ac - bc, zc - bc
+        if net_a <= 0 or net_z <= 0:
+            fault(f"in round {i} two ladder points cost {ac:.3f} s and {zc:.3f} s "
+                  f"of CPU against a {bc:.3f} s start-up baseline measured in the "
+                  f"same round, which leaves nothing to take a ratio of")
+        per_round.append(net_z / net_a)
+    return statistics.median(per_round), tuple(per_round)
 
 
 def baseline_argv(nix):
