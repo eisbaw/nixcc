@@ -31,11 +31,11 @@ let
   # last three in cases.nix and emptying every list AND zeroing every floor was
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
-  minFunctions = 7;
-  minSelections = 22;
+  minFunctions = 8;
+  minSelections = 24;
   minDuels = 4;
   minRules = 35;
-  minNodes = 175;
+  minNodes = 190;
   minRequiredOps = 20;
   minLibcalls = 3;
   minForbidden = 5;

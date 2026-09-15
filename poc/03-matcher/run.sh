@@ -83,10 +83,26 @@ build_and_run() {
     > "$out/$name.s"
   [ -s "$out/$name.s" ] || { echo "$name: the matcher emitted nothing" >&2; return 1; }
 
-  riscv32-none-elf-as -march=rv32i -o "$out/fn.o" "$out/$name.s"
-  riscv32-none-elf-as -march=rv32i -o "$out/rt.o" "$src/runtime.s"
-  riscv32-none-elf-as -march=rv32i -o "$out/drv.o" "$src/drivers/$name.s"
-  riscv32-none-elf-ld -Ttext=0x10000 -o "$out/prog.elf" "$out/drv.o" "$out/rt.o" "$out/fn.o" 2>/dev/null
+  # -mno-relax and --no-relax. Linker relaxation rewrites `la rd,sym' into
+  # `addi rd,gp,off' whenever sym is within 2 KB of __global_pointer$, and that
+  # is correct only if the startup code loaded gp. None of drivers/*.s does:
+  # `_start' is the first instruction of the image and gp is zero, so the
+  # relaxed form addresses whatever sits near address 0. Not hypothetical --
+  # ir/gsym.c's `la s1,tbl+4' relaxed to `addi s1,gp,-2044' and the store
+  # faulted.
+  #
+  # Say plainly which way round this is: these programs do not conform to the
+  # gp half of the ABI, and the honest alternative is to make them conform by
+  # loading gp in a shared `_start' (task-031). Until then the flags are the
+  # smaller lie, because the target this project is building -- a Nix
+  # assembler that emits no relocations and a Nix emulator that sets no gp --
+  # cannot express the optimisation either. `2>/dev/null' on ld hides its
+  # `-z relro ignored' noise, and with it any real linker diagnostic; that is
+  # also task-031.
+  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/fn.o" "$out/$name.s"
+  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/rt.o" "$src/runtime.s"
+  riscv32-none-elf-as -march=rv32i -mno-relax -o "$out/drv.o" "$src/drivers/$name.s"
+  riscv32-none-elf-ld --no-relax -Ttext=0x10000 -o "$out/prog.elf" "$out/drv.o" "$out/rt.o" "$out/fn.o" 2>/dev/null
   riscv32-none-elf-objcopy -O binary "$out/prog.elf" "$out/prog.bin"
 
   # The assembler is allowed to reject nothing silently: if it had produced an
@@ -372,6 +388,14 @@ mutate "matcher: every argument is passed in a0" \
 mutate "matcher: a value is held in a register across a branch target" \
        "must be the first instruction after" \
        'sed -i "s@st = prev.st // { cse = { }; nextCse = 0; clearedAt = item.name; };@st = prev.st;@" burg.nix' \
+       "$matcher_check"
+
+# lcc folds `tbl[1]' into one node, `ADDRGP4 tbl+4' (task-023). The rule table
+# takes that symbol verbatim and poc/04-assembler resolves the displacement at
+# layout time, so the one thing the matcher has to do is not lose it.
+mutate "matcher: a global's constant displacement is dropped on the way to the assembler" \
+       "is missing \`la s1,tbl+4'" \
+       "sed -i 's@else sym)@else b.head (b.split \"[+]\" sym))@' emit.nix" \
        "$matcher_check"
 
 mutate "harness: the opcode-coverage table is emptied" \

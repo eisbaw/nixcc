@@ -42,6 +42,8 @@ let
   minHiLoCases = 9;
   minSymbols = 9;
   minSwapWords = 4;
+  minSymexprWords = 14;
+  minSymbolExpressions = 7;
   minMnemonics = 55;
   minHandItems = 16;
 
@@ -109,6 +111,42 @@ let
   # word mismatch that explains it. Measured, from the pc+4 mutation.
   pcrelError = wordCheck "pcrel" cases.pcrelWords;
   rangeError = wordCheck "range" cases.rangeWords;
+  symexprError = wordCheck "symexpr" cases.symexprWords;
+
+  # --- symbol expressions --------------------------------------------------
+  # The ADDRESS an expression resolves to, through the same `lookup' every
+  # instruction goes through. The encodings above already pin the bytes; this
+  # pins the number, because an auipc/addi pair carries a relative distance
+  # and a wrong base with a compensating offset encodes identically.
+  symexprErrors = b.filter (e: e != null) (map
+    (s:
+      let got = built.${s.file}.resolve s.expr; in
+      if got != s.addr then
+        "${s.file}: `${s.expr}'${if s.note == "" then "" else " (${s.note})"} resolves to "
+        + "0x${asm.toHex got}, expected 0x${asm.toHex s.addr}"
+      else null)
+    cases.symbolExpressions);
+
+  # A name that PARSES as a symbol expression but IS a label, which no ordinary
+  # expression can show: `f-1' is a label here and there is no `f' for it to be
+  # an expression over. The case where both readings answer is a refusal and
+  # lives in must-fail.nix.
+  signedName = asm.assemble { items = cases.literalSignedName.items; };
+  signedNameErrors = b.filter (e: e != null) [
+    (
+      let got = signedName.resolve "g"; in
+      if got != cases.literalSignedName.plain then
+        "the label `g' is at 0x${asm.toHex got}, expected 0x${asm.toHex cases.literalSignedName.plain}"
+      else null
+    )
+    (
+      let got = signedName.resolve "f-1"; in
+      if got != cases.literalSignedName.signed then
+        "the label named `f-1' resolves to 0x${asm.toHex got}, expected 0x${asm.toHex cases.literalSignedName.signed}"
+        + " -- a name that parses as a symbol expression but IS a label must resolve to the label"
+      else null
+    )
+  ];
 
   # The swap table names four instructions inside a much longer program, so
   # these are looked up by address rather than by index.
@@ -262,6 +300,8 @@ else if b.length cases.liCases < minLiCases then fault "the li table has ${toStr
 else if b.length cases.hiLoCases < minHiLoCases then fault "the hiLo table has ${toString (b.length cases.hiLoCases)} cases, fewer than ${toString minHiLoCases}"
 else if b.length cases.symbols < minSymbols then fault "the symbol-address table has ${toString (b.length cases.symbols)} entries, fewer than ${toString minSymbols}"
 else if b.length cases.swapWords < minSwapWords then fault "the operand-swap table has ${toString (b.length cases.swapWords)} entries, fewer than ${toString minSwapWords}"
+else if b.length cases.symexprWords < minSymexprWords then fault "the symbol-expression word table has ${toString (b.length cases.symexprWords)} entries, fewer than ${toString minSymexprWords}"
+else if b.length cases.symbolExpressions < minSymbolExpressions then fault "the symbol-expression address table has ${toString (b.length cases.symbolExpressions)} entries, fewer than ${toString minSymbolExpressions}"
 else if b.length cases.handBuilt.items < minHandItems then fault "the hand-built item list has ${toString (b.length cases.handBuilt.items)} items, fewer than ${toString minHandItems}"
 else if b.length asm.mnemonics < minMnemonics then fault "the assembler implements ${toString (b.length asm.mnemonics)} mnemonics, fewer than the ${toString minMnemonics} this corpus was written for"
 else if missingRequired != [ ] then fault "the li table no longer covers ${toString missingRequired}, which the task names explicitly"
@@ -287,6 +327,12 @@ else if firstError hiLoErrors != null then throw "assembler: ${firstError hiLoEr
 else if firstError liErrors != null then throw "assembler: ${firstError liErrors}"
 else if pcrelError != null then throw "assembler: ${pcrelError}"
 else if rangeError != null then throw "assembler: ${rangeError}"
+# The address an expression means before the encodings that carry it: a wrong
+# base makes every `la' in symexpr.s wrong too, and reporting that first sends
+# the reader to the encoder rather than to `lookup'.
+else if firstError signedNameErrors != null then throw "assembler: ${firstError signedNameErrors}"
+else if firstError symexprErrors != null then throw "assembler: ${firstError symexprErrors}"
+else if symexprError != null then throw "assembler: ${symexprError}"
 else if firstError globalErrors != null then throw "assembler: ${firstError globalErrors}"
 else if firstError sizeErrors != null then throw "assembler: ${firstError sizeErrors}"
 else if firstError swapErrors != null then throw "assembler: ${firstError swapErrors}"
@@ -302,6 +348,7 @@ else ''
   assembler: ${toString (b.length cases.programs)} programs, ${toString comparedWords} instruction words and ${toString comparedBytes} bytes assembled
   assembler: ${toString (b.length cases.pcrelWords + b.length cases.rangeWords + b.length cases.swapWords)} encodings pinned, ${toString (b.length cases.symbols)} label addresses, ${toString (b.length cases.programs)} section layouts
   assembler: ${toString (b.length cases.liCases)} li expansions and ${toString (b.length cases.hiLoCases)} hiLo splits, covering every value the task names
+  assembler: ${toString (b.length cases.symbolExpressions)} symbol expressions resolved from the symbol table, carried by ${toString (b.length cases.symexprWords)} pinned words
   assembler: ${toString (b.length asm.mnemonics)} mnemonics implemented, all of them reached by progs/
   assembler: ${toString (b.length sizeReports)} instruction placements agree with what they encoded to, ${toString (b.length wide)} of them longer than one word
   assembler: ${toString (b.length cases.handBuilt.items)} hand-built items assembled with no assembly text involved

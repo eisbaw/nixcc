@@ -481,10 +481,85 @@ let
       globals = b.filter (i: (b.elemAt src i).kind == "global") (b.genList (i: i) n);
       globalNames = map (i: (b.elemAt src i).name) globals;
 
+      # A SYMBOL EXPRESSION: `msg+8', a base symbol with a constant
+      # displacement. lcc folds `msg[2]' on an `int msg[]' into a single node
+      # `ADDRGP4 msg+8' (task-023), and GNU as accepts the same spelling
+      # everywhere a symbol goes -- `la', `call', a branch target, `.word'.
+      # It is an ASSEMBLER concept and lives here for that reason: this file
+      # already resolves every symbol at layout time, so the displacement is
+      # added to an address the symbol table gives rather than hand-computed
+      # anywhere upstream.
+      #
+      # The split takes the LAST `+' or `-' followed by nothing but decimal
+      # digits, which is what `(.+)' being greedy gives.
+      #
+      # ACCEPTED: `sym+8' and `sym-8'. Nothing else. GNU as also takes
+      # `sym+0x8', `sym + 8' and `sym+4+4', and reads a leading zero as octal;
+      # every one of those is REFUSED here, by name, rather than resolved to a
+      # different number than the reference assembler would (task-030). lcc
+      # emits plain decimal.
+      #
+      # The digits are folded rather than handed to builtins.fromJSON: fromJSON
+      # reports `08' as a JSON syntax error, which is a parser exception
+      # leaking out of an assembler, and turns a twenty-digit run into a float.
+      # A fold overflows instead, which decision-001 says throws.
+      digitValue = b.listToAttrs (b.genList (i: { name = toString i; value = i; }) 10);
+      decimalOf = s:
+        b.foldl' (a: c: a * 10 + digitValue.${c}) 0
+          (map b.head (b.filter b.isList (b.split "(.)" s)));
+
+      symExpr = sym:
+        let m = b.match "(.+)([+-])([0-9]+)" sym; in
+        if m == null then null
+        else
+          let digits = b.elemAt m 2; in
+          {
+            base = b.head m;
+            offset =
+              let mag = decimalOf digits; in
+              if b.elemAt m 1 == "-" then -mag else mag;
+            leadingZero = b.stringLength digits > 1 && b.substring 0 1 digits == "0";
+          };
+
+      # The two ways an operand can name an address. If BOTH answer and they
+      # disagree -- a unit defining labels `f' and `f-1' four bytes apart --
+      # the operand is ambiguous and this refuses, exactly as it refuses a
+      # label defined twice. That is why neither of these is "tried first":
+      # there is no case left where the choice would matter, so no precedence
+      # to get wrong. GNU as cannot even spell such a name, `-' not being a
+      # symbol character there, so no reference behaviour is being diverged
+      # from -- there is none.
+      wholeSymbol = sym: symbols.${sym} or null;
+      symbolExpression = where: sym:
+        let e = symExpr sym; in
+        if e == null then null
+        else if e.leadingZero then
+          throw ("asm: ${where}: the displacement in `${sym}' has a leading zero, which GNU as "
+            + "reads as octal; this assembler accepts a plain decimal displacement only (task-030).")
+        else
+          let a = symbols.${e.base} or null; in
+          if a == null then null else a + e.offset;
+
       lookup = where: what: sym:
-        symbols.${sym}
-          or (throw "asm: ${where}: ${what} `${sym}', which nothing in this unit defines. "
-          + "This assembler resolves every symbol at layout time and emits no relocations (task-022).");
+        let
+          whole = wholeSymbol sym;
+          expr = symbolExpression where sym;
+        in
+        if whole != null && expr != null && whole != expr then
+          throw ("asm: ${where}: `${sym}' is both a label this unit defines, at 0x${encode.toHex whole}, "
+            + "and a symbol expression worth 0x${encode.toHex expr}. Those are different addresses, so "
+            + "which one is meant cannot be decided here; rename the label.")
+        else if whole != null then whole
+        else if expr != null then expr
+        else
+          let e = symExpr sym; in
+          throw ("asm: ${where}: ${what} `${sym}', which nothing in this unit defines"
+            + (if e != null then
+            " -- `${sym}' is a symbol expression and its base symbol `${e.base}' is the undefined one"
+            else if b.match ".*[+-].*" sym != null then
+            " -- it carries a sign, so it may be meant as a symbol expression, and this assembler accepts only `base+N' and `base-N' with N in plain decimal (task-030)"
+            else "")
+            + ". This assembler resolves every symbol at layout time and emits no relocations (task-022).");
 
       ctxAt = i:
         let
@@ -501,11 +576,16 @@ let
           # distance, and what to do instead -- which is the whole value of a
           # refusal, so messages.sh holds them to their text rather than
           # must-fail.nix holding them to "something threw".
+          # Both of these report the target's ADDRESS as well as the distance,
+          # and they take it from `lookup' rather than from `symbols' -- a
+          # symbol expression is not a key of the symbol table, and reading it
+          # as one turned an out-of-range `beq sym+8' into `attribute missing'
+          # instead of the diagnostic this branch exists to produce.
           branchOff = sym:
             let d = rel "branches to" sym; in
             if d < -4096 || d > 4094 then
               throw ("asm: ${where} at 0x${encode.toHex pc} branches to `${sym}' at "
-                + "0x${encode.toHex symbols.${sym}}, which is ${toString d} bytes away; a "
+                + "0x${encode.toHex (lookup where "branches to" sym)}, which is ${toString d} bytes away; a "
                 + "B-type offset must be in [-4096, 4094]. Invert the branch and jump over a "
                 + "`j' instead -- automatic relaxation is task-021.")
             else d;
@@ -513,7 +593,7 @@ let
             let d = rel "jumps to" sym; in
             if d < -1048576 || d > 1048574 then
               throw ("asm: ${where} at 0x${encode.toHex pc} jumps to `${sym}' at "
-                + "0x${encode.toHex symbols.${sym}}, which is ${toString d} bytes away; a "
+                + "0x${encode.toHex (lookup where "jumps to" sym)}, which is ${toString d} bytes away; a "
                 + "J-type offset must be in [-1048576, 1048574]. Use `call', which is an "
                 + "auipc/jalr pair and reaches anywhere (task-021).")
             else d;
@@ -571,6 +651,12 @@ let
       throw "asm: text base 0x${encode.toHex textBase} is not 16-byte aligned; alignment is computed on section offsets and would be wrong"
     else {
       inherit symbols textBase dataBase textSize dataSize;
+      # What a symbol OR a symbol expression means in this unit, through the
+      # same `lookup' every instruction goes through. Exported so a test can
+      # pin the ADDRESS `msg+8' resolves to rather than only the bytes it
+      # produced -- an auipc/addi pair is a relative distance, and a wrong
+      # base with a compensating offset encodes identically.
+      resolve = lookup "resolve" "was asked for the address of";
       inherit (final) textAlign dataAlign;
       globals = globalNames;
       text = textBytes;

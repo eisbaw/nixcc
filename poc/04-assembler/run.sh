@@ -285,6 +285,69 @@ mutate "asm: an out-of-range branch loses its diagnostic and falls through to th
        "sed -i 's@            if d < -4096 || d > 4094 then@            if d < -99999999 || d > 99999999 then@' asm.nix" \
        "bash $mut/messages.sh $mut"
 
+# --- symbol expressions (task-023) ---
+# `msg+8' is one operand with two halves, and every one of these breaks a
+# different half while the other still works -- which is what makes them
+# distinguishable rather than four spellings of "the offset is wrong".
+mutate "asm: a symbol expression's displacement is dropped" \
+       "\`tbl+8' (the third word of tbl)" \
+       "sed -i 's@then -mag else mag;@then 0 else 0;@' asm.nix" \
+       "$pure_check"
+
+mutate "asm: a symbol expression's sign is ignored, so sym-N means sym+N" \
+       "\`tbl-4' (backwards, which is" \
+       "sed -i 's@then -mag else mag;@then mag else mag;@' asm.nix" \
+       "$pure_check"
+
+# The feature itself, taken back out: `tbl+8' stops being an expression and
+# becomes a symbol nothing defines, which is exactly the refusal task-023
+# started from.
+#
+# Say what is NOT aimed at here: `symexprWords', the fourteen pinned
+# encodings. Every mutation that would move those words also moves an address
+# in `symbolExpressions', which check.nix reports first and deliberately so --
+# a wrong base explains a wrong encoding and not the other way round. So that
+# table is carried by the address pins beside it and by the byte-for-byte
+# differential against GNU as above, not by a mutation of its own.
+mutate "asm: symbol expressions are not recognised at all, as before task-023" \
+       "was asked for the address of \`tbl+8'" \
+       "sed -i 's@        if m == null then null@        if true then null@' asm.nix" \
+       "$pure_check"
+
+mutate "asm: a name that is both a label and an expression is resolved silently" \
+       "assembled fine: an operand that is both a label this unit defines" \
+       "sed -i 's@        if whole != null && expr != null && whole != expr then@        if false then@' asm.nix" \
+       "$must_fail"
+
+mutate "asm: a leading-zero displacement is read as decimal instead of refused" \
+       "assembled fine: a leading-zero displacement" \
+       "sed -i 's@        else if e.leadingZero then@        else if false then@' asm.nix" \
+       "$must_fail"
+
+# The range diagnostics report the target's ADDRESS. Reading it out of
+# `symbols' answers for a plain label and not for an expression, so only a
+# case whose target IS an expression can see this, and only messages.sh can
+# see that the message stopped naming the right address. The mutation defaults
+# to zero rather than letting the lookup fail, because an `attribute missing'
+# is not a message this project wrote and matching on it would be matching on
+# nix's internals.
+mutate "asm: an out-of-range diagnostic reads the target address out of the symbol table" \
+       "'a branch out of range whose target is a symbol expression' threw, but the message does not contain" \
+       "sed -i 's@(lookup where \"branches to\" sym)@(symbols.\${sym} or 0)@' asm.nix" \
+       "bash $mut/messages.sh $mut"
+
+# The refusal's whole value is that it names the BASE. Removing the clause
+# leaves a refusal that is still a refusal, so only messages.sh sees it.
+mutate "asm: an undefined base is reported as the whole expression" \
+       "'a symbol expression whose base symbol nothing defines' threw, but the message does not contain" \
+       "sed -i 's@            + (if e != null then@            + (if false then@' asm.nix" \
+       "bash $mut/messages.sh $mut"
+
+mutate "parse: a symbol expression in .data is refused by the text front end" \
+       "is neither a number nor a symbol" \
+       "sed -i 's@-+A-Za-z0-9@-A-Za-z0-9@' parse.nix" \
+       "$pure_check"
+
 mutate "asm: a label defined twice is accepted" \
        "assembled fine: the same label defined twice" \
        "sed -i 's@    else if duplicated != \[ \] then@    else if false then@' asm.nix" \
@@ -306,6 +369,16 @@ mutate "harness: the PC-relative word table is emptied" \
 mutate "harness: the li table is emptied" \
        "the li table has 0 cases" \
        "sed -i 's@^  liCases = \[@  liCases = [ ]; unusedLiCases = [@' cases.nix" \
+       "$pure_check"
+
+mutate "harness: the symbol-expression address table is emptied" \
+       "symbol-expression address table has 0 entries" \
+       "sed -i 's@^  symbolExpressions = \[@  symbolExpressions = [ ]; unusedSymbolExpressions = [@' cases.nix" \
+       "$pure_check"
+
+mutate "harness: the symbol-expression word table is emptied" \
+       "symbol-expression word table has 0 entries" \
+       "sed -i 's@^  symexprWords = \[@  symexprWords = [ ]; unusedSymexprWords = [@' cases.nix" \
        "$pure_check"
 
 mutate "harness: the label-address table is emptied" \

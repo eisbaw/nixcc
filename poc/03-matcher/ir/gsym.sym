@@ -1,0 +1,33 @@
+address tbl+4 type=int sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address tbl+12 type=int sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address tbl+4 type=int sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address tbl+8 type=int sclass=extern scope=GLOBAL flags=computed ref=1.000000
+address tbl+12 type=int sclass=extern scope=GLOBAL flags=computed ref=1.000000
+export pick
+segment text
+function pick type=int function(int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller n type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+callee n type=int sclass=auto scope=PARAM flags=0 offset=0 ref=1.000000
+blockbeg off=0
+blockend off=0
+ 2. ADDRGP4 tbl+4
+4. ADDRFP4 n
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRGP4 tbl+12
+5. ADDRGP4 tbl+4
+4. INDIRI4 #5
+7. ADDRGP4 tbl+8
+6. INDIRI4 #7
+3. ADDI4 #4 #6
+1' ASGNI4 #2 #3 4 4
+ 4. ADDRGP4 tbl+12
+3. INDIRI4 #4
+6. ADDRGP4 tbl
+5. INDIRI4 #6
+2. SUBI4 #3 #5
+1' RETI4 #2
+ 1:
+maxoff=0
+import tbl
+progend

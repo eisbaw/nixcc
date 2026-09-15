@@ -247,14 +247,21 @@ let
     (pl:
       if pl.item.kind != "insn" then [ ]
       else map
-        (t: {
-          from = pl.addr;
-          target = t;
-          to = image.symbols.${t};
-          delta = image.symbols.${t} - pl.addr;
-          encoded = encodedOffset (wordAt pl.addr);
-          inherit (pl.item) mnemonic;
-        })
+        (t:
+          # `image.resolve', not `image.symbols.${t}': a branch target may be
+          # a symbol expression (`msg+8', task-023), which is not a key of the
+          # symbol table. Reading it as one answers `attribute missing' rather
+          # than an address -- the same mistake asm.nix's own range
+          # diagnostics made and had fixed.
+          let to = image.resolve t; in
+          {
+            from = pl.addr;
+            target = t;
+            inherit to;
+            delta = to - pl.addr;
+            encoded = encodedOffset (wordAt pl.addr);
+            inherit (pl.item) mnemonic;
+          })
         (targetsOf pl.item))
     image.placements);
 

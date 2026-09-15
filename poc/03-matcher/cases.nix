@@ -20,6 +20,7 @@
     { name = "cond"; fn = "probe"; what = "a conditional expression, which puts a LABEL inside a forest"; }
     { name = "save"; fn = "hold"; what = "more registers held before a mid-forest label than after it"; }
     { name = "argcall"; fn = "nested"; what = "a libcall inside a call's FIRST argument, which is legal"; }
+    { name = "gsym"; fn = "pick"; what = "a global at a constant index, which lcc folds into one ADDRGP4 sym+N"; }
   ];
 
   # Acceptance criterion 4 and 9: these opcodes must appear in the corpus DAGs
@@ -134,6 +135,18 @@
     {
       what = "the load lcc shares across the label inside that forest";
       file = "cond"; forest = 1; node = "2"; nt = "reg"; rule = "reg_indiri"; cost = 1;
+    }
+    {
+      # The rule table does NOT split `tbl+4' into an `la' and an `addi': the
+      # node carries one symbol and `acon_addrgp' takes it verbatim, which is
+      # why this costs what a bare global costs. What resolves the
+      # displacement is poc/04-assembler, at layout time (task-023).
+      what = "a global at a constant index is one symbol, at the price of one";
+      file = "gsym"; forest = 0; node = "2"; nt = "acon"; rule = "acon_addrgp"; cost = 0;
+    }
+    {
+      what = "so materialising its address is the same single `la'";
+      file = "gsym"; forest = 0; node = "2"; nt = "reg"; rule = "reg_from_acon"; cost = 2;
     }
     {
       what = "pointer + constant field offset IS an addressing mode, and free";
@@ -259,6 +272,27 @@
       instructions = 12;
       follows = [ ];
     }
+    {
+      file = "gsym";
+      # Four different displacements off one base, including the bare base,
+      # so a displacement dropped or applied to the wrong element shows up
+      # here and not only in the answer.
+      present = [
+        "la s1,tbl+4"
+        "la s3,tbl+8"
+        "la s1,tbl+12"
+        "la s2,tbl"
+        "sw s2,0(s1)"
+        "sub s1,s1,s2"
+      ];
+      # The other place this could have been fixed: splitting the symbol in
+      # the rule table and emitting the displacement as its own `addi'
+      # (task-023 weighed the two). It is not what happens, and a table that
+      # started doing it would change these instruction counts silently.
+      absent = [ "%" "addi s1,s1,4" "addi s2,s2,8" ];
+      instructions = 17;
+      follows = [ ];
+    }
   ];
 
   # --- execution (run.sh) --------------------------------------------------
@@ -275,5 +309,6 @@
     { file = "cond"; expect = 14; why = "probe(5,9) = 5 + (5 ? 9 : 5) = 14"; }
     { file = "save"; expect = 55; why = "hold(6,7) = 6 + (6 ? 7*7 : 6) = 55"; }
     { file = "argcall"; expect = 37; why = "nested(6) = h(6*6, 1) = 37"; }
+    { file = "gsym"; expect = 116; why = "pick(20) on tbl={4,0,100,0}: tbl[1]=20, tbl[3]=20+100=120, and 120-tbl[0]=116"; }
   ];
 }

@@ -87,7 +87,11 @@ let
         values = map
           (o:
             if b.match "-?(0[xX][0-9a-fA-F]+|[0-9]+)" o != null then parseInt where o
-            else if b.match "[.A-Za-z_][-A-Za-z0-9_.$]*" o != null then o
+            # `+' is in the tail class so that `.word msg+8' -- a symbol
+            # expression, which asm.nix resolves against its own symbol table
+            # (task-023) -- reaches the assembler instead of being refused
+            # here as neither a number nor a symbol.
+            else if b.match "[.A-Za-z_][-+A-Za-z0-9_.$]*" o != null then o
             else throw "parse: ${where}: `${o}' is neither a number nor a symbol")
           operands;
       }]

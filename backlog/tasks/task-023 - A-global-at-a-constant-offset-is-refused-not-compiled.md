@@ -1,10 +1,10 @@
 ---
 id: TASK-023
 title: 'A global at a constant offset is refused, not compiled'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-15 02:02'
-updated_date: '2026-09-15 04:40'
+updated_date: '2026-09-15 04:47'
 labels:
   - poc
   - matcher
@@ -30,3 +30,14 @@ Found by TASK-004.
 - [ ] #3 A must-fail case covers a symbol expression whose base is undefined, with a diagnostic that names the base rather than the whole expression
 - [ ] #4 poc/05-loop/hello.c can take its buffer as a global again, and the comment pointing at this task goes away
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Plan (implementer):
+- Own the fix in poc/04-assembler/asm.nix, as the task's own analysis argues: `lookup' first tries an exact symbol-table hit and only then splits a trailing `+N'/`-N' off the operand. Exact-first keeps a label literally named `f-1' working and matches what GNU as does.
+- One place, so `la sym+N', `call sym+N', a branch to `L+N' and `.word sym+N' all resolve through the same code path at layout time; nothing is hand-computed.
+- poc/04-assembler/parse.nix: widen the `.word'/.half/.byte operand pattern so a symbol expression reaches the assembler instead of being rejected as "neither a number nor a symbol".
+- Diagnostic: an undefined BASE is named as the base, not as the whole expression. must-fail case + control, message pinned by messages.sh.
+- Differential: put a symbol expression in progs/ so GNU as assembles the same bytes; pin its addresses in cases.nix; add a mutation that breaks the offset and must be caught.
+<!-- SECTION:NOTES:END -->

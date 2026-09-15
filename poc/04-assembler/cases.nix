@@ -20,6 +20,7 @@ rec {
     { name = "data"; textSize = 48; textAlign = 16; dataSize = 0; }
     { name = "range"; textSize = 8200; textAlign = 4; dataSize = 0; }
     { name = "pseudo"; textSize = 268; textAlign = 4; dataSize = 0; }
+    { name = "symexpr"; textSize = 84; textAlign = 4; dataSize = 0; }
   ];
 
   # Label addresses. This is this task's equivalent of the lexer's line
@@ -36,6 +37,51 @@ rec {
     { file = "range"; name = "fardown"; addr = 69628; }
     { file = "pseudo"; name = "target"; addr = 65704; }
     { file = "pseudo"; name = "far"; addr = 65800; }
+    { file = "symexpr"; name = "after"; addr = 65576; }
+    { file = "symexpr"; name = "tbl"; addr = 65592; }
+  ];
+
+  # SYMBOL EXPRESSIONS: `tbl+8', a base symbol with a constant displacement,
+  # which is what lcc folds `msg[2]' into (task-023). What is pinned is the
+  # ADDRESS the assembler resolves the expression to, through the same
+  # `lookup' every instruction goes through -- the encodings below pin the
+  # bytes, and these pin the number, because an auipc/addi pair carries a
+  # relative distance and a wrong base with a compensating offset encodes
+  # identically.
+  #
+  # `after+0' is here because zero is the displacement a naive split reports
+  # for any expression, and `tbl-4' because the sign is the half a pattern can
+  # get wrong while `+' still works. Every address was read off
+  # riscv32-none-elf-nm for the same file.
+  symbolExpressions = [
+    { file = "symexpr"; expr = "tbl+8"; addr = 65600; note = "the third word of tbl"; }
+    { file = "symexpr"; expr = "tbl-4"; addr = 65588; note = "backwards, which is `done'"; }
+    { file = "symexpr"; expr = "after+0"; addr = 65576; note = "a zero displacement is still an expression"; }
+    { file = "symexpr"; expr = "after+8"; addr = 65584; note = ""; }
+    { file = "symexpr"; expr = "after+4"; addr = 65580; note = "a branch target, which goes through branchOff"; }
+    { file = "symexpr"; expr = "done-4"; addr = 65584; note = "a jump target, which goes through jumpOff"; }
+    { file = "symexpr"; expr = "tbl"; addr = 65592; note = "the base on its own, which must not go through the split"; }
+  ];
+
+  # Every word of symexpr.s, read off riscv32-none-elf-objdump for the same
+  # file. Four callers of one `lookup' -- `la' and `call' through `pcrel', `j'
+  # through `jumpOff', `beq' through `branchOff' -- so a displacement lost on
+  # any one of those paths shows up here as a changed encoding.
+  symexprWords = [
+    { addr = 65536; hex = "00000517"; mnemonic = "la"; note = "la tbl+8, auipc half"; }
+    { addr = 65536; hex = "04050513"; mnemonic = "la"; note = "addi 64: 8 past tbl, 56 past here"; }
+    { addr = 65544; hex = "00000597"; mnemonic = "la"; note = ""; }
+    { addr = 65544; hex = "03058593"; mnemonic = "la"; note = "addi 48: the base with no displacement"; }
+    { addr = 65552; hex = "00000617"; mnemonic = "la"; note = ""; }
+    { addr = 65552; hex = "02460613"; mnemonic = "la"; note = "addi 36: tbl-4, four LESS than the base"; }
+    { addr = 65560; hex = "00052683"; mnemonic = "lw"; note = ""; }
+    { addr = 65564; hex = "00b50863"; mnemonic = "beq"; note = "+16 to after+4, not +12 to after"; }
+    { addr = 65568; hex = "00000097"; mnemonic = "call"; note = "call after+0, auipc half"; }
+    { addr = 65568; hex = "008080e7"; mnemonic = "call"; note = "jalr 8, from the auipc's own pc"; }
+    { addr = 65576; hex = "00000013"; mnemonic = "nop"; note = ""; }
+    { addr = 65580; hex = "0040006f"; mnemonic = "j"; note = "+4 to done-4, not +8 to done"; }
+    { addr = 65584; hex = "00000013"; mnemonic = "nop"; note = ""; }
+    { addr = 65588; hex = "00008067"; mnemonic = "ret"; note = ""; }
   ];
 
   # THE PC-RELATIVE BASE, one case per way of getting it wrong.
@@ -162,7 +208,28 @@ rec {
     tailBytes = [ 0 0 1 0 16 0 1 0 120 86 52 18 ];
   };
 
+  # A label whose own NAME ends in `-1', in a unit that defines no `f'. Built
+  # as items and never as text, because GNU as has no spelling for it -- `-'
+  # is not a symbol character there -- so this is a claim about OUR assembler
+  # alone and the differential cannot make it.
+  #
+  # What it pins: a name that PARSES as a symbol expression but IS a label
+  # resolves to the label, rather than being refused for a base symbol nobody
+  # wrote down. The case where both readings answer and disagree is a refusal,
+  # and lives in must-fail.nix.
+  literalSignedName = {
+    items = [
+      { kind = "section"; name = ".text"; }
+      { kind = "label"; name = "f-1"; }
+      { kind = "insn"; mnemonic = "nop"; args = [ ]; }
+      { kind = "label"; name = "g"; }
+      { kind = "insn"; mnemonic = "ret"; args = [ ]; }
+    ];
+    signed = 65536;
+    plain = 65540;
+  };
+
   # Every mnemonic the table implements must occur somewhere in progs/, or the
   # differential is testing less than it looks like it is.
-  mnemonicCorpus = [ "pcrel" "consts" "data" "range" "pseudo" ];
+  mnemonicCorpus = [ "pcrel" "consts" "data" "range" "pseudo" "symexpr" ];
 }

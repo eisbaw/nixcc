@@ -18,8 +18,8 @@ let
   asm = import ./asm.nix { };
   parse = import ./parse.nix { inherit asm; };
 
-  minRejects = 20;
-  minControls = 12;
+  minRejects = 28;
+  minControls = 20;
 
   # Forcing `words' rather than the whole result keeps the 1 MiB `.zero' in the
   # jump-range cases from ever being expanded into a byte list: placement needs
@@ -75,6 +75,55 @@ let
       what = "a branch to a symbol nothing in the unit defines";
       expect = "branches to `nowhere'";
       run = words [ (insn "beq" [ "a0" "a1" "nowhere" ]) ];
+    }
+    {
+      # The whole point of naming the BASE: `la a0,msg+8' with `msg' missing
+      # is a missing `msg', and a diagnostic that quoted `msg+8' back would
+      # send the reader looking for a symbol nobody ever wrote down.
+      what = "a symbol expression whose base symbol nothing defines";
+      expect = "its base symbol `nosuchbase' is the undefined one";
+      run = words [ (insn "la" [ "a0" "nosuchbase+8" ]) ];
+    }
+    {
+      what = "a symbol expression in .data whose base nothing defines";
+      expect = "its base symbol `nosuchdatum' is the undefined one";
+      run = image [ { kind = "bytes"; width = 4; values = [ "nosuchdatum+4" ]; } ];
+    }
+    {
+      # Both readings answer and they disagree: `f-1' is a label at one
+      # address and `f' minus one is another. Refused rather than resolved,
+      # which is why neither reading has to be tried first.
+      what = "an operand that is both a label this unit defines and a symbol expression";
+      expect = "Those are different addresses";
+      run = words [ (label "f") (insn "nop" [ ]) (label "f-1") (insn "la" [ "a0" "f-1" ]) ];
+    }
+    {
+      # GNU as reads `08' as octal. Silently reading it as decimal would agree
+      # with the reference on `+08' and disagree on `+010'.
+      what = "a leading-zero displacement, which GNU as reads as octal";
+      expect = "has a leading zero, which GNU as reads as octal";
+      run = words [ (label "here") (insn "la" [ "a0" "here+08" ]) ];
+    }
+    {
+      what = "a hexadecimal displacement, which GNU as takes and this does not";
+      expect = "accepts only `base+N' and `base-N' with N in plain decimal";
+      run = words [ (label "here") (insn "la" [ "a0" "here+0x8" ]) ];
+    }
+    {
+      # The range diagnostics report the TARGET'S ADDRESS, and a symbol
+      # expression is not a key of the symbol table. Reading it as one turned
+      # this case into `attribute missing' instead of the refusal below.
+      # The ADDRESS is pinned in full, not just "at 0x": a diagnostic that
+      # answered zero for an expression -- which is what reading it out of the
+      # symbol table with a default would do -- still contains "at 0x".
+      what = "a branch out of range whose target is a symbol expression";
+      expect = "branches to `far+8' at 0x00011008";
+      run = words [ (insn "beq" [ "a0" "a1" "far+8" ]) (gap (4096 - 4)) (label "far") ];
+    }
+    {
+      what = "a jump out of range whose target is a symbol expression";
+      expect = "jumps to `far+8' at 0x00110008";
+      run = words [ (insn "j" [ "far+8" ]) (gap (1048576 - 4)) (label "far") ];
     }
     {
       what = "the same label defined twice";
@@ -186,6 +235,27 @@ let
     {
       what = "a call to a symbol this unit does define";
       run = words [ (label "here") (insn "call" [ "here" ]) ];
+    }
+    {
+      what = "a symbol expression whose base this unit does define";
+      run = words [ (label "here") (insn "nop" [ ]) (insn "la" [ "a0" "here+8" ]) ];
+    }
+    {
+      # The same name with no `f' beside it: one reading answers, so there is
+      # nothing to be ambiguous about and it assembles. What ADDRESS it
+      # resolves to is check.nix's `literalSignedName', because tryEval can
+      # only see that something threw.
+      what = "a label whose own name looks like a symbol expression, with no base it could be over";
+      run = words [ (label "f-1") (insn "nop" [ ]) (insn "la" [ "a0" "f-1" ]) ];
+    }
+    { what = "a displacement with no leading zero"; run = words [ (label "here") (insn "la" [ "a0" "here+8" ]) ]; }
+    {
+      what = "a branch to a symbol expression that is in range";
+      run = words [ (insn "beq" [ "a0" "a1" "far+8" ]) (gap (4084 - 4)) (label "far") ];
+    }
+    {
+      what = "a jump to a symbol expression that is in range";
+      run = words [ (insn "j" [ "far+8" ]) (gap (1048564 - 4)) (label "far") ];
     }
     {
       # A numeric label MAY be defined many times -- that is the whole point
