@@ -4,7 +4,7 @@ title: Minimal C preprocessor in Nix
 status: To Do
 assignee: []
 created_date: '2026-09-14 20:04'
-updated_date: '2026-09-16 01:30'
+updated_date: '2026-09-16 03:36'
 labels:
   - frontend
   - preprocessor
@@ -115,4 +115,51 @@ the frontend cannot take anything else. That is 29 translation units of C this
 project already compiles and diffs against lcc byte for byte, which makes it
 the obvious first differential for a preprocessor: run it through, and the
 output must be the input.
+
+FORWARD-CARRIED from task-053 and task-054, commits 6484f79 and 2788b81.
+
+Neither task touches the preprocessor. What they leave you is a harness
+pattern and two ways of being wrong that this project keeps paying for, and
+criterion #6 is where both land.
+
+A TABLE THAT NAMES A THING DOES NOT TEST IT. task-053 exists because
+poc/03-matcher/cases.nix had three tables asserting what a named rule EMITS and
+none asserting that the matcher ever CHOOSES it, so a row nothing could reach
+was pinned by a table describing itself. The preprocessor's equivalent is a
+macro-expansion table, a directive table or a corpus listing: if you write one,
+also write the check that every entry is REACHED by the corpus, computed rather
+than read. check.nix's census is the worked example -- the population is
+derived from the table, the exemptions are declared with reasons, and the
+exemption list cannot be padded because a row must name something genuinely
+unreached and the arithmetic has to add up.
+
+REACHED IS NOT ASSERTED, which is the sharper half and the one task-054 nearly
+missed. A rule can be selected, reduced and named in three tables and still be
+replaceable by a no-op with no observable effect anywhere. For you the shape is
+a macro that expands to itself, a directive whose handler is the identity, or a
+linemarker that happens to match what the frontend would have assumed. The test
+is not "does the corpus reach it" but "does breaking it change an answer" --
+and the way to find out is to break it and look at the number, not to reason
+about it.
+
+THE ARGUMENTS ARE PART OF THE TEST. ir/unsig.c returned the same number whether
+it called the signed or the unsigned divide, because its divisor was 7; ir/ptr.c
+would have proved nothing about a null comparison that was always false. For a
+preprocessor: a macro whose expansion equals its own name, an #if whose two
+arms produce the same tokens, and an #include whose contents are already in
+scope are all cases that discriminate nothing. Criterion #4's differential
+needs a corpus chosen against that, not a corpus of headers that happen to be
+nearby.
+
+CONTROLS, for criterion #6 and for the must-fail half generally. Every refusal
+in this tree carries a control case that must still compile, and the mutation
+harness checks the diagnostic TEXT rather than the exit code -- otherwise "it
+threw" is satisfied by any throw at all. poc/07-parser/must-fail.nix and
+messages.sh are the pattern.
+
+AND THE COUNTS ARE DECLARED, not floored. poc/07-parser/oracle.py says why in
+its own words: a floor can be spent downward in silence, and this project has
+watched it happen. task-054 raised the matcher's floors to the actual for the
+same reason, after review showed that slack in two of them let a whole corpus
+function be deleted with the suite green.
 <!-- SECTION:NOTES:END -->

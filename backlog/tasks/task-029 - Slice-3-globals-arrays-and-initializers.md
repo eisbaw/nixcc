@@ -4,7 +4,7 @@ title: 'Slice 3: globals, arrays and initializers'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-16 01:30'
+updated_date: '2026-09-16 03:35'
 labels:
   - frontend
   - parser
@@ -125,4 +125,57 @@ did that to four existing mutations in this slice. To find them all in one run
 rather than one per run, temporarily change the distinctness loop at the bottom
 of run.sh to record a mismatch and `continue' instead of `exit 1', run once,
 read every mismatch, then put the loop back. Half a day saved.
+
+FORWARD-CARRIED from task-053 and task-054, commits 6484f79 and 2788b81.
+
+THE CHECK THAT NOW STANDS BETWEEN YOU AND THE MISTAKE TASK-051 MADE.
+poc/03-matcher/check.nix carries a RULE CENSUS: every row in rules.nix must be
+REDUCED by the ir/ corpus -- its template actually expanded into emitted
+assembly -- or declared in cases.nix's `unexercisedRules' with a status and a
+written reason. Add a row for slice 3 and forget the case, and the suite names
+it. You cannot quiet it: `reduced' is not a status a declaration may claim, a
+declared row whose rule is in a different state fails, and the census checks
+that rules reduced plus rows declared equals rows in the table.
+
+REDUCED IS NOT LABELLED, and the difference is what task-054 nearly shipped
+past. The labeller computes every nonterminal at every node whether the
+reduction asks for one or not, so a rule can WIN a nonterminal it is never
+asked for. `addr_addi' does exactly that and has never emitted a byte.
+
+AND `SELECTED' IS NOT `ASSERTED'. task-054's reg_cvup4_4 was selected, reduced,
+named in `lowerings', and still tested by nothing: its template is `mv %c,%0',
+a one-kid node is reduced at the same DEPTH as its kid, so the destination and
+the source were the same register and replacing the template with `mv %c,%c'
+left the assembly BYTE-IDENTICAL. Two reviewers into a cycle that existed to
+prevent this exact species. If slice 3 adds a rule whose template is a move or
+a chain, check what happens when you make it a no-op, and do not settle for
+"the census says it is reduced".
+
+THE WAY TO MAKE SUCH A ROW OBSERVABLE, since it is not obvious: give its node
+TWO USES in one forest. lcc shares the node, the matcher holds it in a
+common-subexpression register, and the destination stops being the source.
+poc/03-matcher/ir/ptr.c casts the same value back to a pointer twice for no
+other reason, and says so.
+
+WHAT SLICE 3 WILL RUN INTO IN THE BACKEND. Every opcode poc/07-parser's corpus
+emits now has a rule, checked by evaluating the two tables against each other.
+CALLP4 is the known gap and it is deliberate (task-057): a C program still
+cannot call a function that returns a pointer. A global array initialiser will
+reach poc/07-parser/data.nix and poc/03-matcher/emit.nix's `litLabel', which
+are the two halves of one naming convention -- they are already written to
+agree, and that agreement is the thing to keep.
+
+THE ARGUMENTS ARE PART OF THE TEST, once more with a pointer example. A null
+comparison that is always false discriminates nothing, and neither does a
+pointer difference of zero. ir/ptr.c's three null tests disagree on purpose and
+its difference is 2. For an initialiser the same rule reads: an array whose
+elements are all the same number cannot tell a splitter that got the stride
+wrong from one that did not.
+
+FLOORS SIT AT THE ACTUAL NOW, all of them in poc/03-matcher/check.nix, and
+that is load-bearing rather than tidy: review demonstrated that with a little
+slack in minFunctions and minNodes a whole corpus FUNCTION could be deleted and
+the rules it reached declared unexercised instead, with the suite still green.
+Adding a case means raising them, and that edit is where you notice what the
+new case brought.
 <!-- SECTION:NOTES:END -->
