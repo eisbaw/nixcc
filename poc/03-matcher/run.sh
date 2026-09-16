@@ -420,10 +420,13 @@ mutate "matcher: a value is held in a register across a branch target" \
 
 # lcc folds `tbl[1]' into one node, `ADDRGP4 tbl+4' (task-023). The rule table
 # takes that symbol verbatim and poc/04-assembler resolves the displacement at
-# layout time, so the one thing the matcher has to do is not lose it.
+# layout time, so the one thing the matcher has to do is not lose it. emit.nix
+# now SPLITS the name from the displacement -- it has to, because a numeric
+# base has to be renamed and a frame base has to be added to a slot (task-032)
+# -- so this aims at the rejoin rather than at the old pass-it-through.
 mutate "matcher: a global's constant displacement is dropped on the way to the assembler" \
        "is missing \`la s1,tbl+4'" \
-       "sed -i 's@else sym)@else b.head (b.split \"[+]\" sym))@' emit.nix" \
+       "sed -i 's|    if disp == 0 then name|    if true then name|' emit.nix" \
        "$matcher_check"
 
 # --- char and short (task-024) ---
@@ -820,6 +823,59 @@ mutate "runtime: the unsigned divide and remainder compare as signed" \
        "sed -i '/^__udivsi3:/,\$ s|bltu\tt1,a1|blt\tt1,a1|' runtime.s" \
        "$udiv_semantic_run"
 
+# --- task-032: the symbol with a displacement -----------------------------
+# lcc folds a constant subscript into the SYMBOL -- `tbl+4' for a global,
+# `buf+3' for a frame slot -- and emit.nix splits the two apart. Three things
+# can go wrong there and each has its own mutation, because they fail in three
+# different places: a global's displacement is part of a NAME the assembler
+# resolves, a local's is an integer added to a frame offset, and a numeric base
+# is a branch label or a literal depending on whether this function defines it.
+# The first of the three is `a global's constant displacement is dropped on the
+# way to the assembler', higher up this file: it predates this slice and now
+# aims at the rejoin rather than at the old pass-it-through. The other two are
+# new and are here.
+mutate "matcher: a numeric symbol is taken for a literal even where the function defines it as a label" \
+       "j .Lsum_3" \
+       "sed -i 's|(b.filter (e: e.kind == \"label\")|(b.filter (_e: false)|' emit.nix" \
+       "$matcher_check"
+
+# THE THIRD ONE ONLY EXECUTION CAN SEE, which is why it is here and not beside
+# the two above. ir/lbuf.c has no entry in cases.nix's `emitted' table, so
+# check.nix has nothing to say about which frame slot `buf[3]' addresses: the
+# assembly is well formed, every rule that fires is the right rule, both stores
+# land on buf[0], and the program returns 105 instead of 293. Deliberately left unpinned -- pinning the
+# lines would catch this in the cheaper stage and leave the claim "executing it
+# is what catches this" untested.
+lbuf_want=$(nix eval --impure --raw --expr \
+  "let c = builtins.head (builtins.filter (e: e.file == \"lbuf\")
+     (import $poc/cases.nix).execution); in toString c.expect")
+lbuf_exec_check="bash $mut/build-and-run.sh $mut lbuf $mut/lexec > $mut/lexec.json
+python3 -c \"
+import json, sys
+r = json.load(open(sys.argv[1]))
+if r['reason'] != 'exit':
+    sys.exit('lbuf: the emulator stopped with reason %r instead of exiting'
+             % (r['reason'],))
+if r['exitCode'] != $lbuf_want:
+    sys.exit('lbuf: the emulator returned %s, but cases.nix expects $lbuf_want'
+             % (r['exitCode'],))
+\" $mut/lexec.json"
+lbuf_semantic_run="control=\$($matcher_check 2>&1 >/dev/null) || {
+  echo 'CONTROL LOST: check.nix no longer PASSES a frame displacement that has'
+  echo 'been dropped. Either something now pins ir/lbuf.c'\''s emitted lines --'
+  echo 'in which case this mutation no longer demonstrates what only execution'
+  echo 'can see -- or check.nix is broken for a reason of its own. Its own'
+  echo 'diagnostic, which is what tells those apart:'
+  echo \"\$control\"
+  exit 9
+}
+$lbuf_exec_check"
+
+mutate "matcher: a frame symbol's displacement is not added to its slot" \
+       "but cases.nix expects $lbuf_want" \
+       "sed -i 's|toString (d.disp + (frame.slots|toString (0 * d.disp + (frame.slots|' emit.nix" \
+       "$lbuf_semantic_run"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -839,7 +895,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=51
+declared=53
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

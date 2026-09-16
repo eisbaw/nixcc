@@ -34,12 +34,50 @@ let
 
   isLabelName = s: b.match "[0-9]+" s != null;
 
+  # A symbol operand may carry a DISPLACEMENT. lcc folds `msg[8]' into ONE node
+  # over a generated symbol whose NAME is the addressing expression -- `msg+8',
+  # `buf-4' -- and nothing in the rule table splits it, so it is split here:
+  # the base may have to be renamed and the displacement has to survive that.
+  #
+  # Reading the whole thing as a name was the defect task-032 filed. It is
+  # loud rather than silent -- poc/04-assembler refuses an undefined symbol --
+  # but it is the spelling EVERY constant subscript produces.
+  splitDisp = s:
+    let m = b.match "([A-Za-z_.$0-9]+)([+-])([0-9]+)" s; in
+    if m == null then { base = s; disp = 0; }
+    else {
+      base = b.head m;
+      disp = (if b.elemAt m 1 == "-" then 0 - 1 else 1) * b.fromJSON (b.elemAt m 2);
+    };
+
+  withDisp = name: disp:
+    if disp == 0 then name
+    else name + (if disp > 0 then "+" else "") + toString disp;
+
+  # lcc's generated symbols are numbered from ONE file-wide counter, so a
+  # number names either a branch label inside a function or a file-scope
+  # static -- a string literal's home in the lit segment -- and never both.
+  # They need different names in assembly: a branch label is local to the
+  # function it is in and is already mangled with the function's name, while a
+  # literal is laid down once and may be referenced from any function in the
+  # translation unit. Neither may keep the bare number: poc/04-assembler reads
+  # `2:' as a GAS POSITIONAL label, the kind `1f'/`1b' refer to, and renames it
+  # out from under any `la' that names it.
+  litLabel = n: ".Llit_${n}";
+
   indexOf = x: xs:
     let hit = b.filter (i: b.elemAt xs i == x) (b.genList (i: i) (b.length xs)); in
     if hit == [ ] then throw "emit: ${x} is not one of this target's saved registers" else b.head hit;
 
   labelOf = fn: n: ".L${fn}_${n}";
   epilogueOf = fn: ".L${fn}_epilogue";
+
+  # The branch labels this function DEFINES, which is what tells one kind of
+  # numeric symbol from the other above. Taken from the listing rather than
+  # guessed: parse.nix already tags every label in the emit order.
+  labelsIn = fn: b.listToAttrs (map (e: { inherit (e) name; value = true; })
+    (b.filter (e: e.kind == "label")
+      (b.concatLists (map (f: f.emitOrder) fn.forests))));
 
   argReg = i:
     if i < 8 then "a${toString i}"
@@ -109,27 +147,40 @@ let
     else { inherit size savedBytes paramBase localBase slots; };
 
   # --- the target interface burg.nix calls back into ------------------------
-  targetFor = fn: frame: {
-    inherit depthRegs cseRegs argReg constValue;
-    label = fnName: n: labelOf fnName n;
-    epilogue = epilogueOf;
+  targetFor = fn: frame:
+    let
+      # Computed ONCE per function and not once per operand: `operand' is
+      # called for every node with a symbol, and rebuilding this from the
+      # forest list each time is quadratic in the size of the function.
+      defined = labelsIn fn;
+    in
+    {
+      inherit depthRegs cseRegs argReg constValue;
+      label = fnName: n: labelOf fnName n;
+      epilogue = epilogueOf;
 
-    # %a: "what this node's own symbol means in assembly". A constant is its
-    # value, a global is its name, a frame symbol is its displacement, and a
-    # branch target is a local label. lcc makes the same distinction, in the
-    # md's own local()/address()/defsymbol().
-    operand = node:
-      let
-        sym = if node.syms == [ ] then throw "emit: ${node.op} has no symbol for %a" else b.head node.syms;
-      in
-      if b.match "CNST[A-Z][0-9]" node.op != null then sym
-      else if node.op == "ADDRGP4" then (if isLabelName sym then labelOf fn.name sym else sym)
-      else if node.op == "ADDRLP4" || node.op == "ADDRFP4" then
-        toString (frame.slots.${sym} or (throw
-          "emit: ${node.op} names `${sym}', which is neither a parameter nor a local of ${fn.name}"))
-      else if isLabelName sym then labelOf fn.name sym
-      else throw "emit: no %a meaning defined for ${node.op} (symbol `${sym}')";
-  };
+      # %a: "what this node's own symbol means in assembly". A constant is its
+      # value, a global is its name, a frame symbol is its displacement, and a
+      # branch target is a local label. lcc makes the same distinction, in the
+      # md's own local()/address()/defsymbol().
+      operand = node:
+        let
+          sym = if node.syms == [ ] then throw "emit: ${node.op} has no symbol for %a" else b.head node.syms;
+          d = splitDisp sym;
+        in
+        if b.match "CNST[A-Z][0-9]" node.op != null then sym
+        else if node.op == "ADDRGP4" then
+          withDisp
+            (if !(isLabelName d.base) then d.base
+            else if defined ? ${d.base} then labelOf fn.name d.base
+            else litLabel d.base)
+            d.disp
+        else if node.op == "ADDRLP4" || node.op == "ADDRFP4" then
+          toString (d.disp + (frame.slots.${d.base} or (throw
+            "emit: ${node.op} names `${d.base}', which is neither a parameter nor a local of ${fn.name}")))
+        else if isLabelName sym then labelOf fn.name sym
+        else throw "emit: no %a meaning defined for ${node.op} (symbol `${sym}')";
+    };
 
   # --- assembly ------------------------------------------------------------
   compile = fn:
@@ -200,4 +251,8 @@ else {
   # `compile' is the whole interface; the rest are exported only because
   # must-fail.nix builds a target by hand to prove burg.nix checks for one.
   inherit compile frameOf targetFor constValue savedRegs;
+  # `litLabel' is exported because whatever lays the lit segment DOWN has to
+  # agree with what references it, and two copies of a naming convention are
+  # two places for it to drift. poc/07-parser/data.nix is the other side.
+  inherit litLabel;
 }

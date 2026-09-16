@@ -21,6 +21,7 @@
     { name = "save"; fn = "hold"; what = "more registers held before a mid-forest label than after it"; }
     { name = "argcall"; fn = "nested"; what = "a libcall inside a call's FIRST argument, which is legal"; }
     { name = "gsym"; fn = "pick"; what = "a global at a constant index, which lcc folds into one ADDRGP4 sym+N"; }
+    { name = "lbuf"; fn = "pack"; what = "a LOCAL array at a constant index, which arrives as ADDRLP4 sym+N -- a frame slot plus a displacement, not a name"; }
     { name = "chars"; fn = "scan"; what = "char and short: byte and halfword loads and stores, and the conversions over them"; }
     { name = "voidcall"; fn = "emit"; what = "an int-returning function called for its effect, beside a void call"; }
     { name = "bits"; fn = "mask"; what = "the bitwise and unary operators, each in both its register and its immediate form"; }
@@ -967,6 +968,16 @@
     { file = "save"; expect = 55; why = "hold(6,7) = 6 + (6 ? 7*7 : 6) = 55"; }
     { file = "argcall"; expect = 37; why = "nested(6) = h(6*6, 1) = 37"; }
     { file = "gsym"; expect = 116; why = "pick(20) on tbl={4,0,100,0}: tbl[1]=20, tbl[3]=20+100=120, and 120-tbl[0]=116"; }
+    {
+      file = "lbuf";
+      expect = 293;
+      # The weights are what make the displacement observable. With every
+      # constant index collapsed onto the base -- which is what dropping the
+      # `+N' does -- both stores land on buf[0] and the return is 7 * 15 = 105
+      # rather than 293. Measured, not reasoned: the mutation in run.sh that
+      # drops the displacement exits 105.
+      why = "pack(1): buf[i] = i+1, then buf[3]=100 and buf[5]=7, so 1 + 100*2 + 7*4 + 8*8 = 293";
+    }
     {
       file = "chars";
       expect = 1649;
