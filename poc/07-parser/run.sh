@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The C parser and DAG builder PoC: slice 1 of decision-007.
+# The C parser and DAG builder PoC: slices 1 and 2 of decision-007.
 #
 # What this proves, in the order the stages run:
 #
@@ -7,10 +7,11 @@
 #      listing parser, which re-checks node numbering, reference counts,
 #      post-order and dangling `#n' from the CONSUMER's side; the corpus
 #      produces exactly the declared set of opcodes; a discarded call is still
-#      a listed root nothing references; and five C programs COMPILE FROM .c
+#      a listed root nothing references; and six C programs COMPILE FROM .c
 #      AND RUN on the Nix RV32I emulator, printing what cases.nix independently
-#      computes.
-#   2. must-fail.nix -- the C outside slice 1 is refused, each reject paired
+#      computes -- one of them through a string literal with a NUL in the
+#      middle, which is the byte a Nix string cannot hold (decision-001).
+#   2. must-fail.nix -- the C outside slices 1 and 2 is refused, each reject paired
 #      with a control that must still compile, so a frontend that threw on
 #      everything could not pass.
 #   3. messages.sh -- and each refusal says what it promised to say, which
@@ -25,7 +26,7 @@
 #      symbols all live, which decision-001 says is the constraint that decides
 #      whether any of this scales.
 #   7. A mutation test over the frontend AND this harness. This project has
-#      shipped seven suites that reported success while verifying nothing, so
+#      shipped nine suites that reported success while verifying nothing, so
 #      every check above is assumed broken until a mutation proves otherwise.
 #
 # NO TIMING LADDER, and so no contention self-test and no NO VERDICT path. The
@@ -179,7 +180,7 @@ mutate "frontend: the dag stops sharing common subexpressions" \
 # char become indistinguishable -- which is the trap the task-023/024/025 batch
 # carried forward.
 mutate "frontend: a conversion node loses its source width" \
-       "we  '2. CVUI4 #3'" \
+       "we  '17. CVPU4 #18'" \
        "sed -i 's|node c.s op a.v null c.v|node c.s op a.v null null|' dag.nix" \
        "$oracle"
 
@@ -229,7 +230,7 @@ mutate "frontend: the locals stop being sorted by reference count" \
 # returning a `warnings' list that nothing printed. A parser that drops it
 # compiles a silently clamped constant, and every other check here stays green.
 mutate "frontend: diagnostics are recorded and never reported" \
-       "lcc says:  '13: warning: result of unsigned comparison is constant" \
+       "lcc says:  \"88: warning: overflow in converting constant expression" \
        "sed -i 's|^  warn = s: text: s // {|  warn = s: _text: s // {|;s|diags = s.diags ++ \[ { inherit (s) line; text = \"warning: \" + text; } \];|diags = s.diags;|' sym.nix" \
        "$oracle"
 
@@ -459,7 +460,7 @@ mutate "harness: a corpus file stops being offered to the differential" \
 
 # Criterion #4 is "the programs RUN". Nothing asserted how many.
 mutate "harness: one of the running programs goes missing" \
-       "run/ holds 4 programs" \
+       "run/ holds 5 programs" \
        "mv run/gcd.c run/gcd.c.off" \
        "$check"
 
@@ -480,6 +481,114 @@ mutate "harness: the memory ladder is shrunk below where it measures anything" \
        "sed -i 's|(\"many functions\", \"synthetic\", 8)|(\"many functions\", \"synthetic\", 1)|' memory.py" \
        "$memory"
 
+# --- slice 2: the subscript, the pointer and the string literal (task-028) --
+# Twelve mutations, and the split between them is the shape of the slice:
+# EIGHT change what the frontend emits and are caught by the differential
+# against lcc, TWO change what reaches the image and are caught only by running
+# the program, and the last TWO are the harness's own.
+
+# lex.c's scon() joins adjacent literals and appends ONE terminator. Terminate
+# each one instead and `"one" "two"' is eight bytes where lcc makes it seven --
+# a program that would still run, printing one byte of rubbish in the middle.
+mutate "frontend: adjacent string literals are each terminated" \
+       "we  'global 2 type=array 8 of char" \
+       "sed -i 's@units = b.concatLists (map (x: x.units) parts) ++ \[ 0 \];@units = b.concatLists (map (x: x.units ++ [ 0 ]) parts);@' parse.nix" \
+       "$oracle"
+
+# sym.c interns constants, so two occurrences of `"abc"' share one generated
+# symbol and one `defstring'. Give each its own and the listing grows a
+# definition, every reference count drops, and the bytes are duplicated in the
+# image for as long as nobody notices.
+mutate "frontend: the same string literal is laid down twice" \
+       "we  'address 5+1 type=char" \
+       "sed -i 's@    if q.loc != null then@    if false then@' sym.nix" \
+       "$oracle"
+
+# THE ONE task-032 IS ABOUT, from the frontend end. `msg[8]' is not an
+# addition: simp.c folds it into the symbol and the assembler resolves the
+# displacement. Without the fold every constant subscript becomes an ADDP4 over
+# a CNSTI4 -- correct code, and a different program from lcc's.
+mutate "frontend: a constant subscript stops folding into the symbol" \
+       "we  'export use'" \
+       "sed -i 's@if isAddrop s l && cnstFitsLong s r then@if false then@' simp.nix" \
+       "$oracle"
+
+# ...and the name the fold produces. Drop the `+' and `msg+8' becomes `msg8',
+# which is a different symbol and not a diagnosable one.
+mutate "frontend: a folded displacement loses the sign in its symbol name" \
+       "we  'address tbl4 type=int" \
+       "sed -i 's@if n > 0 then \"+\"@if false then \"+\"@' listing.nix" \
+       "$oracle"
+
+# decl.c's finalize walks the constants table, which install() pushes onto, so
+# the lit segment comes out in REVERSE installation order. Walk it forwards and
+# every defstring is in the wrong place -- and every one of them is still
+# correct, which is why only a byte-for-byte diff sees it.
+mutate "frontend: the lit segment is emitted in installation order" \
+       "we  'defstring \"onetwo" \
+       "sed -i \"s@s3 = b.foldl' doconst s2 (rev s0.constOrder);@s3 = b.foldl' doconst s2 s0.constOrder;@\" listing.nix" \
+       "$oracle"
+
+# symbolic.c's emitString backslash-escapes `\"' and `\\' and nothing else
+# reaches them: they are printable, so without this arm they are printed raw
+# and the defstring line stops being parseable as a quoted string.
+mutate "frontend: a quote inside a string literal is not escaped in the listing" \
+       "we  'defstring \"q\"" \
+       "sed -i 's@if u == 34 || u == 92 then@if false then@' listing.nix" \
+       "$oracle"
+
+# A base on the FRAME has no address until gencode lays the frame out, so it
+# becomes a code item and its `address' line appears in the middle of the
+# function. Name it early, as if it were a global, and the line moves above the
+# function -- same text, wrong place, and nothing but the diff notices.
+mutate "frontend: an address on the frame is named as early as a global's" \
+       "we  'address m+16 type=array 4 of int" \
+       "sed -i 's@if atGlobal then self.listing.address r.s r.v p n@if true then self.listing.address r.s r.v p n@' simp.nix" \
+       "$oracle"
+
+# `p + 1' steps by the size of what p points at. Without the scale it steps by
+# one byte whatever the type, which is the defect every pointer bug in C is.
+mutate "frontend: a pointer's index is not scaled by the element size" \
+       "we  'address tbl+2 type=int" \
+       "sed -i 's@        if n > 1 then@        if false then@' trees.nix" \
+       "$oracle"
+
+# --- and the two that only running the program can see --------------------
+# The lit segment reaches the image through data.nix. Emit nothing and the
+# reference is to a symbol nothing defines, which poc/04-assembler refuses --
+# loudly, which is the right failure and still a failure.
+mutate "frontend: a string literal's bytes never reach the image" \
+       "of \`.Llit_2', which nothing in this unit defines" \
+       "sed -i 's@    if ds == \[ \] then \[ \]@    if true then [ ]@' data.nix" \
+       "$check"
+
+# THE ONE CRITERION #2 RESTS ON, and no diff can see it: the defstring text is
+# byte-for-byte lcc's either way. Drop the octal escapes when reading it back
+# and the NUL in the middle of `"ab" "\0cd"' is simply not in the image, so the
+# program copies the four bytes that are left and prints one character short.
+mutate "frontend: an octal escape in the lit segment decodes to nothing" \
+       "printed \`abcd-10" \
+       "sed -i 's@if b.stringLength e == 3 then \[ (octValue e) \]@if b.stringLength e == 3 then [ ]@' data.nix" \
+       "$check"
+
+# --- the harness's own ----------------------------------------------------
+# The same argument the three expectation mutations above make: what makes
+# "the compiled C is right" mean anything is that cases.nix reaches the same
+# answer a second way. `ab-cd' is built there by JOINING two strings with a
+# separator, where the C reaches it by surviving a NUL in the middle of one.
+mutate "harness: the string expectation stops being computed" \
+       "wanted \`ab+cd10" \
+       "sed -i 's@b.concatStringsSep \"-\" \[ \"ab\" \"cd\" \]@\"ab+cd\"@' cases.nix" \
+       "$check"
+
+# run/strings.c prints its argument as exactly two digits. The guard on that
+# assumption is in cases.nix, on the critical path, and this is what says it
+# can fire.
+mutate "harness: the argument run/strings.c assumes two digits of stops being one" \
+       "must be between 10 and 99" \
+       "sed -i 's@strings = 10;@strings = 5;@' cases.nix" \
+       "$check"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -499,7 +608,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=44
+declared=56
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

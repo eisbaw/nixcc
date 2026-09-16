@@ -121,6 +121,10 @@ rec {
     let t = unqual ty; in
     if t.op == "INT" then { max = pow2 (8 * t.size - 1) - 1; min = 0 - pow2 (8 * t.size - 1); }
     else if t.op == "UNSIGNED" then { max = ones (8 * t.size); min = 0; }
+    # types.c gives POINTER its own limits symbol, `T*', with min 0 and max
+    # all-ones over the pointer width. simp.c's CVU+P fold consults them, so
+    # they are not a curiosity: without them `(char *)0' cannot fold.
+    else if t.op == "POINTER" then { max = ones (8 * t.size); min = 0; }
     else throw "types: `${t.name or t.op}' has no integer limits";
 
   # extend(x,ty) from c.h: keep the low 8*size bits and sign-extend them.

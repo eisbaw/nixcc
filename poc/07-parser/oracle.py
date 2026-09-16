@@ -53,16 +53,21 @@ ORACLE = "rcc-rv32"
 # The FILE count is not here: cases.nix declares it (corpusCount plus
 # programCount) and oracle.nix hands it over, because a Python restatement of
 # a Nix number had already gone stale twice.
-FUNCTIONS = 49
-NODE_LINES = 1181
-BACKREFS = 988
+FUNCTIONS = 58
+NODE_LINES = 1540
+BACKREFS = 1315
 # lcc diagnoses this corpus in several places -- an unsigned comparison whose
 # answer is constant, an expression with no effect, a shift by too many bits,
-# a linkage that changed between declarations. Counting its stderr LINES is
-# what makes "the oracle stopped reading lcc's stderr" a failure: with nothing
-# read, the comparison below would find nothing to disagree with and report the
-# cleanest line it has.
-DIAGS = 12
+# a linkage that changed between declarations, an escape sequence that is not
+# one and two that name a value too big for a byte. The last three are the
+# string literal's own half of criterion #7: poc/06-constants RECORDS a
+# diagnosed escape and prints nothing, so the SCON arm of the parser has to
+# replay it or a literal whose bytes were silently clamped compiles clean.
+#
+# Counting lcc's stderr LINES is what makes "the oracle stopped reading it" a
+# failure: with nothing read, the comparison below would find nothing to
+# disagree with and report the cleanest line it has.
+DIAGS = 16
 
 NODE_LINE = re.compile(r"^ ?(\d+)([.'])\s")
 BACKREF = re.compile(r"#(\d+)")

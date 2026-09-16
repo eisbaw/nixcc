@@ -539,6 +539,17 @@ let
 in
 {
   inherit evalICON evalSCON evalFCON evalToken;
+  # The inverse of `codeOf': the character a byte value stands for, 1..127.
+  # Exported because symbolic.c's emitString has to print a decoded literal
+  # BACK as text, and building a second ASCII table beside this one is how the
+  # two come to disagree about a corner. Byte 0 has no character (decision-001)
+  # and is not asked for: emitString prints it as `\000'.
+  inherit asciiChar;
+  # And the forward direction, for the same reason: whatever reads a decoded
+  # literal back out of a listing needs the byte a character stands for, and
+  # this is the table that already knows. It THROWS above 127 (task-046)
+  # rather than inventing a value.
+  inherit codeOf;
   # Whether a type this evaluator produced is signed. A FUNCTION and not a
   # list, so an unknown name is an error rather than "not in the list, so
   # unsigned". The emitter will decide whether to two's-complement a value

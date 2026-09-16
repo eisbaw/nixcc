@@ -90,6 +90,12 @@ rec {
       val =
         if u.op == "INT" then v
         else if u.op == "UNSIGNED" then b.bitAnd v (ty.ones (8 * u.size))
+        # A POINTER constant is stored verbatim, as lcc's `p->u.v.p = va_arg'
+        # does: it is a null pointer constant or an integer someone cast, and
+        # simp.c's CVU+P has already checked it against the pointer limits.
+        # Unmasked, deliberately -- masking here would hide an out-of-range
+        # value that the conversion refused to fold.
+        else if u.op == "POINTER" then v
         else sy.refuse s "trees: a `${u.op}' constant needs float support, which is deferred (decision-006, task-015)";
       r = tree s (ops.mkop "CNST" t) t null null;
     in
@@ -433,15 +439,90 @@ rec {
       let s1 = typeerror s0 gname l0 r0; in
       simp.simplify s1 op ty.inttype l0 r0;
 
+  # enode.c's addtree/subtree. The pointer arms are what make `p + 1' step by
+  # the pointee's size and `a[i]' mean anything: the INTEGER operand is scaled
+  # by that size before the ADD, and the scaling is done here rather than in
+  # the backend because it is a property of the C type and not of the machine.
+  #
+  # THE ORDER OF THE THREE ARMS IS LOAD-BEARING. `isptr(l) && isint(r)' does
+  # not do the work; it RECURSES with the operands swapped, so there is exactly
+  # one copy of the scaling and the pointer always ends up on the right of the
+  # ADD+P that simp.nix then looks at. simp.c's ADD+P chain tests `l' for an
+  # address op after commuting the constant to the right, and it only ever sees
+  # the shape this swap produces.
+  scaleIndex = s0: n: e0:
+    let
+      et = (get s0 e0).type;
+      c0 = cast s0 e0 (ty.promote et);
+      m =
+        if n > 1 then
+          let k = cnsttree c0.s ty.signedptr n; in
+          multree k.s (ops.bare "MUL") k.v c0.v
+        else c0;
+      mt = (get m.s m.v).type;
+    in
+    cast m.s m.v (if ty.isunsigned mt then ty.unsignedptr else ty.signedptr);
+
+  # "unknown size for type `%t'" is lcc's error for `void *p; p + 1'. It is an
+  # ERROR and not a refusal, so it throws the way every other lcc error does
+  # here (sym.nix's `err' says why), and the arithmetic below never runs on a
+  # zero-sized element.
+  elemSize = s: t:
+    let n = (ty.unqual t.type).size; in
+    if n == 0 then sy.err s "unknown size for type `${ty.outtype t.type}'\n" else n;
+
   addtree = s: op: l: r:
     let lt = (get s l).type; rt = (get s r).type; in
     if ty.isarith lt && ty.isarith rt then arith2 "ADD" s op l r
-    else sy.refuse s "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
+    else if ty.isptr lt && ty.isint rt then addtree s (ops.bare "ADD") r l
+    else if ty.isptr rt && ty.isint lt && !(ty.isfunc (ty.unqual rt).type) then
+      let
+        t = ty.unqual rt;
+        n = elemSize s t;
+        x = scaleIndex s n l;
+      in
+      simp.simplify x.s (ops.bare "ADD") t x.v r
+    else
+      let s1 = typeerror s "ADD" l r; in
+      simp.simplify s1 op ty.inttype l r;
 
   subtree = s: op: l: r:
     let lt = (get s l).type; rt = (get s r).type; in
     if ty.isarith lt && ty.isarith rt then arith2 "SUB" s op l r
-    else sy.refuse s "trees: pointer arithmetic belongs to slice 2/3 (task-028, task-029)";
+    else if ty.isptr lt && !(ty.isfunc (ty.unqual lt).type) && ty.isint rt then
+      let
+        t = ty.unqual lt;
+        n = elemSize s t;
+        x = scaleIndex s n r;
+      in
+      simp.simplify x.s (ops.bare "SUB") t l x.v
+    # `p - q' between compatible pointers: the byte difference, divided by the
+    # element size. The division is a LONG one and the subtraction an UNSIGNED
+    # one, both of which are lcc's choice and neither of which is obvious.
+    else if compatiblePtr lt rt then
+      let
+        t = ty.unqual lt;
+        n = elemSize s t;
+        a = cast s l ty.unsignedptr;
+        c = cast a.s r ty.unsignedptr;
+        d = simp.simplify c.s (ops.mk "SUB" "U") ty.unsignedptr a.v c.v;
+        e = cast d.s d.v ty.longtype;
+        k = cnsttree e.s ty.longtype n;
+      in
+      simp.simplify k.s (ops.mk "DIV" "I") ty.longtype e.v k.v
+    else
+      let s1 = typeerror s "SUB" l r; in
+      simp.simplify s1 op ty.inttype l r;
+
+  # enode.c's compatible(): two object pointers whose pointees are eqtype.
+  compatiblePtr = ty1: ty2:
+    let
+      a = ty.unqual ty1;
+      c = ty.unqual ty2;
+    in
+    ty.isptr a && !(ty.isfunc a.type)
+    && ty.isptr c && !(ty.isfunc c.type)
+    && ty.eqtype (ty.unqual a.type) (ty.unqual c.type) false;
 
   multree = s: op: l: r: arith2 op.gen s op l r;
 

@@ -144,12 +144,9 @@ rec {
     in
     reset s1;
 
-  addlocal = s: p:
-    let q = sy.getsym s p; in
-    if q.defined then s
-    else
-      let c = sy.code s "Local" { var = p; }; in
-      sy.modsym c.s p (x: x // { defined = true; scope = c.s.level; });
+  # stmt.c's addlocal, which now lives in sym.nix: simp.c's addrtree calls it
+  # too, and reaching it through dag.nix from there would be a layer backwards.
+  inherit (sy) addlocal;
 
   jump = s0: lab:
     let

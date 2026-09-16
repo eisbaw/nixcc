@@ -46,6 +46,22 @@ rec {
     if s.curseg == seg then s
     else (emit s "segment ${name}") // { curseg = seg; };
 
+  # symbolic.c's I(address). The generated symbol is RENAMED here, to the
+  # addressing expression it stands for -- `msg+8' -- and that name is what
+  # ends up in the node line and in the assembly, so poc/04-assembler is what
+  # finally resolves the displacement (task-023).
+  #
+  # lcc's format string is `"%s%s%D"' with the `+' supplied only when n > 0, so
+  # a NEGATIVE displacement comes out as `msg-4' from %D's own sign and a ZERO
+  # one would come out as `msg0'. Zero never arrives: simp.c's identity rule
+  # removes `p + 0' before addrtree can be reached.
+  address = s0: q: p: n:
+    let
+      nm = "${(sy.getsym s0 p).name}${if n > 0 then "+" else ""}${toString n}";
+      s1 = sy.modsym s0 q (x: x // { name = nm; });
+    in
+    emit s1 "address ${symbolText s1 q}";
+
   export = s: p: emit s "export ${(sy.getsym s p).name}";
   importSym = s: p: emit s "import ${(sy.getsym s p).name}";
   progend = s: emit s "progend";
@@ -166,6 +182,12 @@ rec {
             saved = b.genList (i: b.elemAt acc.saved i) (n - 1);
           }
         else if cp.kind == "Local" then localLine acc cp.var
+        # A base on the FRAME cannot be named when simp.c's addrtree runs,
+        # because the frame is laid out here. So it arrives as a code item and
+        # is named in code order, which is why `address buf+3' sits between two
+        # `blockend' lines rather than above the function like `address msg+8'.
+        else if cp.kind == "Address" then
+          acc // { s = address acc.s cp.sym cp.base cp.offset; }
         else if cp.kind == "Gen" || cp.kind == "Jump" || cp.kind == "Label" then
           let
             s1 = dag.fixup acc.s cp.forest;
@@ -222,8 +244,53 @@ rec {
       rev = xs: b.genList (i: b.elemAt xs (b.length xs - 1 - i)) (b.length xs);
       s1 = b.foldl' importSym s0 (rev s0.externalOrder);
       s2 = b.foldl' doglobal s1 (rev s0.globalOrder);
+      s3 = b.foldl' doconst s2 (rev s0.constOrder);
     in
-    flush (progend s2);
+    flush (progend s3);
+
+  # decl.c's defglobal(): pick the segment, export it unless it is static, and
+  # announce it. Only doconst uses it in this slice; slice 3's globals are the
+  # other caller (task-029).
+  defglobal = s: p: seg:
+    let
+      s1 = swtoseg s seg;
+      s2 = if (sy.getsym s1 p).sclass != sy.sclasses.static then export s1 p else s1;
+    in
+    emit s2 "global ${symbolText s2 p}";
+
+  # decl.c's doconst(). Every constant is walked and only the ones that were
+  # given a location -- string literals -- lay anything down. An integer
+  # constant is interned in the same table and has no `loc', which is why this
+  # is a filter rather than a separate list.
+  doconst = s: p:
+    let q = sy.getsym s p; in
+    if q.loc == null then s
+    else
+      let
+        s1 = defglobal s q.loc 4; # LIT
+        lt = (sy.getsym s1 q.loc).type;
+      in
+      if ty.isarray lt && (ty.unqual lt).type == ty.widechar
+      then b.foldl' (st: u: emit st "defconst unsigned.${
+        toString ty.widechar.size} ${toString u}") s1 q.value
+      else if ty.isarray lt then emit s1 "defstring \"${defstringText q.value}\""
+      else sy.refuse s1 "listing: a non-array constant was given a location, and only string literals get one";
+
+  # symbolic.c's emitString. A byte is printed as itself when it is printable
+  # ASCII, backslash-escaped when it is `"' or `\', and as a THREE-DIGIT OCTAL
+  # escape otherwise -- lcc's `\%d%d%d' over the three bit fields, which for a
+  # byte above 127 goes through a signed `char' and still comes out as that
+  # byte's octal, because the masks put it back. `\000' is therefore what a NUL
+  # looks like here, and a NUL is exactly the byte decision-001 says a Nix
+  # string cannot hold, which is why the value this reads is a byte LIST.
+  defstringText = units:
+    b.concatStringsSep "" (map
+      (u:
+        if u == 34 || u == 92 then "\\" + self.const.asciiChar u
+        else if u >= 32 && u < 127 then self.const.asciiChar u
+        else "\\${toString (b.bitAnd (u / 64) 3)}${
+          toString (b.bitAnd (u / 8) 7)}${toString (b.bitAnd u 7)}")
+      units);
 
   doglobal = s: p:
     let q = sy.getsym s p; in

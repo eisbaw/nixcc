@@ -111,6 +111,53 @@ rec {
   isCnst = s: p: k: p != null && (tr.get s p).op.gen == "CNST" && (tr.get s p).op.kind == k;
   cval = s: p: (tr.get s p).value;
   gen = s: p: (tr.get s p).op.gen;
+  kindOf = s: p: (tr.get s p).op.kind;
+  isOp = s: p: g: k: p != null && gen s p == g && kindOf s p == k;
+  isCnstAny = s: p: p != null && gen s p == "CNST";
+  isAddrop = s: p: p != null && ops.isaddrop (tr.get s p).op;
+
+  # --- simp.c's addrtree --------------------------------------------------
+  # `msg[8]' does not become an add. It becomes ONE node, `ADDRGP4 msg+8', over
+  # a symbol this function invents -- so the displacement is carried by the
+  # symbol table and resolved by the assembler (task-023), and the backend
+  # never sees an addition it would have to fold back.
+  #
+  # The two branches are not a detail. A base at file scope gets its symbol
+  # NAMED and PRINTED immediately, which is why `address msg+8' lines appear
+  # before the `export' line of the function that produced them. A base on the
+  # frame cannot be named yet -- its offset is not assigned until gencode lays
+  # the frame out -- so it becomes an Address CODE ITEM instead, and the line
+  # appears in the middle of the function body, in code order.
+  addrtree = s0: e: n: t:
+    let
+      et = tr.get s0 e;
+      p = et.sym;
+      ps = sy.getsym s0 p;
+      atGlobal = ps.scope == sy.GLOBAL
+        || ps.sclass == sy.sclasses.static
+        || ps.sclass == sy.sclasses.extern;
+      g = sy.genlabel s0 1;
+      r = sy.newsym g.s {
+        # Overwritten by listing.address on the global path; on the local path
+        # this generated number IS the name, until gencode renames it.
+        name = toString g.v;
+        sclass =
+          if atGlobal && ps.sclass == sy.sclasses.auto
+          then sy.sclasses.static else ps.sclass;
+        inherit (ps) scope temporary generated addressed;
+        type = if ty.isptr t then (ty.unqual t).type else t;
+        computed = true;
+        defined = true;
+        ref = 1.0;
+      };
+      s1 =
+        if atGlobal then self.listing.address r.s r.v p n
+        else
+          let a = sy.addlocal r.s p; in
+          (sy.code a "Address" { sym = r.v; base = p; offset = n; }).s;
+      nt = tr.tree s1 et.op t null null;
+    in
+    { s = tr.setsym nt.s nt.v r.v; inherit (nt) v; };
 
   # commute(L,R) in simp.c: if R is a constant and L is not, swap them. The
   # call sites read `commute(r,l)' (constant to the right) and `commute(l,r)'
@@ -149,7 +196,12 @@ rec {
         else null;
 
       # Run a list of rules in order; the first that yields a tree wins, and
-      # anything left over falls through to the unsimplified tree.
+      # anything left over falls through to the unsimplified tree. A rule may
+      # also return `stop', which is simp.c's `break' out of the case: no more
+      # rules run and the unsimplified tree is the answer. Only the guard on a
+      # generated symbol's displacement uses it, and without it that guard
+      # would be indistinguishable from "this rule did not apply", which is a
+      # different thing -- the rules after it WOULD have applied.
       chain = op: rules: s0: t: l0: r0:
         let
           go = st: l: r: rs:
@@ -158,6 +210,7 @@ rec {
               let x = (b.head rs) st t l r; in
               if x == null then go st l r (b.tail rs)
               else if x ? swap then go x.s x.l x.r (b.tail rs)
+              else if x ? stop then tr.tree x.s op t l r
               else if x.v == null then go x.s l r (b.tail rs)
               else x;
         in
@@ -185,18 +238,159 @@ rec {
         in
         tr.tree c.s (ops.bare "RIGHT") t rt.v c.v;
 
-      unsupported = what: s: _t: _l: _r: sy.refuse s "simp: ${what}";
+      # --- the ADD+P / SUB+P rules -------------------------------------
+      # simp.c's four `foldaddp' lines: a pointer constant plus an integer
+      # constant is a pointer constant. `(char *)0 + 3' is the whole of what
+      # they fold, and a null pointer constant is the reason CNST+P exists at
+      # all -- `p = 0' produces one, which is ordinary C and not a corner.
+      foldaddp = k: flip: s: t: l: r:
+        let
+          a = if flip then r else l;
+          c = if flip then l else r;
+        in
+        if isCnst s a "P" && isCnst s c k
+        then tr.cnsttree s t (cval s a + cval s c)
+        else null;
+
+      # `identity(r, retype(l,ty), I, i, 0)': `p + 0' is p, wearing the type
+      # the addition would have produced.
+      idRetype = k: s: t: l: r:
+        if isCnst s r k && cval s r == 0 then tr.retype s l t else null;
+
+      # The displacement a generated base can carry. simp.c breaks out here
+      # rather than calling addrtree, because an assembler may not be able to
+      # spell a large offset from a compiler-generated symbol; the comment in
+      # simp.c names the MIPS. Left in because dropping it would change which
+      # shape reaches the backend, not merely how fast.
+      tooFarFromGenerated = s: _t: l: r:
+        if isOp s l "ADDRG" "P" && (sy.getsym s (tr.get s l).sym).generated
+          && ((isCnst s r "I" && (cval s r > 32767 || cval s r < (0 - 32768)))
+            || (isCnst s r "U" && cval s r > 65536))
+        then { inherit s; v = null; stop = true; }
+        else null;
+
+      # `r' is a constant that fits a long: fold it into the base symbol.
+      cnstFitsLong = s: r:
+        let lim = ty.limits ty.longtype; in
+        (isCnst s r "I" && cval s r <= lim.max && cval s r >= lim.min)
+        || (isCnst s r "U" && cval s r <= lim.max);
+
+      foldIntoAddr = s: t: l: r:
+        if isAddrop s l && cnstFitsLong s r then addrtree s l (cval s r) t else null;
+
+      # `(x + &a) + C' -- the address is the RIGHT kid of an inner ADD+P, so
+      # the constant folds into it and the index survives outside.
+      foldIntoInnerAddr = s: t: l: r:
+        if isOp s l "ADD" "P" && isAddrop s (tr.kid s l 1) && cnstFitsLong s r
+        then
+          let a = addrtree s (tr.kid s l 1) (cval s r) t; in
+          simplify a.s (ops.mk "ADD" "P") t (tr.kid a.s l 0) a.v
+        else null;
+
+      # `(i + C) + &a' -- reassociate so the constant meets the address.
+      reassocIndex = s: t: l: r:
+        if (isOp s l "ADD" "I" || isOp s l "SUB" "I")
+          && isCnst s (tr.kid s l 1) "I" && isAddrop s r
+        then
+          let a = simplify s (ops.mk (gen s l) "P") t r (tr.kid s l 1); in
+          simplify a.s (ops.mk "ADD" "P") t (tr.kid a.s l 0) a.v
+        else null;
+
+      # `(x + C1) + C2' over a pointer: add the two constants.
+      foldTwoCnsts = s: t: l: r:
+        if isOp s l "ADD" "P" && isCnstAny s (tr.kid s l 1) && isCnstAny s r
+        then
+          let
+            k1 = tr.kid s l 1;
+            a = simplify s (ops.bare "ADD") (tr.get s k1).type k1 r;
+          in
+          simplify a.s (ops.mk "ADD" "P") t (tr.kid a.s l 0) a.v
+        else null;
+
+      # `(i + C1) + (x + C2)' with both constants folded together.
+      foldAcrossBoth = s: t: l: r:
+        if isOp s l "ADD" "I" && isCnstAny s (tr.kid s l 1)
+          && isOp s r "ADD" "P" && isCnstAny s (tr.kid s r 1)
+        then
+          let
+            k1 = tr.kid s l 1;
+            k2 = tr.kid s r 1;
+            a = simplify s (ops.bare "ADD") (tr.get s k1).type k1 k2;
+            c = simplify a.s (ops.mk "ADD" "P") t (tr.kid a.s r 0) a.v;
+          in
+          simplify c.s (ops.mk "ADD" "P") t (tr.kid c.s l 0) c.v
+        else null;
+
+      # `(e, p) + C' -- the addition belongs inside the comma, so that the
+      # side effect stays on the left of the RIGHT tree it came in on.
+      addThroughRight = s: t: l: r:
+        if gen s l == "RIGHT" && tr.kid s l 1 != null then
+          let a = simplify s (ops.mk "ADD" "P") t (tr.kid s l 1) r; in
+          tr.tree a.s (ops.bare "RIGHT") t (tr.kid a.s l 0) a.v
+        else if gen s l == "RIGHT" && tr.kid s l 0 != null then
+          let a = simplify s (ops.mk "ADD" "P") t (tr.kid s l 0) r; in
+          tr.tree a.s (ops.bare "RIGHT") t a.v null
+        else null;
+
+      # `p - C' is `p + (-C)', which is the only way a SUB+P ever reaches
+      # addrtree: the whole displacement machinery is on the ADD side.
+      # `(char *)8 - (char *)2'. The result is a POINTER constant holding the
+      # byte difference, which is lcc's own choice and reads oddly; it is
+      # ported rather than corrected, because the type the tree wears is what
+      # the listing prints.
+      subTwoCnsts = s: t: l: r:
+        if isCnst s l "P" && isCnst s r "P"
+        then tr.cnsttree s t (cval s l - cval s r)
+        else null;
+
+      # simp.c writes the two negations separately -- `-r->u.v.i' and
+      # `-(long)r->u.v.u' -- because in C those are different expressions on
+      # different members of a union. Here an unsigned value is already a
+      # non-negative Nix integer, so there is one negation and this comment is
+      # the record that the difference was looked at rather than missed.
+      subCnstToAdd = s: t: l: r:
+        if isCnst s r "I" || isCnst s r "U" then
+          let c = tr.cnsttree s ty.inttype (0 - cval s r); in
+          simplify c.s (ops.bare "ADD") t l c.v
+        else null;
+
+      # `l - (x + C)' => `(l - C) - x'.
+      subThroughAdd = s: t: l: r:
+        if isAddrop s l && isOp s r "ADD" "I" && isCnst s (tr.kid s r 1) "I"
+        then
+          let a = simplify s (ops.bare "SUB") t l (tr.kid s r 1); in
+          simplify a.s (ops.bare "SUB") t a.v (tr.kid a.s r 0)
+        else null;
     in
     {
       # ---- ADD ----
       "ADD+I" = chain (ops.mk "ADD" "I") [ (xfold addi (x: y: x + y)) swapRight (idR "I" 0) ];
       "ADD+U" = chain (ops.mk "ADD" "U") [ (fold2 "U" (x: y: b.bitAnd (x + y) mask32)) swapRight (idR "U" 0) ];
-      "ADD+P" = unsupported "pointer arithmetic (ADD+P) belongs to slice 2/3 -- see task-028 and task-029";
+      # The order here is simp.c's line order and nothing else. Two of these
+      # rules would fire on the same tree -- `foldIntoAddr' and
+      # `foldIntoInnerAddr' both match `(&a + C)' once the first has run -- so
+      # reordering them changes the IR rather than merely the route to it.
+      "ADD+P" = chain (ops.mk "ADD" "P") [
+        (foldaddp "I" false)
+        (foldaddp "U" false)
+        (foldaddp "I" true)
+        (foldaddp "U" true)
+        swapRight
+        (idRetype "I")
+        (idRetype "U")
+        tooFarFromGenerated
+        foldIntoAddr
+        foldIntoInnerAddr
+        reassocIndex
+        foldTwoCnsts
+        foldAcrossBoth
+        addThroughRight
+      ];
 
       # ---- SUB ----
       "SUB+I" = chain (ops.mk "SUB" "I") [ (xfold subi (x: y: x - y)) (idR "I" 0) ];
       "SUB+U" = chain (ops.mk "SUB" "U") [ (fold2 "U" (x: y: b.bitAnd (x - y) mask32)) (idR "U" 0) ];
-      "SUB+P" = unsupported "pointer arithmetic (SUB+P) belongs to slice 2/3 -- see task-028 and task-029";
+      "SUB+P" = chain (ops.mk "SUB" "P") [ subTwoCnsts subCnstToAdd subThroughAdd ];
 
       # ---- MUL / DIV / MOD ----
       # The 2^n rewrites are why `x * 4' and `x / 4u' reach the backend as
@@ -468,9 +662,15 @@ rec {
             else { s = s1; v = null; }
           else null))
       ];
-      "CVP+U" = unsupported "CVP+U reaches here only from pointer casts, which are slice 2/3";
-      "CVU+P" = unsupported "CVU+P reaches here only from pointer casts, which are slice 2/3";
-      "CVP+P" = unsupported "CVP+P reaches here only from pointer casts, which are slice 2/3";
+      # The three conversions a pointer takes part in. Each folds only when
+      # its operand is a constant and the value is inside the DESTINATION's
+      # limits, which for a pointer are types.c's `T*' symbol: zero to
+      # all-ones over the pointer width. `p - q' in trees.nix reaches CVP+U on
+      # two ordinary pointers and gets the unfolded tree, which is the common
+      # case and the one the fold must not disturb.
+      "CVP+U" = chain (ops.mk "CVP" "U") [ (cvt "P" (_s: _t: v: v)) ];
+      "CVP+P" = chain (ops.mk "CVP" "P") [ (cvt "P" (_s: _t: v: v)) ];
+      "CVU+P" = chain (ops.mk "CVU" "P") [ (cvt "U" (_s: _t: v: v)) ];
     };
 
   # xcvtcnst: fold a constant conversion, warning when the value does not fit

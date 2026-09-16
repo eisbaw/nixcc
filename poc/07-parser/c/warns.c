@@ -7,6 +7,13 @@
  * and this file is them -- a shift past the width of the type, a statement
  * with no effect, a constant too large for the type it is converted to, a
  * function that falls off its end, and code after a return.
+ *
+ * AND THE ESCAPES IN A STRING LITERAL, which are the same argument one layer
+ * down: poc/06-constants RECORDS a diagnosed escape and prints nothing, so the
+ * SCON arm of the parser has to replay it or a literal whose bytes were
+ * silently clamped compiles clean. `\q' is not an escape, and the other two
+ * name a value that does not fit a byte. All three reach the listing with a
+ * value anyway, so no other check here can see them.
  */
 int warns(int a)
 {
@@ -27,4 +34,9 @@ int unreachable(int a)
 {
     return a;
     a = 2;
+}
+
+int escapes(int i)
+{
+    return "a\q b"[i] + "\x1ff"[i] + "\501"[i];
 }

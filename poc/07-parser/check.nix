@@ -12,7 +12,8 @@
 #     the distinction poc/05-loop leans on and which lives in the forest shape
 #     rather than in any node;
 #   * and the programs of criterion #4 compile from .c and RUN, printing what
-#     cases.nix independently computes.
+#     cases.nix independently computes -- one of them through a string literal
+#     laid down in .data by data.nix, with a NUL in the middle of it.
 { cpu }:
 let
   b = builtins;

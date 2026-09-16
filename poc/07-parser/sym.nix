@@ -88,7 +88,8 @@ rec {
     alias = null; # EXTERN symbols point at the `externals' entry
     labelnum = null; # LABELS symbols carry their number
     equatedto = null; # u.l.equatedto
-    value = null; # ENUM symbols carry their value
+    value = null; # ENUM symbols carry their value, CONSTANTS theirs
+    loc = null; # u.c.loc: the generated static a string constant is laid out under
   };
 
   initial = {
@@ -114,6 +115,7 @@ rec {
     externalOrder = [ ];
     labels = { }; # per-function: label number -> symid
     constants = { }; # interned constant symbols: key -> symid
+    constOrder = [ ]; # installation order, so finalize can walk it in reverse
     out = [ ]; # the .sym listing, one CHUNK of lines per function
     buf = [ ]; # lines of the function being emitted; see listing.nix's `emit'
     diags = [ ]; # { line; text; } -- rcc's stderr, for criterion #7
@@ -270,6 +272,16 @@ rec {
     if u.op == "INT" then toString v
     else if u.op == "UNSIGNED" then
       (if b.bitAnd v (0 - 32768) != 0 then "0x${toHex v}" else toString v)
+    # output.c's `%p': `0' for the null pointer and `0x' plus lower-case hex
+    # for anything else. NOT `0x0' -- lcc prints the prefix only when the
+    # pointer is non-null, and this name is what `CNSTP4 0' in the listing IS.
+    else if u.op == "POINTER" then (if v == 0 then "0" else "0x${toHex v}")
+    # sym.c's vtoa returns the string itself for an array of char -- v.p, the
+    # interned bytes. A byte list cannot be a Nix string (decision-001), and
+    # this name is never PRINTED: a string constant's symbol appears in no
+    # node's syms, because expr.c hands the tree its generated `loc' instead.
+    # So the name exists to be hashed, and it is spelled as the byte list.
+    else if u.op == "ARRAY" then "[${b.concatStringsSep "," (map toString v)}]"
     else throw "sym: vtoa has no spelling for a `${u.op}' constant";
 
   # lcc's own printf (lcc/src/output.c's outu) is LOWER case for both %x and
@@ -284,10 +296,14 @@ rec {
     in
     if n == 0 then "0" else go n "";
 
+  # The interning key is the TYPE and the value's own spelling, which is what
+  # lcc's constant() compares -- eqtype plus the value. `ty.outtype' rather
+  # than `u.name' because an array type has no name, and two literals of
+  # different lengths must not share a bucket.
   constantSym = s: t: v:
     let
       u = ty.unqual t;
-      key = "${u.op}:${toString u.size}:${u.name or "?"}:${toString v}";
+      key = "${u.op}:${toString u.size}:${ty.outtype u}:${vtoa u v}";
     in
     if s.constants ? ${key} then { inherit s; v = s.constants.${key}; }
     else
@@ -301,9 +317,42 @@ rec {
           defined = true;
         };
       in
-      { s = r.s // { constants = r.s.constants // { ${key} = r.v; }; }; inherit (r) v; };
+      {
+        s = r.s // {
+          constants = r.s.constants // { ${key} = r.v; };
+          constOrder = r.s.constOrder ++ [ r.v ];
+        };
+        inherit (r) v;
+      };
 
   intconst = s: n: constantSym s ty.inttype n;
+
+  # sym.c's mkstr() and the SCON arm of expr.c's primary(), which do the same
+  # two things: intern the constant, then give it a generated STATIC symbol at
+  # GLOBAL scope to live under in the lit segment. The second call for the same
+  # literal finds the constant already interned AND already located, so two
+  # occurrences of "abc" share one `defstring' -- which is the whole reason
+  # constant() is a hash table rather than a list.
+  stringSym = s0: t: units:
+    let
+      c = constantSym s0 t units;
+      q = getsym c.s c.v;
+    in
+    if q.loc != null then { inherit (c) s v; }
+    else
+      let g = genident c.s sclasses.static q.type GLOBAL; in
+      { s = modsym g.s c.v (x: x // { loc = g.v; }); inherit (c) v; };
+
+  # stmt.c's addlocal(). It lives here and not in dag.nix because all it does
+  # is append a code item and re-scope a symbol: simp.c's addrtree calls it as
+  # well as dag.c's listnodes, and a shared helper reached through two layers
+  # is worse than one that sits under both.
+  addlocal = s: p:
+    let q = getsym s p; in
+    if q.defined then s
+    else
+      let c = code s "Local" { var = p; }; in
+      modsym c.s p (x: x // { defined = true; scope = c.s.level; });
 
   # --- code list ---------------------------------------------------------
   # stmt.c's reachable(): scan back over the non-control items; if what you

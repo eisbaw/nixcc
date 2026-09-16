@@ -397,7 +397,25 @@ rec {
             outer = tr.tree inner.s (ops.bare "RIGHT") (tr.get inner.s p).type inner.v p;
           in
           loop (advance outer.s) outer.v
-        else if k == "[" then sy.refuse s "parse: subscripting belongs to slice 2/3 (task-028, task-029)"
+        # expr.c's `[' arm, which is four lines because all the work is in
+        # enode.c's addtree: `a[i]' IS `*(a + i)', and the scaling by the
+        # element size happens there. The last two lines matter and are not
+        # decoration -- subscripting an array OF arrays yields the inner array
+        # rather than a load, which is what makes `m[1][2]' one address
+        # computation instead of a load of an array.
+        else if k == "[" then
+          let
+            e = expr (advance s) "]";
+            pp = tr.pointer e.s p;
+            pq = tr.pointer pp.s e.v;
+            a = tr.addtree pq.s (ops.bare "ADD") pp.v pq.v;
+            at = (tr.get a.s a.v).type;
+            r =
+              if ty.isptr at && ty.isarray (ty.unqual at).type
+              then tr.retype a.s a.v (ty.unqual at).type
+              else tr.rvalue a.s a.v;
+          in
+          loop r.s r.v
         else if k == "." || k == "DEREF" then sy.refuse s "parse: struct members are outside slice 1"
         else if k == "(" then
           let
@@ -444,7 +462,45 @@ rec {
     else if k == "FCON" then
       sy.refuse s0 "parse: floating-point constant `${text s0}': float support is deferred (decision-006, task-015)"
     else if k == "SCON" then
-      sy.refuse s0 "parse: string literals belong to slice 2 (task-028)"
+      let
+        # lex.c's scon() joins ADJACENT string literals and appends EXACTLY ONE
+        # terminator, in that order. task-011's evaluator returns one literal's
+        # units with NO terminator precisely so the join can be done here and
+        # the 0 appended once: per-literal terminators would decode
+        # `"ab" "cd"' as six units instead of five.
+        #
+        # The run is measured before it is decoded rather than accumulated
+        # with `++' as it is walked, which decision-001 forbids in a loop: the
+        # concatenation is one `concatLists' over a list built by genList.
+        runLength = i:
+          if i < b.length s0.toks && (b.elemAt s0.toks i).kind == "SCON"
+          then runLength (i + 1) else i - s0.ti;
+        n = runLength s0.ti;
+        parts = b.genList (i: const.evalSCON (b.elemAt s0.toks (s0.ti + i)).text) n;
+        widths = b.attrNames (b.listToAttrs
+          (map (x: { name = toString x.width; value = true; }) parts));
+        # task-047: lcc's own rule for `"ab" L"cd"' is not reproduced here
+        # because there is no case behind it. Refusing is the house answer.
+        s1 =
+          if b.length widths != 1
+          then sy.refuse s0 "parse: adjacent string literals of different widths are joined here, and this frontend has no rule for the result (task-047)"
+          else s0;
+        # The evaluator RECORDS its warnings and prints nothing, and criterion
+        # #7 diffs lcc's stderr, so they are replayed at the literal's own
+        # position -- the same argument the ICON arm above makes.
+        s2 = b.foldl' (st: w: sy.warn st (w + "\n")) s1
+          (b.concatLists (map (x: x.warnings) parts));
+        units = b.concatLists (map (x: x.units) parts) ++ [ 0 ];
+        elem = if (b.head parts).width == 2 then ty.widechar else ty.chartype;
+        t = ty.array elem (b.length units) 0;
+        c = sy.stringSym s2 t units;
+        i = tr.idtree c.s (sy.getsym c.s c.v).loc;
+        # The cursor moves past the WHOLE run, not one literal: `advance' is
+        # the caller's job everywhere else in primary, so it is done here for
+        # all n and the result is handed back already positioned.
+        adv = b.foldl' (st: _: advance st) i.s (b.genList (x: x) n);
+      in
+      { s = adv; inherit (i) v; }
     else if k == "ID" then
       let
         name = text s0;

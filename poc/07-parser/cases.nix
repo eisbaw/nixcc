@@ -9,7 +9,7 @@
 #     between them produce, so that a case quietly losing its interesting
 #     operator is a failure rather than a smaller diff that still passes.
 #
-#   * `programs' are the three that must COMPILE AND RUN (criterion #4), and
+#   * `programs' are the ones that must COMPILE AND RUN (criterion #4), and
 #     their expected output is COMPUTED HERE IN NIX rather than written down.
 #     `gcd' below is Euclid's algorithm a second time, in a second language;
 #     agreeing with the compiled C is then two independent derivations meeting,
@@ -43,8 +43,10 @@ rec {
     linkage = "the DECLARATION diagnostics, which no IR diff can see";
     logic = "&& || and short-circuit labels";
     longs = "long, which shares every opcode with int";
+    ptrs = "subscripting, pointer arithmetic and both addrtree paths";
     quals = "const and volatile, both of which change the IR";
     scopes = "nested blocks, shadowing, an explicit register";
+    strs = "string literals: the join, the interning, the NUL and the lit segment";
     ternary = "?:, including a nested one";
     unary = "- ~ + !";
     unsig = "unsigned arithmetic and the constant comparisons";
@@ -54,19 +56,20 @@ rec {
 
   # Declared and checked for EQUALITY, so the number cannot drift from the
   # directory in silence.
-  corpusCount = 21;
+  corpusCount = 23;
 
   # The programs of criterion #4, also derived from their directory, with the
   # argument the driver passes each. `programCount' is what makes "the
   # programs RUN" a claim the suite checks rather than one it states: without
   # it, deleting a program leaves every stage green.
   #
-  # It was three and is five. bits.c and unsig.c were written for slice 1 and
-  # dropped from it, because poc/03-matcher/rules.nix had no rule for `&',
+  # It was three, then five, and is six. bits.c and unsig.c were written for
+  # slice 1 and dropped from it, because poc/03-matcher/rules.nix had no rule for `&',
   # `|', `^', `~', unary `-' or any U-typed opcode and refused them at
   # instruction selection -- loudly, by name, which was the right failure and
   # still a failure. task-051 added those rules; these two are what says so
-  # from the C end rather than from the rule table's.
+  # from the C end rather than from the rule table's. strings.c is slice 2's
+  # (task-028): a char array, a string literal and the NUL in the middle of it.
   programNames = b.sort (x: y: x < y) (map (n: b.substring 0 (b.stringLength n - 2) n)
     (b.filter (n: b.match ".*\\.c" n != null) (b.attrNames (b.readDir ./run))));
   # `unsigned' and not `unsig': c/unsig.c already exists, and the oracle
@@ -75,11 +78,11 @@ rec {
   # other's lcc output. oracle.py says so in its own words now -- that guard
   # was there and unreachable, because the file count it sits behind fell over
   # first and reported an arithmetic problem.
-  args = { bits = 10; gcd = 10; primes = 10; sumto = 10; unsigned = 10; };
+  args = { bits = 10; gcd = 10; primes = 10; strings = 10; sumto = 10; unsigned = 10; };
   programs = map (n: { name = n; arg = args.${n} or (throw
     "cases: run/${n}.c has no argument in `args'; add one rather than letting it default"); })
     programNames;
-  programCount = 5;
+  programCount = 6;
 
   # --- the expected output, derived --------------------------------------
   # A second implementation of what each program computes. Written in Nix over
@@ -141,9 +144,26 @@ rec {
       let u = u32 (4294967040 + args.unsigned); in
       "${toString (u / 3)} ${toString (umod u 7)} ${toString (hashMix u)}\n";
     gcd = "${toString (gcd 1071 462)} ${toString (fib args.gcd)}\n";
+    # run/strings.c copies `"ab" "\0cd"' out a byte at a time, writing `-'
+    # where the embedded NUL is, and then the argument's two digits. The `-'
+    # is a JOIN here rather than a replacement, which is the point: the C
+    # reaches "ab-cd" by surviving a NUL in the middle of a literal and this
+    # reaches it by putting two strings either side of a separator. They agree
+    # only if the literal really held five units.
+    strings = "${b.concatStringsSep "-" [ "ab" "cd" ]}${toString twoDigitArg}\n";
     primes = "${toString (countPrimes (args.primes * 8))} ${
       toString (countPrimes args.primes * 100 / 7)}\n";
   };
+
+  # run/strings.c spells the argument as two digits -- `n / 10' and `n % 10'
+  # -- so an argument outside 10..99 would make the C print something this
+  # expectation does not describe, and the failure would read as a compiler
+  # bug. poc/05-loop/driver.nix keeps the same kind of guard over the same
+  # kind of assumption, and for the same reason: it is the C's assumption
+  # about its input, not a matter of taste.
+  twoDigitArg =
+    if args.strings >= 10 && args.strings <= 99 then args.strings
+    else throw "cases: run/strings.c prints its argument as exactly two digits, so `args.strings' must be between 10 and 99; it is ${toString args.strings}";
 
   # --- the opcode population ---------------------------------------------
   # Checked for EQUALITY, in both directions. A pinned list catches an opcode
@@ -155,14 +175,32 @@ rec {
   # all. empty.c is in the corpus to hold that -- the fall-through from a void
   # function is one forest shorter than a reader would guess, and it is worth
   # a case even though it adds no opcode.
+  # The thirteen this slice added are the shape of what it is: a pointer that
+  # is ADDED to and SUBTRACTED from (ADDP4, SUBU4, CVPU4), a byte that is
+  # loaded, converted and stored (INDIRI1, CVII1, CVII4, CNSTI1, ASGNI1), a
+  # pointer that is assigned, loaded, passed and returned (ASGNP4, INDIRP4,
+  # ARGP4, RETP4), and a wide literal's halfword (INDIRU2). The null pointer
+  # constant brings four more: CNSTP4, CVUP4 and the two unsigned equality
+  # comparisons a pointer test lowers to.
+  #
+  # FIVE OF THESE HAVE NO ROW IN poc/03-matcher/rules.nix -- CNSTP4, CVUP4,
+  # CVPU4, SUBP4 and RETP4 -- and that is task-054. They diff clean against lcc
+  # and would be refused at instruction selection, loudly and by name, which is
+  # why no program under run/ compares a pointer against zero, subtracts two
+  # pointers or returns one. This list is a claim about the FRONTEND; it is not
+  # a claim that the backend can lower what the frontend emits.
   opcodes = [
     "ADDI4"
+    "ADDP4"
     "ADDRFP4"
     "ADDRGP4"
     "ADDRLP4"
     "ADDU4"
     "ARGI4"
+    "ARGP4"
+    "ASGNI1"
     "ASGNI4"
+    "ASGNP4"
     "ASGNU4"
     "BANDI4"
     "BCOMI4"
@@ -170,17 +208,27 @@ rec {
     "BXORI4"
     "CALLI4"
     "CALLV"
+    "CNSTI1"
     "CNSTI4"
+    "CNSTP4"
     "CNSTU4"
+    "CVII1"
+    "CVII4"
     "CVIU4"
+    "CVPU4"
     "CVUI4"
+    "CVUP4"
     "DIVI4"
     "DIVU4"
     "EQI4"
+    "EQU4"
     "GEI4"
     "GEU4"
     "GTI4"
+    "INDIRI1"
     "INDIRI4"
+    "INDIRP4"
+    "INDIRU2"
     "INDIRU4"
     "JUMPV"
     "LEI4"
@@ -192,11 +240,14 @@ rec {
     "MULI4"
     "NEGI4"
     "NEI4"
+    "NEU4"
     "RETI4"
+    "RETP4"
     "RETU4"
     "RSHI4"
     "RSHU4"
     "SUBI4"
+    "SUBU4"
   ];
 
   # The source a translation unit of `n' functions is made of, for the memory

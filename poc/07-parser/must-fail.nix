@@ -117,10 +117,15 @@ let
 
     # --- later slices ------------------------------------------------------
     {
-      what = "a string literal";
-      src = "extern int p(int); int f(void){ return p(\"hi\"); }";
-      control = "extern int p(int); int f(void){ return p(1); }";
-      expect = "string literals belong to slice 2 (task-028)";
+      # task-047: lcc's own lexer does not JOIN a narrow literal to a wide one
+      # -- it stops at the width change and reports a syntax error -- so both
+      # frontends refuse this and they refuse it in different words. That is a
+      # deviation and it is recorded as one: there is no case behind a rule for
+      # the joined type, so the house answer is to refuse rather than invent.
+      what = "adjacent string literals of different widths";
+      src = "int f(void){ char *s; s = \"a\" L\"b\"; return s[0]; }";
+      control = "int f(void){ char *s; s = \"a\" \"b\"; return s[0]; }";
+      expect = "different widths are joined here";
     }
     {
       what = "a struct declaration";
@@ -138,16 +143,20 @@ let
       expect = "line 3: parse: struct, union and enum types";
     }
     {
-      what = "subscripting";
-      src = "int f(int *v){ return v[0]; }";
-      control = "int f(int v){ return v; }";
-      expect = "subscripting belongs to slice 2/3";
+      # Pointer arithmetic on a pointer to an INCOMPLETE type. lcc errors and
+      # so do we, which is the point: the scaling in enode.c's addtree is by
+      # the pointee's size, and a size of zero would make `p + 1' mean `p'
+      # rather than mean nothing.
+      what = "arithmetic on a `void *', whose element has no size";
+      src = "int f(void){ void *p; p = 0; p = p + 1; return 0; }";
+      control = "int f(void){ char *p; p = 0; p = p + 1; return 0; }";
+      expect = "unknown size for type `void'";
     }
     {
-      what = "pointer arithmetic";
-      src = "int f(int *v){ int *p; p = v + 1; return 0; }";
-      control = "int f(int v){ int p; p = v + 1; return 0; }";
-      expect = "pointer arithmetic belongs to slice 2/3";
+      what = "subtracting two pointers that do not point at the same type";
+      src = "int f(int *a, char *b){ return a - b; }";
+      control = "int f(int *a, int *b){ return a - b; }";
+      expect = "operands of - have illegal types";
     }
     {
       what = "a struct member";

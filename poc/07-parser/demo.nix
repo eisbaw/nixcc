@@ -6,18 +6,19 @@
 #            --poc/04-assembler->   items -> bytes
 #            --nix-riscv-------->   a running RV32I machine, stdout, exit code
 #
-# EVERY arrow is inside one `nix eval'. poc/05-loop's demo.nix has the same
-# picture with the first two arrows replaced by "lcc, outside", and that was
-# the gap decision-007 set out to close for the integer subset. It is closed
-# here for the five programs under run/ and NOT for poc/05-loop/hello.c, which
-# uses a global char array and a pointer parameter -- slices 2 and 3.
+# EVERY arrow is inside one `nix eval'. poc/05-loop's demo.nix had the same
+# picture with the first two arrows replaced by "lcc, outside"; that was the
+# gap decision-007 set out to close, and task-028 closed it there as well, so
+# hello.c now takes this route too.
 #
 # The driver is assembly for the same reason it is in poc/05-loop: the RV32
-# Linux syscall ABI is target knowledge that no C program can express. What is
-# different is how little of it there is. wc() writes ONE character, which is
-# the smallest primitive that lets a program in the int-only subset produce
-# visible output at all: with no array and no pointer there is nothing to point
-# a write(2) at except a one-byte buffer the driver owns.
+# Linux syscall ABI is target knowledge that no C program can express. There
+# are two stubs and the difference between them is the difference slice 2
+# made. wc() writes ONE character, which was the smallest primitive that let a
+# program in the int-only subset produce visible output at all: with no array
+# and no pointer there was nothing to point a write(2) at except a one-byte
+# buffer the driver owns. wr() writes a BUFFER, which a program with a char
+# array has something to fill.
 { cpu
 , source
 , matcher ? ../03-matcher
@@ -37,6 +38,7 @@ let
   irParse = import (matcher + "/parse.nix");
   cc = import ./compile.nix;
   it = import ../05-loop/items.nix;
+  data = import ./data.nix { inherit (emit) litLabel; };
 
   listing = cc.listingOf (b.readFile source);
   functions = irParse.parseAll listing;
@@ -61,6 +63,16 @@ let
     (it.insn "ecall" [ ])
     (it.insn "ret" [ ])
 
+    # wr(fd, buf, n): write(2) with the arguments already where the syscall
+    # wants them, which is the whole stub. It exists because a program that
+    # has a char array has something worth writing more than one byte of, and
+    # `wc' above cannot say how long it is.
+    (it.global "wr")
+    (it.label "wr")
+    (it.insn "li" [ "a7" it.sysWrite ])
+    (it.insn "ecall" [ ])
+    (it.insn "ret" [ ])
+
     (it.section ".data")
     (it.label "ch")
     (it.bytes [ 0 ])
@@ -70,7 +82,11 @@ let
     ++ b.concatLists (b.genList
       (i: parse.parse "${b.baseNameOf source}#${toString i}" (b.elemAt compiled i).asm)
       (b.length compiled))
-    ++ parse.parseFile (matcher + "/runtime.s");
+    ++ parse.parseFile (matcher + "/runtime.s")
+    # The lit segment last, because it is data and the entry point has to stay
+    # at the first byte of .text. An empty list when the program has no string
+    # literal, so nothing changes for the programs that had none.
+    ++ data.items listing;
 
   image = asm.assemble { inherit items; textBase = base; };
 
@@ -82,5 +98,8 @@ let
 in
 {
   inherit listing functions compiled items image;
+  # What the lit segment laid down, so check.nix can assert a program's string
+  # literals reached .data as bytes rather than trusting that it ran.
+  dataDefs = data.defsOf listing;
   report = cpu.report final;
 }
