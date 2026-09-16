@@ -23,6 +23,12 @@ let
   minCases = 60;
   minExpectedTokens = 130;
   minLineCases = 8;
+  # DECLARED and checked for EQUALITY, unlike the floors above it. The floors
+  # predate this file; poc/lib/mutant.sh's argument -- a floor can be spent
+  # downward in silence, and equality forces the edit that was wanted anyway
+  # -- applies to all of them, and this is the one table added since it was
+  # written, so it is the one that obeys it.
+  declaredStartCases = 11;
   minSources = 10;
 
   showList = xs: b.concatStringsSep " " (map (x: "`${x}'") xs);
@@ -43,14 +49,22 @@ let
   kindResults = map (compare l.brief) cases.tokens;
   lineResults = map (compare (map (t: "${toString t.line}:${t.kind}"))) cases.lines;
 
+  # `bol' and `glue' are derived facts the preprocessor reads off every token
+  # and NOTHING else in this directory looks at -- not `brief', not the line
+  # table, not the round trip. A lexer that set `bol' on every token, or on
+  # none, would pass every other case in this file.
+  startResults = map
+    (compare (map (t: "${if t.bol then "B" else "-"}${if t.glue then "G" else "-"}:${t.kind}")))
+    cases.starts;
+
   # Round-trip every table case as well, free of charge: `render` is the
   # inverse of `lex`, so any byte the lexer drops shows up here first.
   roundResults = map
     (cs: { inherit (cs) what src; back = l.render (l.lex cs.src); })
-    (cases.tokens ++ cases.lines);
+    (cases.tokens ++ cases.lines ++ cases.starts);
   roundBad = b.filter (r: r.back != r.src) roundResults;
 
-  tableBad = b.filter (r: r.bad) (kindResults ++ lineResults);
+  tableBad = b.filter (r: r.bad) (kindResults ++ lineResults ++ startResults);
   expectedTokens = b.foldl' (a: cs: a + b.length cs.expect) 0 cases.tokens;
   comparedTokens = b.foldl' (a: r: a + r.tokens) 0 kindResults;
 
@@ -112,6 +126,9 @@ else if expectedTokens < minExpectedTokens then
 else if b.length lineResults < minLineCases then
   fault "only ${toString (b.length lineResults)} line-number cases, expected at least ${
     toString minLineCases}"
+else if b.length cases.starts != declaredStartCases then
+  fault "${toString (b.length cases.starts)} line-start cases, against the ${
+    toString declaredStartCases} this harness declares"
 else if b.length sources < minSources then
   fault "only ${toString (b.length sources)} source files to round-trip, expected at least ${
     toString minSources} -- did the file list come back empty?"
@@ -120,7 +137,7 @@ else if sourceBytes == 0 then
 # Then the lexer's own verdicts, so a real bug is always named as one.
 else if tableBad != [ ] then
   throw "lexer: ${toString (b.length tableBad)} of ${
-    toString (b.length kindResults + b.length lineResults)} table cases failed\n  ${
+    toString (b.length kindResults + b.length lineResults + b.length startResults)} table cases failed\n  ${
     b.concatStringsSep "\n  " (map (r: r.why) tableBad)}"
 else if roundBad != [ ] then
   throw "lexer: round-trip produced different bytes for ${
@@ -145,8 +162,9 @@ else if comparedTokens != expectedTokens then
   fault "compared ${toString comparedTokens} produced tokens against ${
     toString expectedTokens} expected ones; the comparison is not elementwise"
 else
-  "${toString (b.length kindResults)} token cases (${toString comparedTokens} tokens) and ${
-    toString (b.length lineResults)} line-number cases compared, ${
+  "${toString (b.length kindResults)} token cases (${toString comparedTokens} tokens), ${
+    toString (b.length lineResults)} line-number cases and ${
+    toString (b.length startResults)} line-start cases compared, ${
     toString (b.length sourceResults)} real sources round-tripped byte for byte (${
     toString sourceBytes} bytes, ${toString sourceTokens} tokens, ${
     toString (sourceBytes / sourceTokens)} bytes per token)\n"

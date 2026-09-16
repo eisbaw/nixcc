@@ -21,8 +21,8 @@ let
   b = builtins;
   l = import ./lex.nix;
 
-  minRejects = 16;
-  minAccepts = 12;
+  minRejects = 22;
+  minAccepts = 16;
 
   rejects = [
     { what = "unterminated string at end of input"; src = "\"abc"; expect = "unterminated string literal"; }
@@ -46,11 +46,16 @@ let
     { what = "dollar sign"; src = "a $ b"; expect = "unexpected character `$'"; }
     { what = "backtick"; src = "a ` b"; expect = "unexpected character ``'"; }
     { what = "stray backslash not before a newline"; src = "a\n\nb \\ c"; expect = "unexpected character `\\' on line 3"; }
+    # The two places where splicing between tokens rather than in ISO C's
+    # phase 2 is VISIBLE, and each would otherwise compile something the
+    # standard does not say (task-008). Their controls are the same construct
+    # without the continuation.
+    { what = "a backslash-newline continuing a // comment"; src = "a // x \\\ny\nz"; expect = "so the NEXT line is part of the comment too"; }
+    { what = "a backslash-newline inside a string literal"; src = "\"ab\\\ncd\""; expect = "joins the two lines into one literal"; }
   ];
 
   accepts = [
     { what = "closed string"; src = "\"abc\""; }
-    { what = "string with an escaped newline continuation"; src = "\"ab\\\ncd\""; }
     { what = "empty string, which IS legal"; src = "\"\""; }
     { what = "closed character constant"; src = "'a'"; }
     { what = "one-character constant"; src = "'x'"; }
@@ -64,6 +69,8 @@ let
     { what = "unsigned and long, once each"; src = "1ul"; }
     { what = "identifier that starts with a letter"; src = "abc123"; }
     { what = "backslash before a newline"; src = "a \\\nb"; }
+    { what = "a // comment with no continuation on it"; src = "a // x\ny\nz"; }
+    { what = "a string literal with an escaped quote rather than a newline"; src = "\"ab\\\"cd\""; }
   ];
 
   # deepSeq, because lex is lazy: `tryEval (lex src)` alone reports success for

@@ -142,13 +142,55 @@ in
     (c "one token per line" "a\nb\nc" [ "1:ID" "2:ID" "3:ID" "3:EOI" ])
     (c "newlines inside a block comment" "a/*\n\n*/b" [ "1:ID" "3:ID" "3:EOI" ])
     (c "token after a line comment" "a//x\nb" [ "1:ID" "2:ID" "2:EOI" ])
-    # The newline is INSIDE the literal, so the lexer has to count it while
-    # scanning the token rather than while skipping trivia.
-    (c "string continued across a line" "\"s\\\ns\"\nd" [ "1:SCON" "3:ID" "3:EOI" ])
     (c "backslash-newline between tokens" "a\\\nb" [ "1:ID" "2:ID" "2:EOI" ])
     (c "trailing newline moves EOI on" "a\n" [ "1:ID" "2:EOI" ])
     (c "blank lines only" "\n\n\n" [ "4:EOI" ])
     (c "comment only, spanning lines" "/*\n*/" [ "2:EOI" ])
     (c "empty input" "" [ "1:EOI" ])
+  ];
+
+  # --- the two derived flags a preprocessor reads off every token, and
+  # nothing else in this directory looks at. A lexer that set `bol' on every
+  # token, or on none, passes every other case in this file: the flags are not
+  # in `brief', not in the line table and not in the round trip. Each entry
+  # lists FLAGS:KIND for every token including EOI -- `B' for bol, `G' for
+  # glue, `-' for neither.
+  #
+  # Every case below was checked against `gcc -E' before it was written down,
+  # because the rule these flags encode is a rule about what gcc calls a
+  # directive. See lex.nix's triviaStep.
+  starts = [
+    (c "the first token in a file starts a line and the next does not"
+      "a b" [ "B-:ID" "--:ID" "--:EOI" ])
+    (c "a trailing newline ends the last line, so EOI starts one"
+      "a\nb\n" [ "B-:ID" "B-:ID" "B-:EOI" ])
+    # ISO C phase 2 makes `ab' of this; this lexer makes two tokens and flags
+    # the join (task-008), which is the one case the preprocessor refuses.
+    (c "a continuation and nothing else glues two tokens together"
+      "a\\\nb" [ "B-:ID" "-G:ID" "--:EOI" ])
+    (c "a space before the continuation means the tokens were already apart"
+      "a \\\nb" [ "B-:ID" "--:ID" "--:EOI" ])
+    (c "and so does a space after it"
+      "a\\\n b" [ "B-:ID" "--:ID" "--:EOI" ])
+    (c "two continuations in a row still glue"
+      "a\\\n\\\nb" [ "B-:ID" "-G:ID" "--:EOI" ])
+    # A newline inside a block comment does not end a logical line, which is
+    # what lets a directive carry a multi-line comment in the middle of it.
+    (c "a newline inside a block comment does not end a line"
+      "a/*\n*/b" [ "B-:ID" "--:ID" "--:EOI" ])
+    (c "the newline that ends a line comment does end a line"
+      "a//x\nb" [ "B-:ID" "B-:ID" "--:EOI" ])
+    (c "a directive's own tokens do not each start a line"
+      "#define A 1\n" [ "B-:#" "--:ID" "--:ID" "--:ICON" "B-:EOI" ])
+    # gcc -E, measured: the `#' here is NOT a directive, because the only
+    # newline before it is inside the comment.
+    (c "a block comment spanning a line does not make the next `#' a directive"
+      "int a; /* x\n */ #define A 1\n"
+      [ "B-:INT" "--:ID" "--:;" "--:#" "--:ID" "--:ID" "--:ICON" "B-:EOI" ])
+    # And, measured the same way: it IS one when it is the file's first token,
+    # because there is nothing before it but whitespace.
+    (c "a leading comment still leaves the file's first `#' a directive"
+      "/* x\n*/ #define A 1\n"
+      [ "B-:#" "--:ID" "--:ID" "--:ICON" "B-:EOI" ])
   ];
 }

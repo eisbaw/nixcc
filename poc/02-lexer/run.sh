@@ -449,6 +449,20 @@ mutate "lexer: line numbers never advance" \
        "sed -i 's|then s.line + 1 else s.line;|then s.line else s.line;|' lex.nix" \
        "$lexer_check"
 
+# The two flags a preprocessor reads and nothing else here looks at. Both
+# mutants round-trip perfectly and produce exactly the right tokens on exactly
+# the right lines; the line-start table is the only thing in this directory
+# that can see them at all.
+mutate "lexer: a newline in ordinary whitespace stops ending a logical line" \
+       "a trailing newline ends the last line, so EOI starts one: expected" \
+       "sed -i 's@          s // { inherit line; solid = true; nlAt = s.nlAt || nl; }@          s // { inherit line; solid = true; }@' lex.nix" \
+       "$lexer_check"
+
+mutate "lexer: a continuation that glues two tokens is not flagged" \
+       "a continuation and nothing else glues two tokens together: expected" \
+       "sed -i 's@          glue = tv.spliced \&\& !tv.solid;@          glue = false;@' lex.nix" \
+       "$lexer_check"
+
 mutate "lexer: numeric constants never validated" \
        "should have been rejected but lexed fine" \
        "sed -i 's|^      numberKind = text: line:|      numberKind = text: line: \"ICON\"; unusedNumberKind = text: line:|' lex.nix" \
@@ -506,7 +520,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=10
+declared=12
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

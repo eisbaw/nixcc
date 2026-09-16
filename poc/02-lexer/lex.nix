@@ -61,9 +61,16 @@
 #     the parser, which is where the standard puts it (phase 6) and where the
 #     wide/narrow rule is easier to state.
 #
-#   * A backslash-newline inside a `//` comment does not continue the comment
-#     onto the next line, because our splicing happens between tokens rather
-#     than in phase 2. gcc warns about exactly this construct. See task-008.
+#   * Splicing is between tokens, not ISO C's phase 2 (task-008), and the
+#     three places where that distinction is VISIBLE are all refused rather
+#     than lexed differently, because each of them would otherwise compile
+#     something the standard does not say: a continuation joining two token
+#     characters (flagged as `glue` and refused by poc/08-cpp), one ending a
+#     `//` comment (which would compile a line the standard discards), and
+#     one inside a string or character literal (which would put a newline in
+#     the literal where phase 2 removes it). What remains -- a continuation
+#     between two tokens, or inside a block comment -- reads the same either
+#     way, which is why it is the only case that is simply allowed.
 #
 #   * Trigraphs are not translated. They are phase 1, lcc does not do them
 #     either, and nothing in the corpora uses them.
@@ -242,23 +249,68 @@ let
       # Whitespace, comments and backslash-newline: one state machine rather
       # than a loop per trivia kind, because they interleave -- a `//` inside a
       # `/* */` is not a comment, and neither is a `/*` inside a `//`.
+      #
+      # TWO DERIVED FACTS FOR THE PREPROCESSOR, computed here because this is
+      # the only place in the tree that already knows them (task-013.01):
+      #
+      #   `nlAt' -- the trivia contained a newline that ENDED A LOGICAL LINE.
+      #     A newline inside a block comment does not, and neither does the one
+      #     in a backslash-newline pair; every other newline does, including
+      #     the one that terminates a `//' comment. That single rule is what
+      #     gcc -E was measured to obey on both sides of the question:
+      #     `int a; /* x<nl> */ #define A 1' is NOT a directive to gcc, while
+      #     `#define B /* c<nl> */ 7' IS one directive.
+      #
+      #   `solid' -- the trivia contained a character that was not half of a
+      #     backslash-newline pair. Trivia that is spliced and NOT solid is a
+      #     continuation joining two token characters, which ISO C splices in
+      #     phase 2 into ONE token and this lexer does not (task-008). The
+      #     preprocessor refuses that rather than mislexing it.
+      #
+      # Recomputing either downstream by re-scanning `ws' would be a second
+      # definition of one fact, and the two would disagree on the first comment
+      # that spans a line.
       triviaStep = s: i:
         let
           c = b.elemAt chars i;
           nx = ch (i + 1);
           line = if c == "\n" then s.line + 1 else s.line;
           closes = c == "*" && nx == "/";
+          nl = c == "\n";
         in
-        if s.skip then s // { inherit line; skip = false; }
+        # The only skipped character that can be a newline is the one after a
+        # backslash: `/*', `//' and `*/' each skip their second character, and
+        # none of those three is a newline. So this is the splice's newline,
+        # and it is neither solid nor a line ending.
+        if s.skip then
+          (if nl then s // { inherit line; skip = false; }
+          else s // { inherit line; skip = false; solid = true; })
         else if s.mode == "block" then
-          s // { inherit line; mode = if closes then "code" else "block"; skip = closes; }
+          s // { inherit line; solid = true; mode = if closes then "code" else "block"; skip = closes; }
         else if s.mode == "line" then
-          s // { inherit line; mode = if c == "\n" then "code" else "line"; }
-        else if b.bitAnd (classTable.${c} or 0) SPACE != 0 then s // { inherit line; }
+          # ISO C splices in phase 2, BEFORE comments are recognised, so a
+          # backslash-newline at the end of a `//' comment carries the comment
+          # onto the NEXT line and everything on it is discarded. This lexer
+          # splices between tokens, so it would end the comment here and
+          # COMPILE that line -- code the standard says is commented out.
+          # There is no reading of that which is merely a divergence, so it is
+          # refused (task-008). gcc warns about the same construct.
+          (if c == "\\" && nx == "\n" then
+            throw "a backslash-newline ends the `//' comment on line ${toString s.line}: ISO C splices that away in translation phase 2, so the NEXT line is part of the comment too. This lexer splices between tokens only (task-008), and would compile that line instead of discarding it"
+          else s // {
+            inherit line;
+            solid = true;
+            nlAt = s.nlAt || nl;
+            mode = if nl then "code" else "line";
+          })
+        else if b.bitAnd (classTable.${c} or 0) SPACE != 0 then
+          s // { inherit line; solid = true; nlAt = s.nlAt || nl; }
         else if c == "/" && nx == "*" then
-          s // { inherit line; mode = "block"; skip = true; openLine = s.line; }
-        else if c == "/" && nx == "/" then s // { inherit line; mode = "line"; skip = true; }
-        else if c == "\\" && nx == "\n" then s // { inherit line; skip = true; }
+          s // { inherit line; solid = true; mode = "block"; skip = true; openLine = s.line; }
+        else if c == "/" && nx == "/" then
+          s // { inherit line; solid = true; mode = "line"; skip = true; }
+        else if c == "\\" && nx == "\n" then
+          s // { inherit line; skip = true; spliced = true; }
         else s // { inherit line; done = true; pos = i; };
 
       skipTrivia = from: line:
@@ -271,6 +323,9 @@ let
               mode = "code";
               skip = false;
               openLine = line;
+              nlAt = false;
+              solid = false;
+              spliced = false;
             }
             from;
         in
@@ -302,32 +357,43 @@ let
         in
         if r.done then r.pos else n;
 
-      # String and character literals. A backslash escapes any one character,
-      # including a newline, which is how a literal is continued across lines;
-      # a bare newline is an error, as it is in lcc's scon().
+      # String and character literals. A backslash escapes any one character;
+      # a bare newline is an error, as it is in lcc's scon(), and so now is a
+      # backslash-newline, for the reason below.
+      literalKind = quote: if quote == "\"" then "string" else "character";
+
       strStep = quote: openLine: s: i:
         let c = b.elemAt chars i; in
-        if s.esc then s // { esc = false; nl = if c == "\n" then s.nl + 1 else s.nl; }
+        if s.esc then
+          # ISO C's phase 2 splices this away before the literal is lexed at
+          # all, so `"ab\<newline>cd"' IS `"abcd"'. This lexer splices between
+          # tokens only (task-008), so it would keep the newline in the lexeme
+          # and poc/06-constants would then decode it as an unrecognised
+          # escape worth 10 -- a literal with a newline in it where ISO C has
+          # none, diagnosed as the wrong thing. Refused rather than mislexed.
+          (if c == "\n" then
+            throw "a backslash-newline inside the ${literalKind quote} literal started on line ${toString openLine}: ISO C splices that away in translation phase 2 and joins the two lines into one literal. This lexer splices between tokens only (task-008), and would compile a literal with a newline in it instead"
+          else s // { esc = false; })
         else if c == "\\" then s // { esc = true; }
         else if c == quote then s // { done = true; pos = i + 1; }
         else if c == "\n" then
-          throw "newline inside ${if quote == "\"" then "string" else "character"} literal started on line ${toString openLine}"
+          throw "newline inside ${literalKind quote} literal started on line ${toString openLine}"
         else s;
 
       scanQuoted = quote: from: openLine:
         let
           r = runUntil (strStep quote openLine)
-            { done = false; pos = from + 1; esc = false; nl = 0; } (from + 1);
+            { done = false; pos = from + 1; esc = false; } (from + 1);
         in
         if !r.done then
-          throw "unterminated ${if quote == "\"" then "string" else "character"} literal started on line ${toString openLine}, reached end of input"
+          throw "unterminated ${literalKind quote} literal started on line ${toString openLine}, reached end of input"
         # `""` is a legal empty string; `''` has no value to stand for, and a
         # constant evaluator handed it would have to invent one. lcc reads
         # uninitialised buffer here, which is worse than refusing.
         else if quote == "'" && r.pos == from + 2 then
           throw "empty character constant on line ${toString openLine}"
         else
-          { kind = if quote == "\"" then "SCON" else "ICON"; end = r.pos; inherit (r) nl; };
+          { kind = if quote == "\"" then "SCON" else "ICON"; end = r.pos; };
 
       # Classify one numeric lexeme. Order matters: 0x1e is an integer even
       # though it ends in what would otherwise be an exponent marker.
@@ -356,7 +422,7 @@ let
           # three-character lookahead the branch matched on, so this costs the
           # dominant token kinds no slice at all.
           got =
-            if p >= n then { kind = "EOI"; end = n; nl = 0; text = ""; }
+            if p >= n then { kind = "EOI"; end = n; text = ""; }
             else if wide then
               let r = scanQuoted wq (p + 1) line;
               in r // { text = slice p r.end; }
@@ -365,13 +431,13 @@ let
                 e = scanClass IDCHAR (p + 1);
                 word = slice p e;
               in
-              { kind = keywords.${word} or "ID"; end = e; nl = 0; text = word; }
+              { kind = keywords.${word} or "ID"; end = e; text = word; }
             else if b.bitAnd k DIGIT != 0 || (c == "." && isa DIGIT (p + 1)) then
               let
                 e = scanNumber p;
                 num = slice p e;
               in
-              { kind = numberKind num line; end = e; nl = 0; text = num; }
+              { kind = numberKind num line; end = e; text = num; }
             else if c == "\"" || c == "'" then
               let r = scanQuoted c p line;
               in r // { text = slice p r.end; }
@@ -380,9 +446,9 @@ let
                 c2 = c + ch (p + 1);
                 c3 = c2 + ch (p + 2);
               in
-              if punct3 ? ${c3} then { kind = punct3.${c3}; end = p + 3; nl = 0; text = c3; }
-              else if punct2 ? ${c2} then { kind = punct2.${c2}; end = p + 2; nl = 0; text = c2; }
-              else if punct1 ? ${c} then { kind = c; end = p + 1; nl = 0; text = c; }
+              if punct3 ? ${c3} then { kind = punct3.${c3}; end = p + 3; text = c3; }
+              else if punct2 ? ${c2} then { kind = punct2.${c2}; end = p + 2; text = c2; }
+              else if punct1 ? ${c} then { kind = c; end = p + 1; text = c; }
               else throw "unexpected character `${c}' on line ${toString line}";
         in
         {
@@ -391,7 +457,19 @@ let
           inherit line;
           ws = slice from p;
           next = got.end;
-          nextLine = line + got.nl;
+          # No token can span a line any more: a literal with a bare newline
+          # in it is refused, and so is one continued with a backslash, so
+          # every newline in the file is trivia and skipTrivia has counted it.
+          nextLine = line;
+          # This token starts a logical line: either its trivia ended one, or
+          # it is the first token in the file. A `#' with this set is a
+          # directive; without it, a stray punctuator.
+          bol = tv.nlAt || from == 0;
+          # Its trivia is a line continuation AND NOTHING ELSE, so the splice
+          # sits between two characters ISO C's phase 2 would have joined into
+          # one token. See task-008: this lexer splices between tokens only,
+          # and the preprocessor refuses this case rather than mislexing it.
+          glue = tv.spliced && !tv.solid;
         };
     in
     b.genericClosure {
