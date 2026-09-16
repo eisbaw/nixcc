@@ -56,17 +56,30 @@ rec {
   # directory in silence.
   corpusCount = 21;
 
-  # The three programs of criterion #4, also derived from their directory,
-  # with the argument the driver passes each. `programCount' is what makes
-  # "three programs RUN" a claim the suite checks rather than one it states:
-  # without it, deleting a program leaves every stage green.
+  # The programs of criterion #4, also derived from their directory, with the
+  # argument the driver passes each. `programCount' is what makes "the
+  # programs RUN" a claim the suite checks rather than one it states: without
+  # it, deleting a program leaves every stage green.
+  #
+  # It was three and is five. bits.c and unsig.c were written for slice 1 and
+  # dropped from it, because poc/03-matcher/rules.nix had no rule for `&',
+  # `|', `^', `~', unary `-' or any U-typed opcode and refused them at
+  # instruction selection -- loudly, by name, which was the right failure and
+  # still a failure. task-051 added those rules; these two are what says so
+  # from the C end rather than from the rule table's.
   programNames = b.sort (x: y: x < y) (map (n: b.substring 0 (b.stringLength n - 2) n)
     (b.filter (n: b.match ".*\\.c" n != null) (b.attrNames (b.readDir ./run))));
-  args = { gcd = 10; primes = 10; sumto = 10; };
+  # `unsigned' and not `unsig': c/unsig.c already exists, and the oracle
+  # differential keys its answers by BASENAME across both directories, so two
+  # files sharing one would have compared one program's listing against the
+  # other's lcc output. oracle.py says so in its own words now -- that guard
+  # was there and unreachable, because the file count it sits behind fell over
+  # first and reported an arithmetic problem.
+  args = { bits = 10; gcd = 10; primes = 10; sumto = 10; unsigned = 10; };
   programs = map (n: { name = n; arg = args.${n} or (throw
     "cases: run/${n}.c has no argument in `args'; add one rather than letting it default"); })
     programNames;
-  programCount = 3;
+  programCount = 5;
 
   # --- the expected output, derived --------------------------------------
   # A second implementation of what each program computes. Written in Nix over
@@ -88,6 +101,30 @@ rec {
 
   countPrimes = n: b.length (b.filter isPrime (b.genList (i: i) n));
 
+  # --- bits.c, in Nix's own bitwise builtins -----------------------------
+  # `bitAnd', `bitOr' and `bitXor' are Nix's own, so this is a second
+  # implementation of the same operators rather than a restatement of the C.
+  # ONE HALF OF IT IS NOT INDEPENDENT and should be read as such: Nix has no
+  # `bitNot', so `~x' is written here as `x ^ -1' -- which is exactly what
+  # poc/03-matcher/rules.nix emits for BCOMI4, so the two cannot disagree
+  # about it. What is independent is the bit count, the right shift spelled
+  # as a division, and the unary minus around them.
+  bnot = x: b.bitXor x (-1);
+  bitCount = n: if n == 0 then 0 else (b.bitAnd n 1) + bitCount (n / 2);
+  twos = n: 0 - (bnot n + (0 - n));
+  mix = x: y: b.bitOr (b.bitAnd x y) (b.bitXor x y);
+
+  # --- unsig.c, 32-bit unsigned arithmetic in 64-bit signed integers -----
+  # Nix has no unsigned type and no modulo, and its integers THROW on
+  # overflow (decision-001), so every value here is kept inside [0, 2^32) by
+  # hand: `u32' masks and `umod' is spelled the way `gcd' above spells it.
+  u32 = x: b.bitAnd x 4294967295;
+  umod = x: y: x - (x / y) * y;
+  # `x / 32' is `x >> 5' because x is known non-negative here, which is the
+  # whole reason the C's shift has to be the LOGICAL one: on the same bit
+  # pattern read as a signed integer, `>>' would bring ones down from the top.
+  hashMix = x: b.bitAnd (b.bitXor x (x / 32)) 65535;
+
   # The arguments come from `args' above rather than being restated, so that
   # changing what the driver passes cannot leave the expectation quietly
   # describing a different run. The arithmetic mirrors the C: `n << 3' is
@@ -95,6 +132,14 @@ rec {
   # `((countPrimes args.primes) * 100) / 7', which is what primes.c computes.
   expectedStdout = {
     sumto = "${toString (sumTo args.sumto)}\n";
+    bits = "${toString (bitCount (args.bits * 7))} ${
+      toString (twos args.bits)} ${toString (mix args.bits (args.bits + 5))}\n";
+    # The C says `0xffffff00u + n', and 0xffffff00 is 4294967040. Written as
+    # the decimal here because Nix has no hexadecimal literal for it and
+    # spelling it in hex would mean a second conversion to get wrong.
+    unsigned =
+      let u = u32 (4294967040 + args.unsigned); in
+      "${toString (u / 3)} ${toString (umod u 7)} ${toString (hashMix u)}\n";
     gcd = "${toString (gcd 1071 462)} ${toString (fib args.gcd)}\n";
     primes = "${toString (countPrimes (args.primes * 8))} ${
       toString (countPrimes args.primes * 100 / 7)}\n";

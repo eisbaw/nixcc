@@ -7,7 +7,7 @@
 #      listing parser, which re-checks node numbering, reference counts,
 #      post-order and dangling `#n' from the CONSUMER's side; the corpus
 #      produces exactly the declared set of opcodes; a discarded call is still
-#      a listed root nothing references; and three C programs COMPILE FROM .c
+#      a listed root nothing references; and five C programs COMPILE FROM .c
 #      AND RUN on the Nix RV32I emulator, printing what cases.nix independently
 #      computes.
 #   2. must-fail.nix -- the C outside slice 1 is refused, each reject paired
@@ -235,8 +235,15 @@ mutate "frontend: diagnostics are recorded and never reported" \
 
 # lcc copies a parameter on entry when the callee symbol differs from the
 # caller symbol. Skip it and the function is short one whole forest.
+#
+# The fragment is a line of ARITH.C and not of the file that used to supply it.
+# That is the cost the note at the top of this stage warns about, collected:
+# adding run/bits.c to the corpus moved the second listing oracle.py prints,
+# and this fragment went with it. It now comes from the FIRST differing file,
+# which is the one position no later addition can take -- `arith' sorts ahead
+# of every other name in c/ and run/ together.
 mutate "frontend: a register parameter is not copied in on entry" \
-       "we  ' 2. ADDRLP4 n'" \
+       "we  '4. INDIRI4 count=4 #5'" \
        "sed -i 's|if ps.sclass != qs.sclass \|\| ps.type != qs.type then|if false then|' listing.nix" \
        "$oracle"
 
@@ -289,8 +296,14 @@ mutate "frontend: the float refusal stops naming the decision behind it" \
 # A program that compiles to correct IR and then runs wrong is the class of
 # defect an IR diff cannot see, which is why decision-007 makes every slice
 # run something.
+#
+# Changing the driver's argument makes ALL FIVE programs print something else,
+# so what check.nix names is the first of them by NAME -- `bits' now, where it
+# was `gcd' while run/ held three. The fragment is the WANTED value rather than
+# the printed one, which is what keeps it distinct from the two mutations that
+# break an expectation instead of the program.
 mutate "frontend: the emitted listing is correct but the program misbehaves" \
-       "wanted \`21 55" \
+       "wanted \`3 21 15" \
        "sed -i 's|(it.insn \"li\" \[ \"a0\" arg \])|(it.insn \"li\" [ \"a0\" (arg - 1) ])|' demo.nix" \
        "$check"
 
@@ -402,6 +415,22 @@ mutate "harness: the expected program output stops being computed" \
        "sed -i 's|^  sumTo = n: b.foldl|  sumTo = _: 999; unusedSumTo = n: b.foldl|' cases.nix" \
        "$check"
 
+# One per NEW derivation, for the reason the one above exists: what makes
+# "the compiled C is right" mean anything is that cases.nix computes the same
+# answer a second time, in Nix, from Nix's own bitwise builtins and its own
+# arithmetic. A derivation that stopped computing and started restating would
+# leave this stage green while proving nothing, and these two are what say it
+# does not.
+mutate "harness: the bit count in the expectation stops being computed" \
+       "printed \`3 21 15" \
+       "sed -i 's|^  bitCount = n: if n == 0|  bitCount = _: 99; unusedBitCount = n: if n == 0|' cases.nix" \
+       "$check"
+
+mutate "harness: the unsigned expectation stops being computed" \
+       "printed \`1431655683 3 242" \
+       "sed -i 's|^  hashMix = x: b.bitAnd|  hashMix = _: 999; unusedHashMix = x: b.bitAnd|' cases.nix" \
+       "$check"
+
 mutate "harness: the refusal table is emptied" \
        "must-fail holds 0 cases" \
        "sed -i 's|^  cases = \[|  cases = [ ]; unusedCases = [|' must-fail.nix" \
@@ -428,9 +457,9 @@ mutate "harness: a corpus file stops being offered to the differential" \
        "mv c/arith.c c/arith.c.off" \
        "$oracle"
 
-# Criterion #4 is "three programs RUN". Nothing asserted the three.
-mutate "harness: one of the three running programs goes missing" \
-       "run/ holds 2 programs" \
+# Criterion #4 is "the programs RUN". Nothing asserted how many.
+mutate "harness: one of the running programs goes missing" \
+       "run/ holds 4 programs" \
        "mv run/gcd.c run/gcd.c.off" \
        "$check"
 
@@ -470,7 +499,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=42
+declared=44
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

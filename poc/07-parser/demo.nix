@@ -9,8 +9,8 @@
 # EVERY arrow is inside one `nix eval'. poc/05-loop's demo.nix has the same
 # picture with the first two arrows replaced by "lcc, outside", and that was
 # the gap decision-007 set out to close for the integer subset. It is closed
-# here for these three programs and NOT for poc/05-loop/hello.c, which uses a
-# global char array and a pointer parameter -- slices 2 and 3.
+# here for the five programs under run/ and NOT for poc/05-loop/hello.c, which
+# uses a global char array and a pointer parameter -- slices 2 and 3.
 #
 # The driver is assembly for the same reason it is in poc/05-loop: the RV32
 # Linux syscall ABI is target knowledge that no C program can express. What is

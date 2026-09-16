@@ -53,9 +53,9 @@ ORACLE = "rcc-rv32"
 # The FILE count is not here: cases.nix declares it (corpusCount plus
 # programCount) and oracle.nix hands it over, because a Python restatement of
 # a Nix number had already gone stale twice.
-FUNCTIONS = 41
-NODE_LINES = 990
-BACKREFS = 841
+FUNCTIONS = 49
+NODE_LINES = 1181
+BACKREFS = 988
 # lcc diagnoses this corpus in several places -- an unsigned comparison whose
 # answer is constant, an expression with no effect, a shift by too many bits,
 # a linkage that changed between declarations. Counting its stderr LINES is
@@ -104,10 +104,6 @@ def main(argv):
     answer = json.loads(proc.stdout)
     ours, expected = answer["answers"], answer["expected"]
 
-    if len(ours) != expected:
-        fault(f"the corpus offered {len(ours)} files to compare, against the "
-              f"{expected} cases.nix declares")
-
     sources = {}
     for name in ours:
         # A basename present in BOTH directories would silently compare one
@@ -124,6 +120,17 @@ def main(argv):
     missing = sorted(set(ours) - set(sources))
     if missing:
         fault(f"no source file found for {', '.join(missing)}")
+
+    # AFTER the two checks above, and that order is the whole reason this is
+    # not one line earlier. oracle.nix keys its answers by basename, so a name
+    # present in both c/ and run/ silently loses one of the two -- and the
+    # first thing that goes wrong is this count, which then reports a file
+    # MISSING from a corpus that has all its files. The duplicate check above
+    # is the one that names what actually happened; it existed before and had
+    # never been reachable, because this arithmetic fell over in front of it.
+    if len(ours) != expected:
+        fault(f"the corpus offered {len(ours)} files to compare, against the "
+              f"{expected} cases.nix declares")
 
     ir_bad, err_bad = [], []
     nodes = refs = functions = diags = 0

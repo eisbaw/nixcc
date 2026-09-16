@@ -11,8 +11,8 @@
 #   * a discarded call is still a LISTED root that nothing references, which is
 #     the distinction poc/05-loop leans on and which lives in the forest shape
 #     rather than in any node;
-#   * and the three programs of criterion #4 compile from .c and RUN, printing
-#     what cases.nix independently computes.
+#   * and the programs of criterion #4 compile from .c and RUN, printing what
+#     cases.nix independently computes.
 { cpu }:
 let
   b = builtins;
@@ -74,7 +74,7 @@ let
   discarded = b.filter (c: !c.used && c.node.listed) callRoots;
   usedCalls = b.filter (c: c.used) callRoots;
 
-  # --- 4. the three programs, compiled from .c and run --------------------
+  # --- 4. the programs, compiled from .c and run --------------------------
   ran = map
     (p:
       let
@@ -105,7 +105,7 @@ if b.length cases.corpus != cases.corpusCount then
     toString cases.corpusCount} it declares"
 else if b.length cases.programs != cases.programCount then
   fail "run/ holds ${toString (b.length cases.programs)} programs, against the ${
-    toString cases.programCount} it declares; criterion #4's \"three programs RUN\" is what this number IS"
+    toString cases.programCount} it declares; criterion #4's \"the programs RUN\" is what this number IS"
 else if unknownKinds != [ ] then
   fail "parse.nix names the token kind(s) ${b.concatStringsSep ", " unknownKinds}, which poc/02-lexer cannot produce; a kind the lexer does not emit is a case that never fires"
 else if undocumented != [ ] then

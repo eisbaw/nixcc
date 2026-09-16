@@ -27,8 +27,11 @@ The front half is closed too, for the integer subset. `just poc-parser`
 compiles C from `.c` — lexer, parser, DAG builder and IR listing, all in Nix —
 and diffs the result against lcc's own frontend byte for byte: node numbers,
 `#n` back-references, reference counts, storage classes, frame offsets and
-every line lcc prints on stderr. Three of those programs are then assembled and
-executed in the same evaluation, printing `55`, `21 55` and `22 57`.
+every line lcc prints on stderr. Five of those programs are then assembled and
+executed in the same evaluation, printing `55`, `21 55`, `22 57`, `3 21 15` and
+`1431655683 3 242` -- the last two being the bitwise and unsigned operators,
+which until TASK-051 compiled to correct IR and were then refused by the rule
+table.
 
 The honest limit: **`poc/05-loop`'s `hello.c` is not one of them.** It uses a
 global `char` array and a pointer parameter, which are slices 2 and 3
@@ -131,7 +134,7 @@ comparing nothing.
     just poc-assembler   # layout, labels, byte-for-byte diff against GNU as
     just poc-loop        # compile, assemble and RUN a C program in one nix eval
     just poc-constants   # C89 constant lexemes -> values, diffed against lcc
-    just poc-parser      # C -> lcc's IR, diffed node for node; three programs run
+    just poc-parser      # C -> lcc's IR, diffed node for node; five programs run
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
@@ -142,7 +145,7 @@ rule, labelling and emitted-code checks, the assembler's layout, label
 addresses and `lui`/`addi` expansions, and the closed loop — which compiles,
 assembles and executes the demo, and the fault programs beside it, during flake
 evaluation, and the parser — which compiles every corpus listing and runs the
-three programs it compiles from `.c`. Anything that times or mutates a subprocess — the throughput
+five programs it compiles from `.c`. Anything that times or mutates a subprocess — the throughput
 ladders, the differential against GNU as, the memory measurements, the mutation
 tests — lives in `just poc`.
 

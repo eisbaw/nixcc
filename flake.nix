@@ -196,7 +196,7 @@
 
         # The parser is pure as well: every corpus listing is produced, poc/03-
         # matcher's listing parser re-checks the numbering and the reference
-        # counts from the consumer's side, and the three programs of
+        # counts from the consumer's side, and the five programs of
         # criterion #4 are compiled from .c, assembled and RUN, all during
         # flake evaluation. What stays in run.sh is everything that needs a
         # subprocess -- the byte-for-byte differential against lcc's own
