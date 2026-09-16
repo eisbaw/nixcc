@@ -4,7 +4,7 @@ title: Minimal C preprocessor in Nix
 status: To Do
 assignee: []
 created_date: '2026-09-14 20:04'
-updated_date: '2026-09-16 03:36'
+updated_date: '2026-09-16 17:28'
 labels:
   - frontend
   - preprocessor
@@ -162,4 +162,15 @@ its own words: a floor can be spent downward in silence, and this project has
 watched it happen. task-054 raised the matcher's floors to the actual for the
 same reason, after review showed that slack in two of them let a whole corpus
 function be deleted with the suite green.
+
+ORCHESTRATOR: decomposed rather than left as one task.
+
+This bundled line splicing, include resolution, object-like macros, function-like macros with stringify and paste, six conditional directives, #if constant-expression evaluation, #line, linemarker emission AND a differential harness -- as a single task with no intermediate running state. That is the same under-projection COMPASS flagged: this project's discipline is vertical slices each ending in something that runs, and a monolith has no such boundary.
+
+Two gaps the original criteria did not cover, both found by checking rather than reading:
+- WHERE #include RESOLVES FROM. lcc ships five headers -- assert, float, limits, math, stdarg -- and no stdio, string or stdlib. Only the closed DECIDE task ever mentioned search paths. Now task-070.
+- PURITY. builtins.readFile can read an arbitrary path at eval time, but only under --impure, and the flake's checks do not set it. A preprocessor reading headers off the filesystem cannot run inside nix flake check, which is where the differential tests live. Also task-070.
+- STRINGIFY AND PASTE. Two passing mentions across the whole backlog and no acceptance criterion anywhere; the original AC#2 named only nested and recursive invocations. Now task-013.02, where the corner cases are spelled out.
+
+Children: 013.01 (object-like macros and conditionals -- needs no header decision, so it goes first), 013.02 (function-like macros, # and ##), 013.03 (#include). task-070 blocks the last two.
 <!-- SECTION:NOTES:END -->
