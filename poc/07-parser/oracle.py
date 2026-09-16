@@ -53,9 +53,9 @@ ORACLE = "rcc-rv32"
 # The FILE count is not here: cases.nix declares it (corpusCount plus
 # programCount) and oracle.nix hands it over, because a Python restatement of
 # a Nix number had already gone stale twice.
-FUNCTIONS = 58
-NODE_LINES = 1540
-BACKREFS = 1315
+FUNCTIONS = 59
+NODE_LINES = 1781
+BACKREFS = 1519
 # lcc diagnoses this corpus in several places -- an unsigned comparison whose
 # answer is constant, an expression with no effect, a shift by too many bits,
 # a linkage that changed between declarations, an escape sequence that is not

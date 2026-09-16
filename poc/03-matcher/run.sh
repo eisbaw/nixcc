@@ -89,6 +89,16 @@ print(r["reason"], r["exitCode"], r["steps"], r["insns"])' "$result")"
     echo "$name: the emulator stopped with reason '$reason', not a clean exit" >&2; exit 1; }
 
   # The host compiler, on the same .c, as an independent oracle.
+  #
+  # `-w' AND WHAT IT COSTS, since ir/ptr.c made it matter. The host is 64-bit
+  # and that file casts between `unsigned' and `char *' on purpose, so
+  # -Wint-to-pointer-cast and -Wpointer-to-int-cast fire on it -- and those
+  # are exactly the two that would have named the segfault its first draft
+  # caused. They cannot be turned into errors, because the casts are the thing
+  # under test; what makes them safe is a discipline the file states in its
+  # own header -- the round-tripped value is small and the pointer is never
+  # dereferenced -- and what enforces it is that this oracle is RUN and not
+  # merely compiled. Said here rather than left to be rediscovered.
   gcc -std=gnu89 -w -o "$work/host-$name" "$poc/drivers/$name.c" "$poc/ir/$name.c"
   host=$("$work/host-$name")
   want=$(nix eval --impure --raw --expr \
@@ -709,17 +719,56 @@ mutate "harness: a declaration claims the census's own \`reduced', which asserts
        "sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_indiri\"; status = \"reduced\"; why = \"padding the table with the one status that would be checked by nothing\"; }|' cases.nix" \
        "$matcher_check"
 
-# AND THE EDIT THE CENSUS ALONE CANNOT REFUSE, also from review. Take a corpus
-# FUNCTION away and declare the rules it reached: the census then reports a
-# smaller table of reduced rules and a larger table of excuses, and every
-# other floor in check.nix survives it -- ir/lbuf.c contributes no `emitted'
-# assertions by design (see the DO NOT TIDY note above), so neither the
-# assertion floor nor the instruction count moves when it goes. `minReduced'
-# is the floor that catches it, and this is the demonstration that it does.
+# AND THE EDIT NEITHER THE CENSUS NOR THE DECLARATIONS CAN REFUSE, from the
+# same review. Take a corpus FUNCTION away and declare the rules it reached:
+# the census then reports a smaller table of reduced rules and a larger table
+# of excuses, and every check that reads a TABLE survives it -- ir/lbuf.c
+# contributes no `emitted' assertions by design (see the DO NOT TIDY note
+# above), so neither the assertion floor nor the instruction count moves when
+# it goes. What catches it is the floors, and only because they now sit at the
+# actual: when `minFunctions' and `minNodes' each carried a little slack, this
+# exact edit passed the whole suite green. This is what says they no longer do,
+# and it is also why check.nix carries no floor on the reduced count -- the
+# note beside `minWhy' there says what took its place.
 mutate "harness: a corpus case is removed and the rules it reached are declared instead" \
-       "fewer than the 99 floor" \
+       "only 14 test functions, expected at least 15" \
        "sed -i '/{ name = \"lbuf\"; fn = \"pack\";/d' cases.nix
-        sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_addrlp\"; status = \"labelled\"; why = \"the corpus case that reached this row was removed, which is the edit minReduced exists for\"; }|' cases.nix" \
+        sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_addrlp\"; status = \"labelled\"; why = \"the corpus case that reached this row was removed, and declaring the loss is the edit this must not permit\"; }|' cases.nix" \
+       "$matcher_check"
+
+# --- the pointer rows (task-054) ---
+# Three of the six, each aimed at the check that is the only thing standing
+# behind that row. The fourth is with the semantic mutations further down,
+# because it is the one nothing here can see.
+#
+# SUBP4 is pointer minus INTEGER and `sub' is the whole of it, so turning it
+# into an add is a one-character edit that assembles, runs and answers wrong.
+# `lowerings' is what catches it, and does so before anything has to run.
+mutate "matcher: a pointer minus an integer becomes an addition" \
+       "SUBP4 must be lowered by rule \`reg_subp'" \
+       "sed -i '/reg_subp/ s@\"sub @\"add @' rules.nix" \
+       "$matcher_check"
+
+# The null pointer constant costs nothing because x0 reads as zero, and the
+# rule that says so competes with the wide materialisation. Take its predicate
+# out of range and `li %c,0' takes the node -- code that is CORRECT, so no
+# executed answer moves at all. The labelling expectation is what names it;
+# the emitted table would also go red, one instruction later in the chain,
+# because `sw zero,' is pinned there and the count goes up by one. Said that
+# way round after review: an earlier draft of this comment claimed `selections'
+# was the ONLY thing that saw it, and three checks do.
+mutate "matcher: the null pointer constant is materialised instead of read out of x0" \
+       "expected reg_zerop@0, got reg_cnstp_wide@2" \
+       "sed -i '/id = \"reg_zerop\"/ s@range = \[ 0 0 \]@range = [ 1 1 ]@' rules.nix" \
+       "$matcher_check"
+
+# Returning a POINTER is the same two instructions as returning an int, and
+# the first of them names the register the ABI returns in. `lowerings' cannot
+# see this one -- the template still starts with `mv' -- and neither can the
+# labelling expectation, because the same rule still wins at the same cost.
+mutate "matcher: a returned pointer is left in the wrong register" \
+       "is missing \`mv a0,s1'" \
+       "sed -i '/stmt_retp/ s@\"mv a0,%0@\"mv a1,%0@' rules.nix" \
        "$matcher_check"
 
 mutate "matcher: a bad rule table is accepted instead of refused" \
@@ -943,6 +992,55 @@ mutate "matcher: a frame symbol's displacement is not added to its slot" \
        "sed -i 's|toString (d.disp + (frame.slots|toString (0 * d.disp + (frame.slots|' emit.nix" \
        "$lbuf_semantic_run"
 
+# THE FOURTH ONE ONLY EXECUTION CAN SEE, and the pointer rows' own. Both
+# width-4 pointer conversions are `mv %c,%0', and the hazard rules.nix's
+# conversion block warns about is writing them as a move that goes nowhere.
+# Most of the moves in ir/ptr.s ALREADY have their destination and source in
+# the same register, because a one-kid node is reduced at the same depth as
+# its kid, so `mv %c,%c' changes only the ones that do not and leaves every
+# line count, every mnemonic and every rule choice exactly as it was.
+#
+# BOTH ROWS IN ONE MUTATION because the diagnosis is one thing and a returned
+# number would be the only way to tell two of these apart -- and each was
+# measured on its own first. With the corpus as it stands, reg_cvpu4_4 alone
+# returns 4294929692 and reg_cvup4_4 alone returns 101392, against 103398 --
+# and the two together return 101392, which is why one of them alone could
+# not be inferred from the pair.
+#
+# reg_cvup4_4 is the reason ir/ptr.c casts the same value back to a pointer
+# TWICE. With one use its node is not shared, the matcher does not hold it,
+# and `mv %c,%c' left ptr.s byte-identical -- the row was pinned by nothing
+# but the mnemonic in `lowerings'. Found in review, and measured both ways.
+ptr_want=$(nix eval --impure --raw --expr \
+  "let c = builtins.head (builtins.filter (e: e.file == \"ptr\")
+     (import $poc/cases.nix).execution); in toString c.expect")
+ptr_exec_check="bash $mut/build-and-run.sh $mut ptr $mut/pexec > $mut/pexec.json
+python3 -c \"
+import json, sys
+r = json.load(open(sys.argv[1]))
+if r['reason'] != 'exit':
+    sys.exit('ptr: the emulator stopped with reason %r instead of exiting'
+             % (r['reason'],))
+if r['exitCode'] != $ptr_want:
+    sys.exit('ptr: the emulator returned %s, but cases.nix expects $ptr_want'
+             % (r['exitCode'],))
+\" $mut/pexec.json"
+ptr_semantic_run="control=\$($matcher_check 2>&1 >/dev/null) || {
+  echo 'CONTROL LOST: check.nix no longer PASSES a width-4 conversion that'
+  echo 'moves its destination to itself. Either something now pins the'
+  echo 'registers those moves use -- in which case this mutation no longer'
+  echo 'demonstrates what only execution can see -- or check.nix is broken for'
+  echo 'a reason of its own. Its own diagnostic, which tells those apart:'
+  echo \"\$control\"
+  exit 9
+}
+$ptr_exec_check"
+
+mutate "matcher: the pointer conversions keep whatever was in the destination" \
+       "but cases.nix expects $ptr_want" \
+       "sed -i '/reg_cvpu4_4\|reg_cvup4_4/ s@mv %c,%0@mv %c,%c@' rules.nix" \
+       "$ptr_semantic_run"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -962,7 +1060,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=58
+declared=62
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

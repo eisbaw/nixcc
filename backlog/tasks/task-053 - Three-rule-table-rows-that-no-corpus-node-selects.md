@@ -1,10 +1,10 @@
 ---
 id: TASK-053
 title: Three rule-table rows that no corpus node selects
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-15 23:52'
-updated_date: '2026-09-16 02:25'
+updated_date: '2026-09-16 02:33'
 labels:
   - backend
   - rules

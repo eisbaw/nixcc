@@ -27,6 +27,7 @@
     { name = "bits"; fn = "mask"; what = "the bitwise and unary operators, each in both its register and its immediate form"; }
     { name = "unsig"; fn = "wide"; what = "the U-typed opcodes, on data whose top bit is set: the logical shift, the unsigned branches and the two libcalls with no signed counterpart"; }
     { name = "udiv"; fn = "wrap"; what = "an unsigned DIVISOR above 2^31, which is what the runtime routines' own comparison turns on"; }
+    { name = "ptr"; fn = "walk"; what = "the pointer opcodes: a null comparison, a pointer difference, the casts between a pointer and an unsigned, and a function that RETURNS a pointer"; }
   ];
 
   # Acceptance criterion 4 and 9: these opcodes must appear in the corpus DAGs
@@ -59,6 +60,11 @@
     # first signed `>>' and its first `<=' and `==', so the signed halves of
     # the pairs above are now selected somewhere rather than only described.
     "RSHI4" "GTI4" "NEI4"
+    # task-054: the pointer opcodes. ARGP4 has had a row since task-025 and no
+    # corpus case had ever selected it (task-053); the other five had no row at
+    # all, so `p == 0' compiled to IR that diffed clean against lcc and was
+    # then refused at instruction selection.
+    "CNSTP4" "CVUP4" "CVPU4" "SUBP4" "RETP4" "ARGP4"
   ];
 
   # WHICH INSTRUCTION EACH OPCODE LOWERS TO, and mostly the only place that
@@ -159,6 +165,24 @@
     { op = "LEU4"; rule = "stmt_leu4"; mnemonic = "bleu"; }
     { op = "LTU4"; rule = "stmt_ltu4"; mnemonic = "bltu"; }
     { op = "GEU4"; rule = "stmt_geu4"; mnemonic = "bgeu"; }
+
+    # --- task-054 ---------------------------------------------------------
+    # The pointer rows. The two width-4 conversions are `mv' for the reason
+    # CVUI4 and CVIU4 at width 4 are: a pointer and an unsigned int are the
+    # same 32 bits here, so the whole instruction is the move. CNSTP4's row
+    # names `li' and not the zero register: `reg_zerop' takes the null pointer
+    # constant at cost 0 and its template is a fragment with no mnemonic to
+    # name, so what this pins is the OTHER rule -- the one lcc's hexadecimal
+    # spelling of every non-null pointer constant forces.
+    #
+    # SUBP4 and RETP4 both have executed witnesses in ir/ptr.c, so these two
+    # rows are not the only thing standing behind them; they are here so that
+    # the block reads as the family it is.
+    { op = "SUBP4"; rule = "reg_subp"; mnemonic = "sub"; }
+    { op = "CVPU4"; rule = "reg_cvpu4_4"; mnemonic = "mv"; }
+    { op = "CVUP4"; rule = "reg_cvup4_4"; mnemonic = "mv"; }
+    { op = "CNSTP4"; rule = "reg_cnstp_wide"; mnemonic = "li"; }
+    { op = "RETP4"; rule = "stmt_retp"; mnemonic = "mv"; }
   ];
 
   # WHICH I-TYPED AND U-TYPED RULES MUST AGREE, AND WHICH MUST NOT (task-051).
@@ -279,7 +303,9 @@
   # reach being declared here instead. check.nix's `minReduced' floor is for
   # that, and it is the reason the floor exists rather than being derived.
   unexercisedRules = [
-    # THE THREE task-053 IS NAMED FOR.
+    # TWO OF THE THREE task-053 IS NAMED FOR. The third was `stmt_argp', a
+    # pointer argument, and task-054's ir/ptr.c reaches it -- which is what
+    # taking a row OUT of this table looks like.
     {
       rule = "reg_cnst_wide";
       status = "unreached";
@@ -308,24 +334,12 @@
         something else.
       '';
     }
-    {
-      rule = "stmt_argp";
-      status = "unreached";
-      why = ''
-        A pointer argument. No corpus case passes one: ir/argcall.c passes
-        ints, and ir/lbuf.c fills its local array itself rather than handing
-        it to anything. The one ARGP4-shaped file in ir/, argmul.c, is not a
-        corpus case at all -- it is a must-fail.nix control, a program the
-        matcher is required to REFUSE (task-017) -- so it censuses nothing.
-        Reachable C, and task-054's pointer case is where it gets reached.
-      '';
-    }
 
     # THE FIVE THE CENSUS FOUND ON TOP OF THEM. All five WIN a nonterminal at
     # some node -- they are the cheapest way to produce it there -- and none of
     # them is ever expanded, because nothing ever asks for that nonterminal at
     # that node. That is the distinction a labelling-only census would have
-    # missed, and it is why the three rows above are `unreached' and these are
+    # missed, and it is why the two rows above are `unreached' and these are
     # not. Filed as task-056.
     {
       rule = "reg_addrfp";
@@ -798,6 +812,41 @@
       what = "the quotient combined with the remainder is two libcalls and an xor, priced as such";
       file = "udiv"; forest = 0; node = "2"; nt = "reg"; rule = "reg_bxoru_reg"; cost = 25;
     }
+
+    # --- the pointer rows (task-054) --------------------------------------
+    # Each of the six rows task-054 added, named at the node the matcher picks
+    # it for. `lowerings' above says what each one EMITS; these say the
+    # matcher chooses it, which is the half a table describing a rule cannot
+    # state -- and task-053's census is what makes a row nobody selects a
+    # failure rather than a silence.
+    {
+      what = "the null pointer constant is the zero register, at no cost";
+      file = "ptr"; forest = 1; node = "12"; nt = "reg"; rule = "reg_zerop"; cost = 0;
+    }
+    {
+      what = "a non-null pointer constant, which lcc spells in hex, is materialised";
+      file = "ptr"; forest = 10; node = "51"; nt = "reg"; rule = "reg_cnstp_wide"; cost = 2;
+    }
+    {
+      what = "pointer minus INTEGER, which is a subtract and not a pointer difference";
+      file = "ptr"; forest = 1; node = "6"; nt = "reg"; rule = "reg_subp"; cost = 3;
+    }
+    {
+      what = "`p == 0' converts the pointer to an unsigned before comparing it";
+      file = "ptr"; forest = 4; node = "2"; nt = "reg"; rule = "reg_cvpu4_4"; cost = 2;
+    }
+    {
+      what = "an unsigned cast back to a pointer";
+      file = "ptr"; forest = 10; node = "13"; nt = "reg"; rule = "reg_cvup4_4"; cost = 3;
+    }
+    {
+      what = "a POINTER argument, which had a row since task-025 and no case that selected it";
+      file = "ptr"; forest = 10; node = "40"; nt = "stmt"; rule = "stmt_argp"; cost = 2;
+    }
+    {
+      what = "returning a pointer moves to a0 and jumps to the epilogue, exactly as returning an int does";
+      file = "ptr"; forest = 10; node = "62"; nt = "stmt"; rule = "stmt_retp"; cost = 5;
+    }
   ];
 
   # --- cost-driven choice (acceptance criterion 5) ------------------------
@@ -1104,6 +1153,32 @@
       instructions = 13;
       follows = [ ];
     }
+    {
+      file = "ptr";
+      # One line per pointer rule that HAS a mnemonic, plus the two halves of
+      # the return. `sw zero,' is reg_zerop: the null pointer constant reaches
+      # the store as the zero register rather than as an instruction, which is
+      # the one thing `lowerings' cannot say about it.
+      #
+      # `li s2,0x186a0' is lcc's HEXADECIMAL spelling of a non-null pointer
+      # constant surviving all the way to poc/04-assembler, which reads it and
+      # expands it to lui+addi. Nothing else in this corpus takes that path
+      # for a pointer.
+      present = [
+        "sw zero,-72(s0)"
+        "sub s2,s2,s11"
+        "li s2,0x186a0"
+        "mv a0,s9"
+        "mv a0,s1"
+        "j .Lwalk_epilogue"
+      ];
+      absent = [ "%" ];
+      # The count is the shape guard `present' cannot be: membership cannot
+      # see a rule that started emitting an extra move, and this file is full
+      # of width-4 conversions whose whole content is one.
+      instructions = 86;
+      follows = [ ];
+    }
   ];
 
   # --- execution (run.sh) --------------------------------------------------
@@ -1187,7 +1262,12 @@
       # Not a number anybody chose: the arguments were chosen (see
       # ir/unsig.c's header) so that each of the seven signed-for-unsigned
       # substitutions moves this answer, and then the host compiler and the
-      # emulator were asked what it is. Both say 3758096711.
+      # emulator were asked what it is. Both say 3123634320.
+      #
+      # They did not always: this note read 3758096711 until task-054, which
+      # contradicted the `expect' three lines above it and was checked by
+      # nothing -- a prose number beside a measured one, which is the kind
+      # this file keeps having to correct.
       why = "wide(0xfffffff0,9): unsigned division, remainder, both logical shifts and four unsigned branches over a dividend whose top bit is set -- every one of which the signed rule answers differently -- plus a wide hexadecimal constant, an unsigned zero and all four CALLU4 rows";
     }
     {
@@ -1198,6 +1278,21 @@
       # not covered there is the comparison INSIDE __udivsi3 and __umodsi3,
       # which only a divisor above 2^31 can reach.
       why = "wrap(0xfffffffe,0x80000001) = 1 ^ 0x7ffffffd = 0x7ffffffc; a signed compare inside the routines subtracts at every iteration instead of none, giving 0xffffffff ^ 0x7fffffff = 0x80000000 -- see ir/udiv.c for why the operator is `^' and not `+'";
+    }
+    {
+      file = "ptr";
+      expect = 103398;
+      # TWO INDEPENDENT ANSWERS ADDED, which is what stops one defect
+      # cancelling another: `hold' is the whole integer computation and the
+      # returned pointer carries only `n + 4', so the arithmetic cannot move
+      # the byte and the return cannot move `hold'.
+      #
+      # The three null tests DISAGREE -- z == 0 is true, p == 0 is false,
+      # q != 0 is true -- and they add 1000, 2000 and 300. A null comparison
+      # that is always false discriminates nothing, which is the pointer
+      # version of the mistake ir/unsig.c's divisor of 7 was; so is a pointer
+      # difference of zero, and `p - q' here is 2.
+      why = "walk(2): 2 + 1000 (z == 0) + 300 (q != 0) + 2 (p - q) + 2 (*q, i.e. tag[1]) + 22 (take(q,2) = tag[1]*10 + 2) + 2006 (the CVUP4 pointer, 1003, read back as an int TWICE) + 100000 (a non-null pointer constant), so hold = 103334; the returned tag+2+4 points at 64";
     }
   ];
 }

@@ -427,6 +427,15 @@ mutate "harness: the bit count in the expectation stops being computed" \
        "sed -i 's|^  bitCount = n: if n == 0|  bitCount = _: 99; unusedBitCount = n: if n == 0|' cases.nix" \
        "$check"
 
+# run/pointers.c's expectation walks the same alphabet the C does, in Nix, so
+# that "the pointer program is right" is two derivations agreeing rather than
+# one matching a string somebody read off a run. Stop the walk and the
+# expectation stops describing anything the C computes.
+mutate "harness: the pointer expectation stops walking the alphabet" \
+       "wanted \`xxxxxx919x" \
+       "sed -i 's|        ch = i: b.substring (umod (n + i) 5) 1 \"abcde\";|        ch = _: \"x\";|' cases.nix" \
+       "$check"
+
 mutate "harness: the unsigned expectation stops being computed" \
        "printed \`1431655683 3 242" \
        "sed -i 's|^  hashMix = x: b.bitAnd|  hashMix = _: 999; unusedHashMix = x: b.bitAnd|' cases.nix" \
@@ -460,7 +469,7 @@ mutate "harness: a corpus file stops being offered to the differential" \
 
 # Criterion #4 is "the programs RUN". Nothing asserted how many.
 mutate "harness: one of the running programs goes missing" \
-       "run/ holds 5 programs" \
+       "run/ holds 6 programs" \
        "mv run/gcd.c run/gcd.c.off" \
        "$check"
 
@@ -608,7 +617,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=56
+declared=57
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

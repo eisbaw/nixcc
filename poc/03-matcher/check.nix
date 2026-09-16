@@ -25,40 +25,56 @@ let
 
   # Floors, not targets. Raise them if the tables legitimately grow.
   #
+  # AND THEY SIT AT THE ACTUAL, not below it, which used not to be true of
+  # `minFunctions' and `minNodes' and is the reason review could delete a
+  # corpus FUNCTION and declare the rules it reached in `unexercisedRules'
+  # instead, with the whole suite still green: ir/lbuf.c carries no `emitted'
+  # assertions by design, so neither the assertion floor nor the instruction
+  # count moved when it went, and the two floors that should have caught it
+  # each had exactly enough slack to absorb it. A floor with slack in it is a
+  # floor that has already been half spent.
+  #
   # They live HERE, not beside the tables they guard in cases.nix, and that is
   # the point: a floor kept in the same file as its data is defeated by the
   # same one-file edit it exists to catch. An earlier version of this put the
   # last three in cases.nix and emptying every list AND zeroing every floor was
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
-  minFunctions = 13;
-  minSelections = 88;
+  minFunctions = 15;
+  minSelections = 95;
   minDuels = 5;
-  minRules = 107;
-  minNodes = 590;
-  minRequiredOps = 70;
+  minRules = 113;
+  minNodes = 758;
+  minRequiredOps = 76;
   minLibcalls = 6;
   minCallRules = 10;
-  minLowerings = 44;
+  minLowerings = 49;
   minForbidden = 6;
   minFollows = 2;
   minPairs = 29;
-  # How many of the rule table's rows the corpus must REDUCE. Not derived from
-  # the table's length: the point of this one is the edit that shrinks the
-  # CORPUS and legalises the loss in `unexercisedRules', which is a single
-  # change to cases.nix that every other floor here survives -- deleting the
-  # `lbuf' function takes no `emitted' assertions with it, because lbuf
-  # deliberately has none, so neither the assertion floor nor the instruction
-  # count moves. Demonstrated in review, not imagined.
-  minReduced = 99;
   # A declared reason shorter than this is not one. Here rather than beside
   # the table it guards, for the reason the block above says.
   minWhy = 40;
+  # THERE IS NO `minReduced', and the reason is not the obvious one. A floor on
+  # how many of the table's rows the corpus reduces was written and then taken
+  # out again, because no edit can reach it: `minFunctions' and `minNodes' now
+  # sit at the actual, so the erosion it was aimed at -- a corpus case removed
+  # and the rules it reached declared unexercised instead -- is refused three
+  # guards earlier, and a check nothing can make fail is not a check.
+  #
+  # What stands in its place is arithmetic rather than a floor. The census
+  # asserts that rules reduced plus rows declared equals rows in the table, and
+  # every declared row must name a rule that genuinely is not reduced and carry
+  # a reason. So the reduced count is not a free number: it can only fall by
+  # adding a row to `unexercisedRules', and that row is visible, checked, and
+  # has to be written by someone. A floor would add only "and not too many of
+  # them", which is a judgement about quantity that the two floors above make
+  # for it.
   # `totalAssertions' is derived from the `emitted' table rather than from a
   # list length, so it moves with the corpus rather than with one edit. It was
   # 20 while the actual was over a hundred, which is the kind of slack this
   # block exists to refuse.
-  minAssertions = 152;
+  minAssertions = 160;
 
   fault = msg: throw "HARNESS FAULT: ${msg}";
 
@@ -580,10 +596,6 @@ else if censusAccounted != b.length table.rules then
   fault "the census accounts for ${toString censusAccounted} rules against the ${
     toString (b.length table.rules)} in the table: ${toString reducedCount} reduced plus ${
     toString (b.length cases.unexercisedRules)} declared. A rule is declared twice, or a declaration names one the corpus already reduces"
-else if reducedCount < minReduced then
-  fault "the corpus reduces ${toString reducedCount} of the ${
-    toString (b.length table.rules)} rules in the table, fewer than the ${
-    toString minReduced} floor -- a corpus case taken away and the rules it reached declared unexercised instead passes every other check in this file"
 else
   "${toString (b.length cases.functions)} functions from real lcc output: ${
     toString totalNodes} DAG nodes labelled, ${toString (b.length cases.selections)} rule/cost expectations, ${

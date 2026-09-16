@@ -506,6 +506,9 @@ in
     #
     # CALLP4 and CALLD4 get no rows: nothing in the corpus produces either,
     # and neither has a `reg' rule to pair with, so both refuse (task-036).
+    # CALLP4 stayed that way through task-054, which gave the other pointer
+    # opcodes rows; the pointer block below says why, and task-057 is where
+    # its row goes.
     { id = "stmt_calli_direct"; nt = "stmt"; op = "CALLI4"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\n"; }
     { id = "stmt_calli_indirect"; nt = "stmt"; op = "CALLI4"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\n"; }
     { id = "stmt_argi"; nt = "stmt"; op = "ARGI4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
@@ -520,6 +523,71 @@ in
     { id = "stmt_callu_direct"; nt = "stmt"; op = "CALLU4"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\n"; }
     { id = "stmt_callu_indirect"; nt = "stmt"; op = "CALLU4"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\n"; }
     { id = "stmt_argu"; nt = "stmt"; op = "ARGU4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
+
+    # --- the pointer opcodes (task-054) -----------------------------------
+    # A POINTER IS FOUR BYTES AND SO IS AN UNSIGNED INT, so most of this block
+    # is the U-typed row with the letter changed and the interesting part is
+    # which C forms reach it. `p == 0' is not a pointer operation in the IR at
+    # all: lcc converts the pointer to an unsigned (CVPU4) and compares that
+    # against CNSTU4 0, so the comparison rows already existed and the
+    # CONVERSION did not, which is why the commonest null test in C compiled
+    # to correct IR and was refused at instruction selection (task-054).
+    #
+    # The two width-4 conversions are `mv' for exactly the reason CVUI4 and
+    # CVIU4 at width 4 are: the value is already right and the whole
+    # instruction is the move that keeps this node's value out of whatever
+    # register its kid was reduced into. `when = { srcSize = 4; }' on both,
+    # following the conversion block above -- a narrower source would be a
+    # loud refusal rather than a silent truncation, and nothing produces one.
+    #
+    # CNSTP4 comes in the same two forms CNSTU4 does, and for the same reason:
+    # lcc's sym.c prints a pointer constant with `%p', and that is lcc's OWN
+    # `%p' -- output.c's vfprint, not the C library's, which would write
+    # `(nil)' -- and it emits the `0x' only when the pointer is not null. So
+    # the null pointer constant arrives as `0' and `reg_zerop' puts it in the
+    # zero register, and every other pointer constant arrives as hex, which
+    # `emit.nix''s decimal-only `constValue' cannot read, so the range
+    # predicate never matches it and it goes through `reg_cnstp_wide' to
+    # poc/04-assembler's `parseInt'.
+    #
+    # THERE IS NO `con' ROW FOR CNSTP4, and the reason is narrower than it
+    # first looks. `n + (char *) 8' is ordinary C and lcc gives it as
+    # ADDP4(INDIRI4, CNSTP4 0x8) -- a CNSTP4 in exactly the slot `addr_addp'
+    # and `reg_addp_imm' want a `con' in -- so "a CNSTP4 is never asked for a
+    # `con'" is FALSE of reachable C. It is true of the corpus, which is what
+    # matters here: task-053's census refuses a row nothing selects, so the
+    # row cannot be added until something reaches it. And the row would not
+    # help if it were: a `con' row needs a `range' predicate, `range' reads
+    # `emit.nix''s decimal-only `constValue', and every non-null pointer
+    # constant is printed in hex, so it could never match. The right failure
+    # for `n + (char *) 8' today is the loud refusal it gets.
+    #
+    # CALLP4 STILL HAS NO ROW, deliberately and now for a reason worth
+    # writing down: nothing in the corpus calls a function that returns a
+    # pointer, and run.sh's mutation "a call rule is added to the table and
+    # forgotten everywhere else" adds a CALLP4 row precisely because there is
+    # none. RETP4 below is the other half of that pair -- DEFINING a
+    # pointer-returning function, which ir/ptr.c does and whose caller is
+    # hand-written assembly. What that costs is that no program under
+    # poc/07-parser/run/ can write `p = find(buf, c)', which is an ordinary
+    # shape; task-057 is where the row goes.
+    # `range = [ 0 0 ]' is doing real work at its LOWER end and none at its
+    # upper: without a predicate this row would take `CNSTP4 0x186a0' at cost
+    # 0 and put a non-null pointer in the zero register, and `constValue'
+    # cannot read a hex spelling, so the bound that stops that is "matches at
+    # all". Widening the range to [0 1] therefore changes nothing a corpus can
+    # see -- measured -- where the same edit to `reg_zerou' would be wrong,
+    # because lcc prints an unsigned 1 in decimal. Same three characters, two
+    # different meanings, and this is where that is written down.
+    { id = "reg_zerop"; nt = "reg"; op = "CNSTP4"; kids = [ ]; cost = 0; tmpl = "zero"; when = { range = [ 0 0 ]; }; }
+    { id = "reg_cnstp_wide"; nt = "reg"; op = "CNSTP4"; kids = [ ]; cost = 2; tmpl = "li %c,%a\n"; }
+    { id = "reg_cvpu4_4"; nt = "reg"; op = "CVPU4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %c,%0\n"; when = { srcSize = 4; }; }
+    { id = "reg_cvup4_4"; nt = "reg"; op = "CVUP4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %c,%0\n"; when = { srcSize = 4; }; }
+    # Pointer minus INTEGER, which is not the SUBU4 a pointer DIFFERENCE
+    # lowers to: `q - p' between two pointers is two CVPU4s and an unsigned
+    # subtract, and `p - n' is this.
+    { id = "reg_subp"; nt = "reg"; op = "SUBP4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "sub %c,%0,%1\n"; }
+    { id = "stmt_retp"; nt = "stmt"; op = "RETP4"; kids = [ "reg" ]; cost = 1; tmpl = "mv a0,%0\nj %E\n"; }
 
     # --- control flow -----------------------------------------------------
     { id = "stmt_reti"; nt = "stmt"; op = "RETI4"; kids = [ "reg" ]; cost = 1; tmpl = "mv a0,%0\nj %E\n"; }

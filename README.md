@@ -27,10 +27,13 @@ The front half is closed too, for the integer subset. `just poc-parser`
 compiles C from `.c` — lexer, parser, DAG builder and IR listing, all in Nix —
 and diffs the result against lcc's own frontend byte for byte: node numbers,
 `#n` back-references, reference counts, storage classes, frame offsets and
-every line lcc prints on stderr. Six of those programs are then assembled and
-executed in the same evaluation, printing `55`, `21 55`, `22 57`, `3 21 15`,
-`1431655683 3 242` and `ab-cd10` -- the last of which copies a string literal
-with a NUL in the middle of it, which is the byte a Nix string cannot hold
+every line lcc prints on stderr. Seven of those programs are then assembled
+and executed in the same evaluation, printing `55`, `21 55`, `22 57`,
+`3 21 15`, `1431655683 3 242`, `deabcd419d` and `ab-cd10`. `pointers.c`
+searches a buffer with a pointer and tests the result against zero -- the
+commonest form in C and, until task-054, one that compiled to correct IR and
+could not be lowered. `strings.c` copies a string literal with a NUL in the
+middle of it, which is the byte a Nix string cannot hold
 (`backlog/decisions/decision-001`) and the reason a decoded literal is a byte
 list from the lexer to the `.data`.
 
@@ -142,7 +145,7 @@ comparing nothing.
     just poc-assembler   # layout, labels, byte-for-byte diff against GNU as
     just poc-loop        # compile, assemble and RUN a C program in one nix eval
     just poc-constants   # C89 constant lexemes -> values, diffed against lcc
-    just poc-parser      # C -> lcc's IR, diffed node for node; five programs run
+    just poc-parser      # C -> lcc's IR, diffed node for node; seven programs run
     just ir foo.c        # dump lcc's reference IR for a C file
     just lint            # statix, deadnix, shellcheck
     just sources         # print the pinned lcc / tinycc / nix-riscv paths
@@ -153,9 +156,9 @@ rule, labelling and emitted-code checks, the assembler's layout, label
 addresses and `lui`/`addi` expansions, and the closed loop — which compiles,
 assembles and executes the demo, and the fault programs beside it, during flake
 evaluation, and the parser — which compiles every corpus listing and runs the
-five programs it compiles from `.c`. Anything that times or mutates a subprocess — the throughput
-ladders, the differential against GNU as, the memory measurements, the mutation
-tests — lives in `just poc`.
+seven programs it compiles from `.c`. Anything that times or mutates a
+subprocess — the throughput ladders, the differential against GNU as, the
+memory measurements, the mutation tests — lives in `just poc`.
 
 ## Layout
 

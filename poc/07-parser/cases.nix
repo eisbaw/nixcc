@@ -63,7 +63,7 @@ rec {
   # programs RUN" a claim the suite checks rather than one it states: without
   # it, deleting a program leaves every stage green.
   #
-  # It was three, then five, and is six. bits.c and unsig.c were written for
+  # Seven, up from six. bits.c and unsig.c were written for
   # slice 1 and dropped from it, because poc/03-matcher/rules.nix had no rule for `&',
   # `|', `^', `~', unary `-' or any U-typed opcode and refused them at
   # instruction selection -- loudly, by name, which was the right failure and
@@ -78,11 +78,11 @@ rec {
   # other's lcc output. oracle.py says so in its own words now -- that guard
   # was there and unreachable, because the file count it sits behind fell over
   # first and reported an arithmetic problem.
-  args = { bits = 10; gcd = 10; primes = 10; strings = 10; sumto = 10; unsigned = 10; };
+  args = { bits = 10; gcd = 10; pointers = 13; primes = 10; strings = 10; sumto = 10; unsigned = 10; };
   programs = map (n: { name = n; arg = args.${n} or (throw
     "cases: run/${n}.c has no argument in `args'; add one rather than letting it default"); })
     programNames;
-  programCount = 6;
+  programCount = 7;
 
   # --- the expected output, derived --------------------------------------
   # A second implementation of what each program computes. Written in Nix over
@@ -153,6 +153,25 @@ rec {
     strings = "${b.concatStringsSep "-" [ "ab" "cd" ]}${toString twoDigitArg}\n";
     primes = "${toString (countPrimes (args.primes * 8))} ${
       toString (countPrimes args.primes * 100 / 7)}\n";
+    # run/pointers.c, worked out here rather than copied from it. `ch' is the
+    # same alphabet walk the C does, `hit' the same search over it, and `miss'
+    # is DERIVED from the same list rather than written as 1 -- the C prints 1
+    # when its second search finds nothing, and this agrees only if `z' really
+    # is not in the alphabet the first six characters come from.
+    #
+    # The last character is what the C reads back through the pointer it
+    # subtracted `len' from, so it is the first character again -- and it moves
+    # if that subtraction lands one element out.
+    pointers =
+      let
+        n = args.pointers;
+        ch = i: b.substring (umod (n + i) 5) 1 "abcde";
+        text = b.concatStringsSep "" (b.genList ch 6);
+        at = c: b.filter (i: ch i == c) (b.genList (i: i) 6);
+        hit = if at "c" == [ ] then 9 else b.head (at "c");
+        miss = if at "z" == [ ] then 1 else 0;
+      in
+      "${text}${toString hit}${toString miss}${toString (umod (6 + n) 10)}${ch 0}\n";
   };
 
   # run/strings.c spells the argument as two digits -- `n / 10' and `n % 10'
@@ -179,16 +198,26 @@ rec {
   # is ADDED to and SUBTRACTED from (ADDP4, SUBU4, CVPU4), a byte that is
   # loaded, converted and stored (INDIRI1, CVII1, CVII4, CNSTI1, ASGNI1), a
   # pointer that is assigned, loaded, passed and returned (ASGNP4, INDIRP4,
-  # ARGP4, RETP4), and a wide literal's halfword (INDIRU2). The null pointer
-  # constant brings four more: CNSTP4, CVUP4 and the two unsigned equality
-  # comparisons a pointer test lowers to.
+  # ARGP4, RETP4), and a wide literal's halfword (INDIRU2). Testing a pointer
+  # brings three more: CNSTP4 for the null pointer constant itself, and CVPU4
+  # plus an unsigned equality comparison for the test, because lcc does not
+  # compare pointers -- it converts to unsigned and compares that. CVUP4 is
+  # the other direction and comes from an explicit cast back to a pointer, not
+  # from the null test; this comment said CVUP4 where it meant CVPU4 until
+  # task-054 checked it against ir/ptr.sym.
   #
-  # FIVE OF THESE HAVE NO ROW IN poc/03-matcher/rules.nix -- CNSTP4, CVUP4,
-  # CVPU4, SUBP4 and RETP4 -- and that is task-054. They diff clean against lcc
-  # and would be refused at instruction selection, loudly and by name, which is
-  # why no program under run/ compares a pointer against zero, subtracts two
-  # pointers or returns one. This list is a claim about the FRONTEND; it is not
-  # a claim that the backend can lower what the frontend emits.
+  # FIVE OF THESE ONCE HAD NO ROW IN poc/03-matcher/rules.nix -- CNSTP4,
+  # CVUP4, CVPU4, SUBP4 and RETP4 -- so they diffed clean against lcc and were
+  # then refused at instruction selection, loudly and by name, and no program
+  # under run/ could compare a pointer against zero. task-054 added the rows
+  # and run/pointers.c is what says so from the C end.
+  #
+  # The distinction that made that possible is still true and still worth
+  # keeping: this list is a claim about the FRONTEND, and it is not a claim
+  # that the backend can lower what the frontend emits. CALLP4 is where the two
+  # part company today -- calling a function that returns a pointer has no row,
+  # deliberately (poc/03-matcher/rules.nix says why), which is why
+  # run/pointers.c reaches RETP4 through no call of its own.
   opcodes = [
     "ADDI4"
     "ADDP4"
