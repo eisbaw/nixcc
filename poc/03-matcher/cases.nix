@@ -236,6 +236,159 @@
   # Mnemonics no rule may emit, because this target does not have them.
   forbiddenMnemonics = [ "mul " "mulh" "div " "divu" "rem " "remu" ];
 
+  # --- the rules the corpus does NOT exercise (task-053) ------------------
+  # `lowerings', `libcalls' and `pairs' above all name a rule and assert
+  # something about ITS TEMPLATE. None of them asserts that the matcher ever
+  # CHOOSES that rule, so a row nothing selects is pinned by a table that
+  # describes it and by nothing else. task-051 shipped five U-typed rows in
+  # exactly that state -- `reg_rshu_reg' among them, where `sra' for `srl' is
+  # the defect that whole slice existed to prevent -- and two reviewers found
+  # it after the fact.
+  #
+  # check.nix's census is the answer: it walks the corpus and works out, for
+  # every rule in the table, the strongest thing that happens to it. A rule
+  # that is not REDUCED has to appear here, with the status it does reach and
+  # why that is acceptable; anything else is a named failure.
+  #
+  #   reduced    some of its template's text reached the emitted assembly --
+  #              or, for a template with no text of its own, taking the row
+  #              out of the table changes what the corpus compiles to. The
+  #              only status that needs no entry here, and one a row here may
+  #              NOT claim.
+  #   labelled   it won a nonterminal at some node -- it was the cheapest way
+  #              to produce that nonterminal there -- and the reduction never
+  #              asked for it, so no text of its ever came out.
+  #   unreached  it won a nonterminal nowhere. That is NOT the same as "no
+  #              node it could match": most of the rows below are candidates
+  #              at plenty of nodes and lose on cost at every one of them.
+  #
+  # WHAT STOPS THIS TABLE BECOMING A SILENCER, said carefully because the
+  # first version of this comment claimed more than the code did and review
+  # demonstrated the hole. Three things, and none of them is a length floor:
+  #
+  #   * a row whose rule is in a DIFFERENT state from the one declared fails,
+  #     so a row cannot be added for a rule the corpus reduces;
+  #   * `reduced' is not a status a row may declare, which was the one-line
+  #     way round the previous point;
+  #   * the census checks the arithmetic -- rules reduced plus rows declared
+  #     must equal rules in the table -- which also catches a rule declared
+  #     twice, where Nix's `listToAttrs' would otherwise keep the first row
+  #     and ignore the second in silence.
+  #
+  # What none of that catches is the CORPUS shrinking and the rules it used to
+  # reach being declared here instead. check.nix's `minReduced' floor is for
+  # that, and it is the reason the floor exists rather than being derived.
+  unexercisedRules = [
+    # THE THREE task-053 IS NAMED FOR.
+    {
+      rule = "reg_cnst_wide";
+      status = "unreached";
+      why = ''
+        A signed constant too wide for the 12-bit immediate field. Every CNSTI4
+        in the corpus is small enough for `con_cnst', which with the `reg: con'
+        chain is cheaper, so this row never wins the `reg' nonterminal
+        anywhere. Its unsigned twin `reg_cnstu_wide' IS reduced -- ir/unsig.c's
+        data has bit 31 set -- so the template is the one thing about this row
+        that has a witness. Reachable C; filed as task-055.
+      '';
+    }
+    {
+      rule = "stmt_callv_indirect";
+      status = "unreached";
+      why = ''
+        A void call through a function pointer -- a candidate wherever CALLV
+        appears, since `reg_from_acon' can produce its kid, and dearer than
+        `stmt_callv_direct' at the one CALLV the corpus has. DELIBERATE, and
+        the one entry
+        here that must stay: run.sh's mutation "a call rule's emitted text
+        stops looking like a call" is aimed at this row PRECISELY BECAUSE
+        nothing else covers it, so that it demonstrates the derived
+        callMarkers check rather than the emitted-assembly check. Put a void
+        indirect call in the corpus and that mutation silently starts proving
+        something else.
+      '';
+    }
+    {
+      rule = "stmt_argp";
+      status = "unreached";
+      why = ''
+        A pointer argument. No corpus case passes one: ir/argcall.c passes
+        ints, and ir/lbuf.c fills its local array itself rather than handing
+        it to anything. The one ARGP4-shaped file in ir/, argmul.c, is not a
+        corpus case at all -- it is a must-fail.nix control, a program the
+        matcher is required to REFUSE (task-017) -- so it censuses nothing.
+        Reachable C, and task-054's pointer case is where it gets reached.
+      '';
+    }
+
+    # THE FIVE THE CENSUS FOUND ON TOP OF THEM. All five WIN a nonterminal at
+    # some node -- they are the cheapest way to produce it there -- and none of
+    # them is ever expanded, because nothing ever asks for that nonterminal at
+    # that node. That is the distinction a labelling-only census would have
+    # missed, and it is why the three rows above are `unreached' and these are
+    # not. Filed as task-056.
+    {
+      rule = "reg_addrfp";
+      status = "labelled";
+      why = ''
+        Taking the ADDRESS of an incoming parameter. Every ADDRFP4 in the
+        corpus is under a load or a store, where `addr_addrfp' folds it into
+        the displacement for nothing, so the `reg' form is labelled at those
+        same nodes and never asked for. Its local twin `reg_addrlp' IS
+        reduced -- ir/lbuf.c takes the address of a local array.
+      '';
+    }
+    {
+      rule = "stmt_from_reg";
+      status = "labelled";
+      why = ''
+        `stmt: reg', lcc's "evaluate it and drop it". THE ONE ROW HERE THE
+        MARKER CANNOT SPEAK FOR: its template is empty, so expanding it emits
+        nothing and no marker of its can reach the body. The census settles it
+        by ablation instead, and the answer is not the charitable one -- with
+        this row taken out of the table all fourteen corpus functions emit
+        BYTE-IDENTICAL assembly, so nothing here needs it at all. Every
+        discarded value in the corpus is a call, and task-025's
+        `stmt_calli_direct'/`stmt_callu_direct' rows take those.
+      '';
+    }
+    {
+      rule = "addr_addi";
+      status = "labelled";
+      why = ''
+        reg+const as an addressing mode, on the INTEGER add. lcc types address
+        arithmetic as ADDP4, so every folded displacement in the corpus goes
+        through `addr_addp'; the ADDI4 nodes that exist are arithmetic, this
+        row wins `addr' at the ones whose kids fit it, and no load or store in
+        the corpus ever asks for an `addr' there. cases.nix's duel on
+        `addr_addp' is what proves the folding happens at all.
+      '';
+    }
+    {
+      rule = "reg_addp_imm";
+      status = "labelled";
+      why = ''
+        Pointer + constant materialised into a register. Every one in the
+        corpus is under a load or a store and folds into the displacement
+        instead, at cost 0 against this row's 1. The register form
+        `reg_addp_reg' IS reduced.
+      '';
+    }
+    {
+      rule = "reg_calli_indirect";
+      status = "labelled";
+      why = ''
+        An int-returning call through a function pointer. `reg_calli_direct'
+        is cheaper at every CALLI4 in the corpus, which is not an accident:
+        cases.nix's duel on that pair RAISES the direct row's cost, watches
+        this one take the node, and checks `jalr' appears in the body it then
+        emits. So this row's template has a witness -- under a perturbed cost
+        table, which is weaker than the corpus selecting it, and is why it is
+        declared here rather than counted as reduced.
+      '';
+    }
+  ];
+
   # --- labelling (acceptance criterion 2) --------------------------------
   selections = [
     {

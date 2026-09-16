@@ -43,6 +43,17 @@ let
   minForbidden = 6;
   minFollows = 2;
   minPairs = 29;
+  # How many of the rule table's rows the corpus must REDUCE. Not derived from
+  # the table's length: the point of this one is the edit that shrinks the
+  # CORPUS and legalises the loss in `unexercisedRules', which is a single
+  # change to cases.nix that every other floor here survives -- deleting the
+  # `lbuf' function takes no `emitted' assertions with it, because lbuf
+  # deliberately has none, so neither the assertion floor nor the instruction
+  # count moves. Demonstrated in review, not imagined.
+  minReduced = 99;
+  # A declared reason shorter than this is not one. Here rather than beside
+  # the table it guards, for the reason the block above says.
+  minWhy = 40;
   # `totalAssertions' is derived from the `emitted' table rather than from a
   # list length, so it moves with the corpus rather than with one edit. It was
   # 20 while the actual was over a hundred, which is the kind of slack this
@@ -283,6 +294,134 @@ let
     else "${r.file}: the matcher emitted ${toString r.got} instructions where ${
       toString r.instructions} are expected, so it is producing different code and not just different registers";
 
+  # --- the rule census (task-053) ------------------------------------------
+  # WHICH ROWS OF THE RULE TABLE THE CORPUS ACTUALLY REACHES, computed here
+  # rather than worked out by a reader.
+  #
+  # Everything above that names a rule -- `lowerings', `libcalls', `pairs' --
+  # asserts something about that rule's TEMPLATE and nothing about whether the
+  # matcher ever picks it. So a row the corpus cannot reach is pinned by a
+  # table describing it and by nothing else, which is how task-051 shipped
+  # five U-typed rows including `reg_rshu_reg', where `sra' for `srl' is the
+  # defect that slice existed to prevent. This is the check that would have
+  # said so.
+  #
+  # REDUCED, NOT MERELY LABELLED, and the difference is the whole value. The
+  # labeller computes every nonterminal at every node whether or not the
+  # reduction ever asks for one, so a rule can win a nonterminal nothing ever
+  # asks for: `addr_addi' wins `addr' at the ADDI4 nodes whose kids fit it and
+  # is never expanded into a single byte of assembly, because lcc types
+  # address arithmetic as ADDP4 and no load or store in the corpus has an
+  # ADDI4 under it. A labelling census calls that row covered; this one does
+  # not.
+  #
+  # HOW, and it is two methods rather than one, because neither answers alone.
+  #
+  #   THE MARKER. The corpus is compiled a second time against a table whose
+  #   every template carries its own rule id in front of it. A marker reaching
+  #   the emitted body means that template was expanded there -- through a
+  #   parent's `%0' for a fragment, on its own line for an instruction. One
+  #   extra compile for the whole table rather than one per rule, and it
+  #   cannot report a rule reduced that was not: a marker is emitted only by
+  #   expanding the rule it belongs to, and `contains' escapes its needle, so
+  #   one id cannot match another.
+  #
+  #   THE ABLATION, for every rule the marker did not find. burg.nix DISCARDS
+  #   the result text of a root reduced to the start nonterminal, so a rule
+  #   whose template is a fragment in statement position can be reduced and
+  #   leave no marker anywhere: the marker can say "reduced" and cannot say
+  #   "not reduced". When it is silent the row is taken OUT of the table and
+  #   the corpus compiled again -- assembly identical to the real table's
+  #   means nothing needed it. A throw counts as reduced, because burg.nix
+  #   refuses only when the reduction actually asks for something no rule can
+  #   produce.
+  #
+  # The ablation runs once per rule the marker missed, which is the number of
+  # rows `unexercisedRules' declares, and only on a run where every other
+  # check has already passed -- Nix's laziness puts the whole census behind
+  # the verdict chain. An earlier version decided this by SHAPE instead
+  # ("a fragment whose nonterminal is the start symbol"), which duplicated a
+  # predicate private to burg.nix and produced a status no evidence could
+  # contradict: it declared `stmt_from_reg' reduced but invisible, where the
+  # ablation says the corpus emits byte-identical assembly without it.
+  censusMark = id: "<census:${id}>";
+  markedTable = table // {
+    rules = map (r: r // { tmpl = censusMark r.id + r.tmpl; }) table.rules;
+  };
+  markedBody = b.concatStringsSep "\n"
+    (b.concatMap (c: (emitWith markedTable c.name).bodyLines) cases.functions);
+  # burg.nix decides "this emits a call" by matching the table's own
+  # callMarkers against the EMITTED TEXT, and that match is unanchored, so
+  # gluing a marker to the front of a template cannot remove a hit -- but it
+  # could ADD one, if a rule id ended in `call' and its template began with a
+  # space. No rule does. This is what says so, rather than leaving it to how
+  # the ids happen to be spelled: a marked table that calls something the real
+  # one does not is a census of a different program.
+  markerMakesCall = b.filter
+    (r: b.any (m: contains m (censusMark r.id + r.tmpl) && !(contains m r.tmpl))
+      table.callMarkers)
+    table.rules;
+
+  baseAsm = map (c: compiled.${c.name}.asm) cases.functions;
+  reducedWithout = id:
+    let
+      without = table // { rules = b.filter (r: r.id != id) table.rules; };
+      probe = b.tryEval (let a = map (c: (emitWith without c.name).asm) cases.functions;
+                         in b.deepSeq a a);
+    in
+    !probe.success || probe.value != baseAsm;
+
+  labelledIds = b.listToAttrs (map (id: { name = id; value = true; })
+    (b.concatMap
+      (c:
+        let comp = compiled.${c.name}; in
+        b.concatLists (b.genList
+          (i:
+            let labels = labelsOf comp i; in
+            b.concatMap
+              (nid: map (nt: labels.${nid}.${nt}.rule.id) (b.attrNames labels.${nid}))
+              (b.attrNames labels))
+          (b.length comp.fn.forests)))
+      cases.functions));
+
+  censusStatus = r:
+    if contains (censusMark r.id) markedBody || reducedWithout r.id then "reduced"
+    else if labelledIds ? ${r.id} then "labelled"
+    else "unreached";
+
+  # `reduced' is NOT among these. It is a status the census hands out and not
+  # one a declaration may claim: a row saying `reduced' would agree with the
+  # rule's real state, so the staleness check below would stay silent, and the
+  # undeclared check never looks at reduced rules -- which is a one-line way
+  # to add a row that asserts nothing. Found in review, after the comment here
+  # had said the table could not be padded.
+  declarableStatuses = [ "labelled" "unreached" ];
+  census = map (r: { inherit (r) id; status = censusStatus r; }) table.rules;
+  reducedCount = b.length (b.filter (c: c.status == "reduced") census);
+
+  declared = b.listToAttrs (map (d: { name = d.rule; value = d; }) cases.unexercisedRules);
+  censusUnknown = b.filter (d: !(ruleById ? ${d.rule})) cases.unexercisedRules;
+  censusBadStatus = b.filter (d: !(b.elem d.status declarableStatuses)) cases.unexercisedRules;
+  # A reason has to BE one. An empty string satisfies "named in a list with
+  # the reason written down" while saying nothing, and this table is the only
+  # place the corpus's gaps are explained.
+  censusNoWhy = b.filter (d: b.stringLength d.why < minWhy) cases.unexercisedRules;
+  # Undeclared: the census found a row nothing in the corpus reduces and
+  # cases.nix does not say why.
+  censusUndeclared = b.filter (c: c.status != "reduced" && !(declared ? ${c.id})) census;
+  # Rotted the other way: the row is in a different state from the one its
+  # reason describes.
+  censusStale = b.filter
+    (c: declared ? ${c.id} && declared.${c.id}.status != c.status)
+    census;
+  # AND THE ARITHMETIC, which is what makes "every rule is accounted for" a
+  # claim rather than a hope. `listToAttrs' keeps the FIRST entry for a
+  # repeated name, so a second row naming an already-declared rule is
+  # otherwise ignored in silence -- it sits in the file explaining something
+  # while a different row governs. Counting both sides catches that, and
+  # catches the summary line below quoting a total nothing ever added up.
+  censusAccounted = reducedCount + b.length cases.unexercisedRules;
+
   # --- registers ----------------------------------------------------------
   # Every callee-saved register the body touches must be one the EMITTED
   # prologue saves and the EMITTED epilogue restores. Reading the intended save
@@ -356,6 +495,15 @@ else if badRelation != [ ] then
   fault "cases.nix's pairing table says `${(b.head badRelation).relation}', which is neither `same' nor `different'; an unknown relation would be checked by nothing"
 else if pairMissing != [ ] then
   fault "cases.nix's pairing table names rule `${(b.head pairMissing).missing}', which is not in the table"
+else if markerMakesCall != [ ] then
+  fault "the census marker in front of rule `${(b.head markerMakesCall).id}' spells one of the table's callMarkers, so the marked table burg.nix reads call-ness off is not the program the real table describes"
+else if censusUnknown != [ ] then
+  fault "cases.nix's unexercised-rule table names rule `${(b.head censusUnknown).rule}', which is not in the table"
+else if censusBadStatus != [ ] then
+  fault "cases.nix's unexercised-rule table gives `${(b.head censusBadStatus).rule}' the status `${
+    (b.head censusBadStatus).status}', which is not one of ${b.concatStringsSep ", " declarableStatuses}. `reduced' is deliberately not among them: a row claiming it would agree with the rule's real state and so be checked by nothing"
+else if censusNoWhy != [ ] then
+  fault "cases.nix declares rule `${(b.head censusNoWhy).rule}' unexercised without writing down why -- that table is the only place the corpus's gaps are explained, so an empty reason is a silence with a row in front of it"
 else if totalFollows < minFollows then
   fault "only ${toString totalFollows} after-a-label assertions, fewer than the ${
     toString minFollows} floor -- those are what pin that a register is not assumed live across a branch target"
@@ -410,6 +558,32 @@ else if totalInstructions == 0 then
 else if totalAssertions < minAssertions then
   fault "only ${toString totalAssertions} emitted-assembly assertions in total, against the ${
     toString minAssertions} floor; the `present'/`absent' lists look emptied"
+# --- the census (task-053) ----------------------------------------------
+# LAST, and behind the corpus assumptions rather than in front of them. Several
+# of the checks above fail by making a rule stop being selected -- pricing an
+# addressing mode out of the fold, dropping a conversion's width predicate,
+# adding a call rule the markers do not recognise -- and each of those has a
+# diagnosis that says what went wrong rather than merely that something is now
+# unreached. So does `opMissing': a corpus case that went missing makes rules
+# stop being reduced, and "a rule stopped being reduced" is the symptom where
+# the missing opcode is the cause. This catches what none of them has anything
+# to say about -- a row no corpus case can reach at all.
+else if censusUndeclared != [ ] then
+  throw "matcher: rule `${(b.head censusUndeclared).id}' is ${
+    (b.head censusUndeclared).status} -- no case in the corpus reduces it, so its template is asserted by nothing but the tables that name it (task-053). Affected: ${
+    b.concatStringsSep ", " (map (c: "${c.id} (${c.status})") censusUndeclared)}. Reach it from ir/, or declare it in cases.nix's `unexercisedRules' with the reason"
+else if censusStale != [ ] then
+  throw "matcher: cases.nix declares rule `${(b.head censusStale).id}' ${
+    declared.${(b.head censusStale).id}.status}, and the corpus now makes it ${
+    (b.head censusStale).status} -- the declaration is stale, so either the row moved or the reason written beside it has stopped being true (task-053)"
+else if censusAccounted != b.length table.rules then
+  fault "the census accounts for ${toString censusAccounted} rules against the ${
+    toString (b.length table.rules)} in the table: ${toString reducedCount} reduced plus ${
+    toString (b.length cases.unexercisedRules)} declared. A rule is declared twice, or a declaration names one the corpus already reduces"
+else if reducedCount < minReduced then
+  fault "the corpus reduces ${toString reducedCount} of the ${
+    toString (b.length table.rules)} rules in the table, fewer than the ${
+    toString minReduced} floor -- a corpus case taken away and the rules it reached declared unexercised instead passes every other check in this file"
 else
   "${toString (b.length cases.functions)} functions from real lcc output: ${
     toString totalNodes} DAG nodes labelled, ${toString (b.length cases.selections)} rule/cost expectations, ${
@@ -417,4 +591,6 @@ else
     toString totalAssertions} assertions over ${toString totalInstructions} emitted instructions, ${
     toString (b.length cases.requiredOps)} required opcodes matched, ${
     toString (b.length (b.attrNames opsSeen))} distinct opcodes seen, ${
-    toString (b.length cases.pairs)} signed/unsigned rule pairs checked for drift\n"
+    toString (b.length cases.pairs)} signed/unsigned rule pairs checked for drift, ${
+    toString reducedCount} of ${toString (b.length table.rules)} rules reduced by the corpus and the other ${
+    toString (b.length cases.unexercisedRules)} declared with a reason\n"

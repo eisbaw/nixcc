@@ -483,6 +483,11 @@ mutate "matcher: a fragment rule may hand its users the register its kid used" \
 # switched off the same mutation passes clean. Mutating a rule the corpus
 # exercises would have been caught by the emitted-assembly check instead, and
 # would have proved nothing about this guard.
+#
+# That is now WRITTEN DOWN where it can be acted on rather than only here:
+# cases.nix's `unexercisedRules' declares this row unreached and says this
+# mutation is why it must stay so. Reaching it from ir/ would leave the
+# mutation green and quietly proving something else (task-053 criterion #3).
 mutate "matcher: a call rule's emitted text stops looking like a call" \
        "rule \`stmt_callv_indirect' is a rule for CALLV" \
        "sed -i '/stmt_callv_indirect/ s@\"jalr %0@\"jr %0@' rules.nix" \
@@ -653,6 +658,68 @@ mutate "harness: the no-multiplier table is emptied" \
 mutate "harness: the after-a-label assertions are emptied" \
        "after-a-label assertions, fewer than the" \
        "sed -i 's|follows = \[ { label|follows = [ ]; unusedFollows = [ { label|' cases.nix" \
+       "$matcher_check"
+
+# --- the rule census (task-053) ---
+# THE DEFECT THIS EXISTS FOR, written as the mistake somebody would actually
+# make. rules.nix's conversion block says in so many words which cells of the
+# table are missing and that CVUU4 is one of them, so filling it in is an
+# invitation the file extends; nothing in the corpus produces a CVUU4, so the
+# row lands asserted by nothing at all. Every other check in the suite passes
+# it clean -- it wins no node, changes no emitted line, and its template is
+# named by no lowering table -- which is precisely the state task-051 left five
+# U-typed rows in, `reg_rshu_reg' among them.
+#
+# `mv' rather than a wrong instruction on purpose: the point is that the row is
+# UNREACHED, not that its text is wrong, and a wrong mnemonic here would leave
+# a reader thinking some other check might have caught it.
+mutate "matcher: a rule is added to the table that no corpus case can reach" \
+       "rule \`reg_cvuu4' is unreached" \
+       "sed -i '/id = \"reg_cvuu2\"/a\\    { id = \"reg_cvuu4\"; nt = \"reg\"; op = \"CVUU4\"; kids = [ \"reg\" ]; cost = 1; tmpl = \"mv %c,%0\\n\"; }' rules.nix" \
+       "$matcher_check"
+
+# The declarations are load-bearing in every direction an author could push
+# them, and these four are what say so. No count appears in any fragment: the
+# number of declared rows is exactly the thing that moves when the table
+# legitimately grows.
+#
+# Emptying the table makes the census STRICTER rather than weaker, so it needs
+# no length floor: the rows the corpus does not reach become named failures.
+mutate "harness: the unexercised-rule declarations are emptied" \
+       "rule \`reg_cnst_wide' is unreached" \
+       "sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ ]; unusedUnexercised = [|' cases.nix" \
+       "$matcher_check"
+
+# ...and the other direction is the one that keeps the table from becoming a
+# silencer: a row for a rule the corpus DOES reduce is how an author would
+# quiet the census without fixing anything.
+mutate "harness: a rule the corpus reduces is declared unexercised, to quiet the census" \
+       "declares rule \`reg_indiri' unreached, and the corpus now makes it reduced" \
+       "sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_indiri\"; status = \"unreached\"; why = \"padding the table to quiet the census, which is what must not work\"; }|' cases.nix" \
+       "$matcher_check"
+
+# THE ONE-LINE WAY ROUND THE MUTATION ABOVE, which review found and the code
+# did not refuse: declare the rule with the status the census itself would
+# give it. The staleness check compares the declared status against the real
+# one and would agree, and the undeclared check never looks at a reduced rule,
+# so the row passes while asserting nothing. `reduced' is now not a word a
+# declaration may use, and this is what holds that.
+mutate "harness: a declaration claims the census's own \`reduced', which asserts nothing" \
+       "the status \`reduced', which is not one of" \
+       "sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_indiri\"; status = \"reduced\"; why = \"padding the table with the one status that would be checked by nothing\"; }|' cases.nix" \
+       "$matcher_check"
+
+# AND THE EDIT THE CENSUS ALONE CANNOT REFUSE, also from review. Take a corpus
+# FUNCTION away and declare the rules it reached: the census then reports a
+# smaller table of reduced rules and a larger table of excuses, and every
+# other floor in check.nix survives it -- ir/lbuf.c contributes no `emitted'
+# assertions by design (see the DO NOT TIDY note above), so neither the
+# assertion floor nor the instruction count moves when it goes. `minReduced'
+# is the floor that catches it, and this is the demonstration that it does.
+mutate "harness: a corpus case is removed and the rules it reached are declared instead" \
+       "fewer than the 99 floor" \
+       "sed -i '/{ name = \"lbuf\"; fn = \"pack\";/d' cases.nix
+        sed -i 's|^  unexercisedRules = \[|  unexercisedRules = [ { rule = \"reg_addrlp\"; status = \"labelled\"; why = \"the corpus case that reached this row was removed, which is the edit minReduced exists for\"; }|' cases.nix" \
        "$matcher_check"
 
 mutate "matcher: a bad rule table is accepted instead of refused" \
@@ -895,7 +962,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=53
+declared=58
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2
