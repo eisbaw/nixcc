@@ -4,7 +4,7 @@ title: Three rule-table rows that no corpus node selects
 status: To Do
 assignee: []
 created_date: '2026-09-15 23:52'
-updated_date: '2026-09-16 00:33'
+updated_date: '2026-09-16 01:40'
 labels:
   - backend
   - rules
@@ -48,4 +48,8 @@ ORCHESTRATOR: raised to high. Task-051's implementer is right that this is not a
 The window matters: slice 2 (task-028) is adding rules as I write this, and it has been briefed on the lesson but cannot lean on a check that does not exist. Every rule added before this lands is a rule asserted only by a table that names it rather than by a corpus that selects it.
 
 Schedule it immediately after slice 2, before slice 3 adds more.
+
+DO NOT TIDY THIS, carried from task-028. poc/03-matcher/ir/lbuf.c has NO entry in cases.nix's 'emitted' table, and that absence is deliberate: the frame-displacement mutation is caught ONLY by the program returning 105 instead of 293. If a future cycle pins those lines in the emitted table as a consistency tidy-up, the claim silently stops being tested and nothing will go red.
+
+This is the same species as the defect this task exists to fix -- a check that looks thorough and asserts nothing -- but inverted: here the absence IS the test. Anyone extending the emitted table should confirm each addition still leaves something that only execution can catch.
 <!-- SECTION:NOTES:END -->
