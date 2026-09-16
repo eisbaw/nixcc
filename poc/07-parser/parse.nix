@@ -416,7 +416,43 @@ rec {
               else tr.rvalue a.s a.v;
           in
           loop r.s r.v
-        else if k == "." || k == "DEREF" then sy.refuse s "parse: struct members are outside slice 1"
+        # expr.c's `.' arm. `a.b' is ADDRESSED and then offset, which is why
+        # the whole of it is `addrof' plus `field': there is no operator that
+        # takes a member out of a struct VALUE, and a struct value in a
+        # register is not a thing this IR has.
+        #
+        # The RIGHT wrapper at the end is not decoration. When the struct came
+        # from a TEMPORARY -- `f().b' once task-068 allows it -- the temporary
+        # has to stay alive across the member access, and lcc keeps it by
+        # making the access the right half of a RIGHT tree.
+        else if k == "." then
+          let s1 = advance s; in
+          if tk s1 != "ID" then sy.err s1 "field name expected\n"
+          else if !(ty.isstruct (tr.get s1 p).type)
+          then sy.err s1 "left operand of . has incompatible type `${
+            ty.outtype (tr.get s1 p).type}'\n"
+          else
+            let
+              q = tr.addrof s1 p;
+              f = fieldTree q.s q.v (text s1);
+              rk = tr.rightkid f.s q.v;
+              r =
+                if ops.isaddrop (tr.get f.s rk).op
+                  && (sy.getsym f.s (tr.get f.s rk).sym).temporary
+                then tr.tree f.s (ops.bare "RIGHT") (tr.get f.s f.v).type f.v null
+                else f;
+            in
+            loop (advance r.s) r.v
+        else if k == "DEREF" then
+          let
+            s1 = advance s;
+            pp = tr.pointer s1 p;
+            t = (tr.get pp.s pp.v).type;
+          in
+          if tk s1 != "ID" then sy.err s1 "field name expected\n"
+          else if !(ty.isptr t && ty.isstruct (ty.unqual t).type)
+          then sy.err s1 "left operand of -> has incompatible type `${ty.outtype t}'\n"
+          else let f = fieldTree pp.s pp.v (text s1); in loop (advance f.s) f.v
         else if k == "(" then
           let
             pp = tr.pointer s p;
@@ -544,7 +580,15 @@ rec {
       ufty = ty.unqual fty;
       inherit (ufty) proto;
       rty = ty.unqual (ty.freturn (ty.unqual fty));
-      args0 = if tr.hascall s0 f then f else null;
+      # enode.c allocates a temporary for a struct RESULT and calltree wraps
+      # the call in a RIGHT over it, which is a CALL+B the rule table has no
+      # row for. funcdefn refuses the definition; this refuses the call, so a
+      # struct-returning function declared in another unit cannot slip in.
+      s00 =
+        if ty.isstruct rty
+        then sy.refuse s0 "parse: calling a function that RETURNS an aggregate by value builds a CALLB (task-068)"
+        else s0;
+      args0 = if tr.hascall s00 f then f else null;
       loop = s: n: args: r:
         let
           q0 = expr1 s null;
@@ -571,20 +615,43 @@ rec {
             else
               let v = tr.value q1.s q1.v; in
               tr.cast v.s v.v (ty.promote (tr.get v.s v.v).type);
-          qt = (tr.get conv.s conv.v).type;
+          # enode.c, with wants_argb = 0 (decision-009): a by-value struct
+          # argument is COPIED into a temporary and the temporary's address is
+          # what the call receives, so the argument node is an ordinary ARGP4
+          # and no ARGB is ever built. The copy itself is an ASGNB, which
+          # task-060 is what makes executable; the IR is diffed against lcc
+          # either way.
+          #
+          # lcc's other arm here -- `iscallb(q)', a struct that came straight
+          # out of a call -- cannot arrive, because a struct return is refused
+          # above.
+          arg =
+            if ty.isstruct (tr.get conv.s conv.v).type then
+              let
+                t1 = sy.temporary conv.s sy.sclasses.auto
+                  (ty.unqual (tr.get conv.s conv.v).type);
+                asg = tr.asgn t1.s t1.v conv.v;
+                rt = tr.root asg.s asg.v;
+                i = tr.idtree rt.s t1.v;
+                lv = tr.lvalue i.s i.v;
+              in
+              tr.tree lv.s (ops.bare "RIGHT")
+                (ty.ptr (sy.getsym lv.s t1.v).type) rt.v lv.v
+            else conv;
+          qt = (tr.get arg.s arg.v).type;
           r1 =
-            if tr.hascall conv.s conv.v
+            if tr.hascall arg.s arg.v
             then (if r != null
-            then (let x = tr.tree conv.s (ops.bare "RIGHT") ty.voidtype r conv.v; in { inherit (x) s; inherit (x) v; })
-            else { inherit (conv) s; inherit (conv) v; })
-            else { inherit (conv) s; v = r; };
-          a = tr.tree r1.s (ops.mkop "ARG" qt) qt conv.v args;
+            then (let x = tr.tree arg.s (ops.bare "RIGHT") ty.voidtype r arg.v; in { inherit (x) s; inherit (x) v; })
+            else { inherit (arg) s; inherit (arg) v; })
+            else { inherit (arg) s; v = r; };
+          a = tr.tree r1.s (ops.mkop "ARG" qt) qt arg.v args;
         in
         if tk a.s != "," then { inherit (a) s; args = a.v; r = r1.v; n = n + 1; }
         else loop (advance a.s) (n + 1) a.v r1.v;
       done =
-        if tk s0 != ")" then loop s0 0 null args0
-        else { s = s0; args = null; r = args0; n = 0; };
+        if tk s00 != ")" then loop s00 0 null args0
+        else { s = s00; args = null; r = args0; n = 0; };
       s1 = expect done.s ")";
       s2 =
         if proto != null && done.n < b.length proto && b.elemAt proto done.n != ty.voidtype
@@ -618,18 +685,27 @@ rec {
         else if k == "SHORT" then set st acc "size" "SHORT"
         else if k == "VOID" || k == "CHAR" || k == "INT" || k == "FLOAT" || k == "DOUBLE"
         then set st (acc // { base = basicOf k; }) "type" k
-        else if k == "STRUCT" || k == "UNION" || k == "ENUM"
-        then sy.refuse st "parse: struct, union and enum types are outside slice 1"
+        # decl.c's STRUCT/UNION/ENUM cases do NOT call gettok() after
+        # structdcl() or enumdcl(): those read their own tokens and leave `t'
+        # on the one that follows. Advancing here would eat it -- and eat the
+        # declarator's identifier with it, so `struct P p;' would come out as
+        # an empty declaration.
+        else if k == "STRUCT" || k == "UNION" then
+          let d = structdcl st k; in setHere d.s (acc // { base = d.v; }) "type" k
+        else if k == "ENUM" then
+          let d = enumdcl st; in setHere d.s (acc // { base = d.v; }) "type" k
         else if k == "ID" && isTypename st && acc.type == null && acc.sign == null && acc.size == null
         then
           let p = sy.lookup st (text st); in
           set st (acc // { base = (sy.getsym st p).type; }) "type" k
         else { s = st; inherit acc; };
-      set = st: acc: field: v:
+      set = st: acc: field: v: setAt (advance st) st acc field v;
+      setHere = st: acc: field: v: setAt st st acc field v;
+      setAt = next: st: acc: field: v:
         if acc.${field} != null
         then sy.refuse st "parse: invalid use of `${v}'"
         else if !(acc ? ${field}) then throw "parse: the specifier accumulator has no `${field}' slot"
-        else loop (advance st) (acc // { ${field} = v; });
+        else loop next (acc // { ${field} = v; });
       r = loop s0 {
         cls = if wantSclass then null else "AUTO";
         cons = null;
@@ -713,6 +789,313 @@ rec {
     if t.op == "CONST" && q == "VOLATILE" then t // { op = "CONST+VOLATILE"; }
     else if t.op == "VOLATILE" && q == "CONST" then t // { op = "CONST+VOLATILE"; }
     else { op = q; type = t; inherit (t) size align; };
+
+  # --- struct, union and enum --------------------------------------------
+  # decl.c's structdcl(), fields() and enumdcl(), plus types.c's newstruct().
+  #
+  # WHERE AN AGGREGATE'S IDENTITY LIVES, because everything below rests on it:
+  # in the TAG SYMBOL newstruct installs, whose id the type carries.
+  # types.nix's header has the argument at length; the short form is that Nix
+  # compares attrsets structurally, so without the tag symbol two different
+  # anonymous structs with the same members would be ONE type -- and lcc's own
+  # diagnostic for them, "operands of = have illegal types `struct defined at
+  # 1' and `struct defined at 1'", could not be reproduced, because the two
+  # spellings are identical and only the symbol tells them apart.
+
+  # decl.c's structdcl(). `op' is the token: "STRUCT" or "UNION".
+  structdcl = s0: op:
+    let
+      s1 = advance s0;
+      # decl.c takes `pos = src' AFTER the keyword and before the tag, so an
+      # anonymous aggregate is `defined at' the line its tag or `{' is on --
+      # not the line the `struct' keyword is on, which differs whenever the
+      # declaration is wrapped.
+      pos = s1.line;
+      named = tk s1 == "ID";
+      tag = if named then text s1 else "";
+      s2 = if named then advance s1 else s1;
+      prior = if named then sy.lookupTag s2 tag else null;
+      sameKind = prior != null && (sy.getsym s2 prior).type.op == op;
+    in
+    if tk s2 == "{" then
+      let
+        n = newstruct s2 op tag pos;
+        s3 = sy.modsym n.s n.sym (q: q // { defined = true; srcline = pos; });
+        s4 = advance s3;
+      in
+      if !(isTypename s4)
+      then sy.err s4 "invalid ${lowerName op} field declarations\n"
+      else let f = fields s4 n.sym n.ty; in { s = expect f.s "}"; inherit (f) v; }
+    else if named && sameKind then
+      (
+        # `struct P;' on its own declares a NEW tag when the one in scope
+        # belongs to an OUTER scope. That is what makes an inner `struct P' a
+        # different type from the outer one -- criterion #1's second case,
+        # seen from the declaring side rather than from the assignment.
+        if tk s2 == ";" && (sy.getsym s2 prior).scope < s2.level
+        then (let n = newstruct s2 op tag pos; in { inherit (n) s; v = n.ty; })
+        else { s = s2; v = (sy.getsym s2 prior).type; }
+      )
+    else if !named then sy.err s2 "missing ${lowerName op} tag\n"
+    else (let n = newstruct s2 op tag pos; in { inherit (n) s; v = n.ty; });
+
+  # types.c's newstruct(): the ONLY place an aggregate type is created.
+  newstruct = s0: op: tag0: pos:
+    let
+      # An anonymous tag is named with a GENERATED LABEL NUMBER, and that
+      # consumes one. `struct { int a; } x;' therefore shifts every label
+      # after it in the whole translation unit, so a frontend that named
+      # anonymous tags some other way would have the listing's `2:' reading
+      # `1:' from that point on -- in every later function, not just this one.
+      g = if tag0 == "" then sy.genlabel s0 1 else { s = s0; v = 0; };
+      tag = if tag0 == "" then toString g.v else tag0;
+      prior = if tag0 == "" then null else sy.lookupTag g.s tag;
+      pq = if prior == null then null else sy.getsym g.s prior;
+      # PARAM+1 is a tag declared in a parameter list and redefined in the
+      # body; lcc counts that as the same scope for the redefinition test.
+      sameScope = prior != null
+        && (pq.scope == g.s.level || (pq.scope == sy.PARAM && g.s.level == sy.PARAM + 1));
+    in
+    if sameScope && pq.type.op == op && !pq.defined
+    then { inherit (g) s; sym = prior; ty = pq.type; }
+    else if sameScope
+    then sy.err g.s "redefinition of `${tag}' previously defined at ${toString pq.srcline}\n"
+    else
+      let
+        r = sy.installTag g.s tag g.s.level { srcline = pos; };
+        t = ty.aggregate op (aggName op tag pos) r.v;
+      in
+      { s = sy.modsym r.s r.v (q: q // { type = t; }); sym = r.v; ty = t; };
+
+  # symbolic.c's `%t' for an aggregate. lcc reads it off the tag symbol at
+  # PRINT time and, for an anonymous one, first searches the identifiers table
+  # for a typedef that names the type. `installTypedef' refuses a typedef of an
+  # anonymous aggregate (task-067) precisely so that search can have no hit,
+  # which is what lets the spelling be settled once, here, and `outtype' stay a
+  # pure function of the type.
+  aggName = op: tag: pos:
+    if b.match "[1-9][0-9]*" tag != null
+    then "${lowerName op} defined at ${toString pos}"
+    else "${lowerName op} ${tag}";
+
+  # decl.c's test for "this specifier declared something nameable", spelled in
+  # lcc as `*name < '1' || *name > '9'' -- an anonymous tag is named with a
+  # generated number, and nothing can refer to it later.
+  namedTag = s: t: b.match "[1-9][0-9]*" (sy.getsym s (ty.unqual t).sym).name == null;
+
+  # An aggregate whose members have not been seen is INCOMPLETE. lcc completes
+  # one by MUTATING the Type through the tag symbol's pointer, so every copy
+  # already handed out -- the `struct N *' built inside `struct N', the
+  # `struct P *' after a forward `struct P;' -- sees the members appear. A Nix
+  # copy cannot: it keeps size 0 for ever, `sizeof' of it would be 0 rather
+  # than wrong-and-loud, and two copies of one type taken either side of the
+  # completion would compare UNEQUAL, so an assignment between them would be
+  # refused on a program lcc compiles.
+  #
+  # So a declarator may not be built on one at all. That refusal is what makes
+  # a stale copy UNREACHABLE rather than merely unlikely, and what it costs is
+  # the self-referential struct -- the linked list -- which is the price
+  # task-066 records and is the task that lifts it.
+  #
+  # IT RETURNS THE STATE AND NOT THE TYPE, and that is not a style choice. A
+  # guard that returned the type would never fire: `dclr' builds `pointer to
+  # <t>' without looking at `t', the field list is not printed, and nothing
+  # downstream ever forces the thunk -- so `struct N { struct N *next; }'
+  # compiled, silently, with an unevaluated throw sitting inside the member's
+  # type. Threading the check through the STATE makes it fire, because the very
+  # next token read forces the state to weak head normal form and the condition
+  # with it. Measured: the first version of this passed must-fail's
+  # self-referential case by compiling it.
+  requireComplete = s: t:
+    if (ty.isstruct t || ty.isenum t) && (ty.unqual t).size == 0
+    then sy.refuse s "parse: `${ty.outtype t}' has no members yet, and an incomplete aggregate cannot be carried into a declarator here (task-066)"
+    else s;
+
+  # symbolicIR's structmetric, which decl.c's fields() uses as the FLOOR on an
+  # aggregate's alignment. It is { size = 0, align = 4 }, so `struct { char a;
+  # char b; }' is four bytes here where it is two on most machines. That is the
+  # oracle's rule, and the diff is against the oracle.
+  structAlign = 4;
+
+  roundup = x: n: if n <= 1 then x else ((x + n - 1) / n) * n;
+
+  # decl.c's fields(): read the member declarations, then lay them out.
+  fields = s0: tagsym: ty0:
+    let
+      readAll = st: acc:
+        if !(isTypename st) then { s = st; inherit acc; }
+        else
+          let
+            sp = specifier st false;
+            one = st2: a:
+              let
+                d = dclr st2 sp.v true false;
+                st3 =
+                  # A bit field is the ONE member shape this slice does not
+                  # lay out. Refusing it here is also what keeps simp.nix's
+                  # zerofield unreachable -- see the note there; that gate used
+                  # to be this file refusing `struct' outright.
+                  if tk d.s == ":"
+                  then sy.refuse d.s "parse: bit fields belong to slice 4b (task-059)"
+                  else if d.id == null then sy.err d.s "field name missing\n"
+                  else if b.any (f: f.name == d.id) a
+                  then sy.err d.s "duplicate field name `${d.id}' in `${ty.outtype ty0}'\n"
+                  else if ty.isfunc d.t
+                  then sy.err d.s "`${ty.outtype d.t}' is an illegal field type\n"
+                  else if d.t.size == 0
+                  then sy.err d.s "undefined size for field `${ty.outtype d.t} ${d.id}'\n"
+                  else d.s;
+                a' = a ++ [ { name = d.id; type = d.t; offset = 0; } ];
+              in
+              if tk st3 != "," then { s = st3; acc = a'; }
+              else one (advance st3) a';
+            r = one (requireComplete sp.s sp.v) acc;
+          in
+          readAll (expect r.s ";") r.acc;
+      read = readAll s0 [ ];
+      # decl.c's layout loop with every bit-field term removed: `bits' is
+      # always zero here, and `bits2bytes(bits - 1)' is zero with it -- it is
+      # `(-1 + 7)/8'. What is left is "round up to the member's alignment,
+      # place it, advance" for a struct, and "place everything at zero" for a
+      # union, which is the `off = bits = 0' arm taken INSTEAD of the roundup.
+      place = acc: f:
+        let
+          a = if f.type.align != 0 then f.type.align else 1;
+          at = if ty0.op == "UNION" then 0 else roundup acc.off a;
+          end = at + f.type.size;
+        in
+        {
+          off = end;
+          align = if a > acc.align then a else acc.align;
+          size = if end > acc.size then end else acc.size;
+          out = acc.out ++ [ (f // { offset = at; }) ];
+        };
+      laid = b.foldl' place { off = 0; align = structAlign; size = 0; out = [ ]; } read.acc;
+      size = roundup laid.size laid.align;
+      # decl.c's `overflow' flag, which its `add' macro sets. It takes two
+      # billion bytes of members to reach, so it is held rather than tested:
+      # lcc diagnoses this and a frontend that did not would wrap instead.
+      lim = (ty.limits ty.inttype).max;
+      s1 =
+        if size > lim || laid.size > lim - (laid.align - 1)
+        then sy.err read.s "size of `${ty.outtype ty0}' exceeds ${toString lim} bytes\n"
+        else read.s;
+      t = ty.completed ty0 size laid.align null;
+    in
+    {
+      s = sy.modsym s1 tagsym (q: q // {
+        type = t;
+        fields = laid.out;
+        # enode.c and dag.c consult these two on a WHOLE-aggregate operation:
+        # cfields makes an assignment to it an error, vfields stops the load
+        # being common-subexpression-eliminated. Both are properties of the
+        # AGGREGATE rather than of the member, which is why they are computed
+        # once here and kept on the tag instead of being re-derived at each
+        # use from a field list that would have to be walked again.
+        cfields = b.any (f: ty.isconst f.type) laid.out;
+        vfields = b.any (f: ty.isvolatile f.type) laid.out;
+      });
+      v = t;
+    };
+
+  # decl.c's enumdcl().
+  enumdcl = s0:
+    let
+      s1 = advance s0;
+      pos = s1.line;
+      named = tk s1 == "ID";
+      tag = if named then text s1 else "";
+      s2 = if named then advance s1 else s1;
+      prior = if named then sy.lookupTag s2 tag else null;
+    in
+    if tk s2 == "{" then
+      let
+        n = newstruct s2 "ENUM" tag pos;
+        s3 = advance n.s;
+        s4 = if tk s3 != "ID" then sy.err s3 "expecting an enumerator identifier\n" else s3;
+        # `k' starts at -1 so that a bare first enumerator is 0, and an
+        # explicit `= v' RESETS it -- which is what makes `A = 1, B' give 2 and
+        # not 1. Numbering from the enumerator's POSITION instead would give
+        # the same answer for `{ A, B }' and the wrong one for everything else.
+        loop = st: k:
+          if tk st != "ID" then st
+          else
+            let
+              id = text st;
+              dup = sy.lookupIn st id st.level;
+              st1 =
+                if dup != null
+                then sy.err st "redeclaration of `${id}' previously declared at ${
+                  toString (sy.getsym st dup).srcline}\n"
+                else st;
+              line0 = st1.line;
+              st2 = advance st1;
+              e =
+                if tk st2 == "=" then intexpr (advance st2) null
+                else if k == (ty.limits ty.inttype).max
+                then sy.err st2 "overflow in value for enumeration constant `${id}'\n"
+                else { s = st2; v = k + 1; };
+              ins = sy.install e.s id e.s.level {
+                type = n.ty;
+                sclass = sy.sclasses.enumconst;
+                value = e.v;
+                srcline = line0;
+              };
+            in
+            if tk ins.s != "," then ins.s else loop (advance ins.s) e.v;
+        s5 = expect (loop s4 (0 - 1)) "}";
+        # enumdcl fills in ty->type as well as the size, and that `int' is not
+        # decoration: types.c's deref() reads it, which is what makes loading
+        # an `enum E' variable an INDIRI4 of an int.
+        t = ty.completed n.ty ty.inttype.size ty.inttype.align ty.inttype;
+      in
+      { s = sy.modsym s5 n.sym (q: q // { type = t; defined = true; }); v = t; }
+    else if named && prior != null && (sy.getsym s2 prior).type.op == "ENUM" then
+      (if tk s2 == ";" then sy.err s2 "empty declaration\n"
+      else { s = s2; v = (sy.getsym s2 prior).type; })
+    else sy.err s2 "unknown enumeration `${tag}'\n";
+
+  # expr.c's field(). NOT the FIELD tree op -- that is bit fields only
+  # (task-059) -- but an ADD of the member's offset onto the address, which is
+  # why struct member access needed no opcode the backend did not already have.
+  # `simplify' folds the offset into the symbol when the base is one
+  # (simp.nix's addrtree), so `q.i' on a local is `ADDRLP4 q+4' and not an add.
+  fieldTree = s0: p: name:
+    let
+      t0 = (tr.get s0 p).type;
+      ty1 = if ty.isptr t0 then (ty.unqual t0).type else t0;
+      tu = ty.unqual ty1;
+      q = sy.fieldref s0 name tu;
+      # A member of a const struct is const, and of a volatile struct
+      # volatile: the AGGREGATE's qualifiers are added to the member's own.
+      # That is what makes `v->a' on a `volatile int' member a load lcc does
+      # not share, and dropping it would silently allow one read where the
+      # program asked for two.
+      quals = t:
+        let a = if ty.isconst ty1 && !(ty.isconst t) then qualify "CONST" t else t; in
+        if ty.isvolatile ty1 && !(ty.isvolatile a) then qualify "VOLATILE" a else a;
+    in
+    if q == null
+    then sy.err s0 "unknown field `${name}' of `${ty.outtype tu}'\n"
+    else
+      let
+        # An ARRAY member does NOT decay here: the tree keeps the array type,
+        # so `q.tail[1]' is one address computation rather than a load of an
+        # array -- the same distinction postfix's `[' arm makes for `m[1][2]'.
+        isArr = ty.isarray q.type;
+        elem = quals (ty.unqual q.type).type;
+        ftype =
+          if isArr then ty.array elem (q.type.size / elem.size) q.type.align
+          else ty.ptr (quals q.type);
+        c = tr.consttree s0 q.offset ty.signedptr;
+        # `ADD+P' is named OUTRIGHT, not derived from `ftype' the way every
+        # other simplify() call in this frontend derives it. For an array
+        # member `ftype' is the array type, whose ttob kind is B, and an ADD+B
+        # is not an opcode -- lcc writes `simplify(ADD+P, ty, ...)' for exactly
+        # that reason: the RESULT is an array, the ADDITION is on a pointer.
+        a = simp.simplify c.s (ops.mk "ADD" "P") ftype p c.v;
+      in
+      if isArr then a else tr.rvalue a.s a.v;
 
   # dclr1 builds the declarator's type CHAIN, outermost first; dclr then folds
   # the chain onto the base type. Kept as two functions because that split is
@@ -807,7 +1190,7 @@ rec {
       loop = st: n: acc:
         let
           sp = specifier st true;
-          d = dclr sp.s sp.v true false;
+          d = dclr (requireComplete sp.s sp.v) sp.v true false;
           id = if d.id == null then toString (n + 1) else d.id;
           p = if d.t == ty.voidtype then { inherit (d) s; v = null; }
           else dclparam d.s sp.sclass id d.t;
@@ -833,7 +1216,11 @@ rec {
   dclparam = s00: sclass0: id: t0:
     let
       t = if ty.isfunc t0 then ty.ptr t0 else if ty.isarray t0 then ty.atop t0 else t0;
-      ignoreRegister = sclass0 == sy.sclasses.register && ty.isvolatile t;
+      # decl.c's dclparam ignores `register' on a volatile OR a struct
+      # parameter, with a warning. The struct half was unreachable while
+      # `struct' was refused; it is reachable now, and the warning is only
+      # visible in lcc's stderr, which is what criterion #7 compares.
+      ignoreRegister = sclass0 == sy.sclasses.register && (ty.isvolatile t || ty.isstruct t);
       s0 = if ignoreRegister
       then sy.warn s00 "register declaration ignored for `${ty.outtype t} ${id}'\n"
       else s00;
@@ -871,11 +1258,12 @@ rec {
   typename = s0:
     let
       sp = specifier s0 false;
-      k = tk sp.s;
+      s1 = requireComplete sp.s sp.v;
+      k = tk s1;
     in
     if k == "*" || k == "(" || k == "["
-    then (let d = dclr sp.s sp.v false false; in { inherit (d) s; v = d.t; })
-    else { inherit (sp) s; inherit (sp) v; };
+    then (let d = dclr s1 sp.v false false; in { inherit (d) s; v = d.t; })
+    else { s = s1; inherit (sp) v; };
 
   # --- statements --------------------------------------------------------
   definept = s: (sy.code s "Defpoint" { }).s;
@@ -1188,7 +1576,7 @@ rec {
         # diagnostic about this declaration names the line the declarator
         # started on rather than the line the parser happened to reach.
         pos = (cur sp.s).line;
-        d = dclr sp.s sp.v true atGlobal;
+        d = dclr (requireComplete sp.s sp.v) sp.v true atGlobal;
         isDefn = atGlobal && d.params != null && d.id != null && ty.isfunc d.t
           && (tk d.s == "{" || isTypename d.s || (kindOf (tk d.s) == "STATIC" && tk d.s != "TYPEDEF"));
       in
@@ -1212,13 +1600,25 @@ rec {
           s3 = loop s1 d.id d.t;
         in
         expect s3 ";"
-    # decl.c: a specifier with no declarator after it is an error unless it
-    # declared a struct, union or enum tag -- none of which slice 1 has. So
-    # here it is always one.
-    else sy.refuse sp.s "parse: empty declaration";
+    # decl.c: a specifier with no declarator after it is an error UNLESS it
+    # declared an enum, or a struct or union whose tag somebody wrote. An
+    # anonymous one declares nothing that can be named later, so lcc rejects
+    # `struct { int a; };' as an empty declaration and so does this.
+    else if ty.isenum sp.v || (ty.isstruct sp.v && namedTag sp.s sp.v)
+    then expect sp.s ";"
+    else sy.err sp.s "empty declaration\n";
 
   installTypedef = s: id: t:
-    let r = sy.install s id s.level { type = t; sclass = sy.sclasses.typedef; }; in r.s;
+    let r = sy.install s id s.level { type = t; sclass = sy.sclasses.typedef; }; in
+    # types.c's outtype prints an ANONYMOUS aggregate by first searching the
+    # identifiers table for a typedef that names it, and printing that name
+    # instead of `struct defined at LINE'. That search depends on the symbol
+    # table at PRINT time; `outtype' here is a pure function of the type, and
+    # `aggName' settles an anonymous tag's spelling when the tag is minted.
+    # Refusing this one declaration is what makes the two agree (task-067).
+    if (ty.isstruct t || ty.isenum t) && !(namedTag r.s t)
+    then sy.refuse s "parse: `typedef' of an aggregate with no tag needs the spelling lcc looks up at print time (task-067)"
+    else r.s;
 
   dclglobal = s0: sclass0: id: t: pos:
     let
@@ -1279,7 +1679,8 @@ rec {
       # decl.c: `register' on a volatile, struct or array object is IGNORED,
       # with a warning. Both frontends then compile the same thing, so the
       # warning is the only trace it leaves -- criterion #7's territory.
-      ignoreRegister = sclass00 == sy.sclasses.register && (ty.isvolatile t || ty.isarray t);
+      ignoreRegister = sclass00 == sy.sclasses.register
+        && (ty.isvolatile t || ty.isstruct t || ty.isarray t);
       s0 = if ignoreRegister
       then sy.warn s00 "register declaration ignored for `${ty.outtype t} ${id}'\n"
       else s00;
@@ -1321,7 +1722,13 @@ rec {
             (x: x // { defined = true; addressed = ty.isarray t || x.addressed; })
         else s2;
       s4 =
-        if tk s3 == "=" then
+        if tk s3 == "=" && tk (advance s3) == "{"
+        # decl.c splits here: an initialiser that starts with `{' goes to
+        # init.c, and everything else is an ordinary assignment. `struct P p =
+        # q;' takes the assignment path and works; `struct P p = { 1, 2 };'
+        # needs the initialiser walker slice 3 owns.
+        then sy.refuse s3 "parse: a braced initialiser belongs to slice 3 (task-029)"
+        else if tk s3 == "=" then
           let
             s5 = definept (advance s3);
             e = expr1 s5 null;
@@ -1368,6 +1775,13 @@ rec {
         else if prior != null && ty.isfunc ((sy.getsym cs.s prior).type or ty.inttype)
           && (sy.getsym cs.s prior).defined
         then sy.refuse cs.s "parse: redefinition of `${id}'"
+        # A by-value struct PARAMETER is decision-009's business and works;
+        # a by-value struct RESULT is a different convention -- decl.c
+        # allocates a hidden `retv' parameter and stmt.c's retcode assigns
+        # through it -- and its call site is a CALL+B no rule table has a row
+        # for. The two are not symmetric, which is why only one is here.
+        else if ty.isstruct (ty.freturn (ty.unqual fty))
+        then sy.refuse cs.s "parse: defining `${id}', which RETURNS an aggregate by value, needs the hidden return parameter (task-068)"
         else dclglobal cs.s sclass id fty pos;
       lab = sy.genlabel g.s 1;
       s1 = sy.modsym lab.s g.v (x: x // {
@@ -1388,7 +1802,24 @@ rec {
       s5 = dag.walk s4 null 0 0;
       s6 = sy.exitscope s5;
       s7 = checkrefScope s6 s6.level;
-      s8 = if (sy.getsym s7 g.v).sclass != sy.sclasses.static then self.listing.export s7 g.v else s7;
+      # decl.c, with wants_argb = 0 (decision-009): a by-value struct
+      # parameter is passed BY REFERENCE, and the caller and callee symbols are
+      # retyped to a pointer HERE -- after the body has been parsed, because
+      # the body saw the parameter as a struct and idtree's own struct arm
+      # depends on that. `structarg' is what symbolic.c prints as
+      # `flags=structarg', and it is also what tells a reader of the listing
+      # that the pointer is the compiler's and not the program's.
+      s7b = b.foldl'
+        (st: i:
+          let cr = b.elemAt cs.v i; in
+          if ty.isstruct (sy.getsym st cr).type
+          then
+            let a = sy.modsym st cr (x: x // { type = ty.ptr x.type; structarg = true; }); in
+            sy.modsym a (b.elemAt callee i) (x: x // { type = ty.ptr x.type; structarg = true; })
+          else st)
+        s7
+        (b.genList (i: i) (b.length cs.v));
+      s8 = if (sy.getsym s7b g.v).sclass != sy.sclasses.static then self.listing.export s7b g.v else s7b;
       s9 = self.listing.swtoseg s8 1;
       s10 = self.listing.emitFunction s9 g.v cs.v callee;
       s11 = sy.exitscope s10;

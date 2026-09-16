@@ -12,10 +12,37 @@
 # runtime; -target=symbolic compiles them in, and rcc-rv32 only overrides
 # little_endian (decision-004).
 #
-# What is deliberately absent: struct, union, enum, bitfields, long long and
-# the floating types beyond the two declarations needed to REFUSE them. Those
-# belong to later slices; a type this module cannot build is a type the parser
-# throws on, which is the house rule (refuse loudly rather than miscompile).
+# STRUCT, UNION AND ENUM ARE THE ONE EXCEPTION TO THAT SENTENCE, and the reason
+# is worth the paragraph. lcc's `newstruct' mints a FRESH Symbol per
+# declaration and the Type points at it, so two structs with identical fields
+# are never the same type -- their symbols are different addresses. Under
+# structural equality they would be the same type, silently: two different
+# anonymous structs, and the same tag redeclared in an inner scope, would both
+# compare equal, and no oracle diff could see it, because lcc prints the TAG
+# NAME and the two listings would agree.
+#
+# So an aggregate type carries `sym', the id of the tag symbol sym.nix minted
+# for it. Ids come from a counter and are unique by construction, which makes
+# structural equality on { op; name; sym; size; align; } lcc's pointer equality
+# by another name. The uid is not invented alongside lcc's symbol: it IS lcc's
+# symbol.
+#
+# `eqtype' therefore needs no STRUCT arm, and lcc's has none either: its first
+# line is `ty1 == ty2' and its last is `return 0', and between them an
+# aggregate matches nothing. Adding an arm would be a second place for the
+# relation to be wrong.
+#
+# WHAT IS NOT IN THE TYPE: the field list, and the sizes and alignments before
+# they are known. decl.c fills those in by mutating THROUGH the tag symbol's
+# pointer after the type has been handed out, so every copy sees the fields
+# appear. A Nix copy cannot, which is why the fields live on the tag symbol
+# (sym.nix) and why parse.nix REFUSES an incomplete aggregate in a declarator
+# (task-066) rather than letting a stale copy of one escape.
+#
+# What is deliberately absent: bitfields, long long and the floating types
+# beyond the two declarations needed to REFUSE them. Those belong to later
+# slices; a type this module cannot build is a type the parser throws on, which
+# is the house rule (refuse loudly rather than miscompile).
 let
   b = builtins;
 
@@ -65,7 +92,31 @@ rec {
   voidtype = basic "VOID" "void" 0 0;
 
   ptr = ty: { op = "POINTER"; type = ty; size = 4; align = 4; };
-  deref = ty: if isptr ty then (unqual ty).type else throw "types: pointer expected";
+
+  # types.c's deref() ends `return isenum(ty) ? unqual(ty)->type : ty', and
+  # that line is load-bearing rather than tidy-up: it is what makes loading an
+  # `enum E' variable an INDIRI4 of an `int' instead of a load of an enum.
+  # Without it every enum lvalue reaches enode.c with a type that isarith()
+  # rejects, and `e + 1' is a type error on ordinary C.
+  deref = ty:
+    let t = if isptr ty then (unqual ty).type else throw "types: pointer expected"; in
+    if isenum t then (unqual t).type else t;
+
+  # types.c's newstruct() builds `type(op, NULL, 0, 0, p)' -- no size, no
+  # align, and the tag symbol. Completion is a separate step because decl.c's
+  # fields() and enumdcl() do it separately, and because an aggregate that is
+  # never completed has to stay distinguishable from one that is.
+  #
+  # `name' is the whole spelling symbolic.c would print, not the bare tag:
+  # `struct P', or `struct defined at 12' for an anonymous one. lcc reaches it
+  # from ty->u.sym->name, which needs the symbol table; keeping the rendered
+  # text on the type is what lets `outtype' stay a pure function of the type.
+  aggregate = op: name: symid: { inherit op name; sym = symid; size = 0; align = 0; };
+
+  # The completed type. `member' is the enum's underlying type (lcc sets
+  # ty->type = inttype in enumdcl and leaves it null for a struct).
+  completed = t: size: align: member: t // { inherit size align; }
+    // (if member == null then { } else { type = member; });
 
   # lcc's func() records the prototype and whether the declarator was
   # old-style. `proto = null' is an old-style (unprototyped) function.
@@ -229,6 +280,14 @@ rec {
           outtype (inner ty).type}"
         else "incomplete array" + (if ty.type != null then " of ${outtype ty.type}" else "")
       )
+    # STRUCT/UNION/ENUM. The spelling was settled when the tag symbol was
+    # minted, so all that is left is lcc's `incomplete ' prefix. That prefix
+    # is only ever reached from one of THIS frontend's own refusal messages:
+    # parse.nix refuses an incomplete aggregate before it can reach a
+    # declarator, so it never reaches the listing, and lcc's second half of
+    # the same line -- ` defined at %w' -- is therefore never compared.
+    else if ty.op == "STRUCT" || ty.op == "UNION" || ty.op == "ENUM" then
+      (if ty.size == 0 then "incomplete " else "") + ty.name
     else ty.name or (throw "types: outtype has no spelling for `${ty.op}'");
 
   # types.c's eqtype(), ported rather than approximated. Structural equality is
@@ -240,6 +299,15 @@ rec {
   #
   # `ret' is what an incomplete array or a prototype mismatch is worth: the
   # caller decides whether "compatible enough to compose" counts.
+  #
+  # THERE IS NO STRUCT ARM AND THERE MUST NOT BE ONE. lcc's eqtype has none
+  # either: an aggregate is equal to itself by the first line's pointer
+  # comparison and to nothing else by the last line's `return 0'. Here that
+  # works because the aggregate type carries its tag symbol's id (see the
+  # header), so `ty1 == ty2' is that pointer comparison. An arm that compared
+  # aggregates some other way -- field by field, say -- would make two distinct
+  # structs with the same members compatible, which is exactly the silent
+  # failure the `sym' field exists to prevent.
   eqtype = ty1: ty2: ret:
     if ty1 == ty2 then true
     else if ty1.op != ty2.op then false

@@ -206,6 +206,46 @@ rec {
     else if ty.isfunc t then retype s p (ty.ptr t)
     else { inherit s; v = p; };
 
+  # enode.c's addrof(): the ADDRESS of an lvalue tree, found by walking down
+  # past the shapes that do not change what is being addressed. It is how `a.b'
+  # is built -- there is no operator that takes a member out of a struct VALUE,
+  # so `.' addresses its operand first and adds the offset to that.
+  #
+  # `p == q' in lcc is a POINTER comparison between two Trees, and it decides
+  # whether the walk moved at all: if it did not, the address is simply the
+  # INDIR's kid, and if it did, the original has to be evaluated for its side
+  # effects and the address taken from what it left behind. That test is why
+  # trees have integer ids (see this file's header).
+  addrof = s0: p:
+    let
+      go = s: q:
+        let
+          g = gen s q;
+          k0 = kid s q 0;
+          k1 = kid s q 1;
+        in
+        if g == "RIGHT" then
+          (if k1 != null then go s k1
+          else if k0 != null then go s k0
+          else throw "trees: addrof met a RIGHT tree with no kids")
+        else if g == "ASGN" then go s k1
+        else if g == "COND" then
+          # lcc FALLS THROUGH from COND into INDIR after replacing q with the
+          # conditional's temporary, and clears the tree's symbol on the way so
+          # that dag.c does not list the temporary a second time.
+          let i = idtree (setsym s q null) (get s q).sym; in
+          indirOf i.s i.v
+        else if g == "INDIR" then indirOf s q
+        else { s = sy.err s "addressable object required\n"; v = q; };
+      indirOf = s: q:
+        let k0 = kid s q 0; in
+        if p == q then { inherit s; v = k0; }
+        else
+          let r = root s p; in
+          tree r.s (ops.bare "RIGHT") (get r.s k0).type r.v k0;
+    in
+    go s0 p;
+
   condOps = [ "AND" "OR" "NOT" "EQ" "NE" "LE" "LT" "GE" "GT" ];
 
   cond = s: p:
@@ -314,6 +354,13 @@ rec {
     in
     if xty.size == 0 || yty.size == 0 then null
     else if ty.isarith xty && ty.isarith yty then xty
+    # enode.c's `isstruct(xty) && xty == yty'. lcc compares Type POINTERS
+    # there; here structural equality over a type that carries its tag
+    # symbol's id is the same relation, which is exactly why `struct A' and
+    # `struct B' with identical members are NOT assignable and why a tag
+    # redeclared in an inner scope is a different type. types.nix's header
+    # has the argument; this line is where it pays.
+    else if ty.isstruct xty && xty == yty then xty
     else if ty.isptr xty && isnullptr s e then xty
     else if ((isvoidptr xty && ty.isptr yty) || (ty.isptr xty && isvoidptr yty))
       && ((ty.isconst xty.type || !(ty.isconst yty.type))
@@ -363,7 +410,12 @@ rec {
       aty0 = (get lv.s lv.v).type;
       aty = if ty.isptr aty0 then (ty.unqual aty0).type else aty0;
       s1 =
-        if ty.isconst aty then
+        # enode.c's condition is `isconst(aty) || (isstruct(aty) && cfields)':
+        # a struct with ANY const member cannot be assigned to as a whole, even
+        # though the struct type itself is not const-qualified. An initialiser
+        # is the one exception, and `asgn' below is where lcc makes it.
+        if ty.isconst aty
+          || (ty.isstruct aty && (sy.getsym lv.s (ty.unqual aty).sym).cfields) then
           (if ops.isaddrop (get lv.s lv.v).op
             && !(sy.getsym lv.s (get lv.s lv.v).sym).computed
             && !(sy.getsym lv.s (get lv.s lv.v).sym).generated
@@ -385,11 +437,22 @@ rec {
     let
       psym = sy.getsym s0 p;
       s1 = sy.modsym s0 p (q: q // { type = ty.unqual q.type; });
-      i = idtree s1 p;
+      # The SECOND half of the same trick, for the aggregate case: lcc clears
+      # the tag's `cfields' bit around the assignment and puts it back. Without
+      # it `struct C { const int a; int b; } c = *d;' is refused where lcc
+      # compiles it -- and `c.a = 1' afterwards is still an error, which is the
+      # difference the bit is there to draw.
+      base = ty.unqual psym.type;
+      hasconst = ty.isstruct base && (sy.getsym s0 base.sym).cfields;
+      setcfields = st: v: if hasconst then sy.modsym st base.sym (q: q // { cfields = v; }) else st;
+      i = idtree (setcfields s1 false) p;
       a = asgntree i.s (ops.bare "ASGN") i.v e;
     in
     if ty.isarray psym.type then sy.refuse s0 "trees: array assignment is slice 2/3 (task-028)"
-    else { s = sy.modsym a.s p (q: q // { inherit (psym) type; }); inherit (a) v; };
+    else {
+      s = sy.modsym (setcfields a.s true) p (q: q // { inherit (psym) type; });
+      inherit (a) v;
+    };
 
   condtree = s0: e: l: r:
     let
@@ -627,6 +690,14 @@ rec {
       t = if sym0.type != null then ty.unqual sym0.type else ty.voidptype;
       # lcc's chain, in order, because only the EXTERN arm substitutes the
       # alias and only that arm is reached when the first three miss.
+      # A by-value struct PARAMETER is a pointer by the time the backend sees
+      # it (decision-009), so the frame slot holds an ADDRESS and reading the
+      # struct takes TWO loads, not one: `ADDRFP4 v' is a pointer to a pointer
+      # to the struct. lcc returns from here directly, without the reference
+      # count below -- deliberately, so a struct parameter is never promoted to
+      # a register by decl.c's checkref. Adding the increment would move whole
+      # forests.
+      structParam = sym0.scope == sy.PARAM && sym0.type != null && ty.isstruct sym0.type;
       chosen =
         if sym0.scope == sy.GLOBAL || sym0.sclass == sy.sclasses.static then { op = "ADDRG"; sym = p0; }
         else if sym0.scope == sy.PARAM then { op = "ADDRF"; sym = p0; }
@@ -646,8 +717,12 @@ rec {
         else if ty.isfunc t then tree s1 (ops.mkop opg ty.funcptype) sym.type null null
         else tree s1 (ops.mkop opg ty.voidptype) (ty.ptr sym.type) null null;
       e1 = { s = setsym e.s e.v p; inherit (e) v; };
+      structE = tree s0 (ops.mkop "ADDRF" ty.voidptype) (ty.ptr (ty.ptr sym0.type)) null null;
+      structE1 = { s = setsym structE.s structE.v p0; inherit (structE) v; };
+      structLoad = rvalue structE1.s structE1.v;
     in
-    if ty.isptr (get e1.s e1.v).type then rvalue e1.s e1.v else e1;
+    if structParam then rvalue structLoad.s structLoad.v
+    else if ty.isptr (get e1.s e1.v).type then rvalue e1.s e1.v else e1;
 
   incr = s: opgen: ctor: v: e:
     let a = ctor s (ops.bare opgen) v e; in

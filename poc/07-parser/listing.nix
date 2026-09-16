@@ -119,11 +119,21 @@ rec {
   # Walks the code list twice over, as dag.c does: this pass assigns frame
   # offsets, prints the block directives and hands each forest to I(gen) for
   # numbering; emitcode below prints what I(gen) produced.
+
+  # symbolic.c's I(local) RENAMES a temporary as it lays it out -- `1' becomes
+  # `t1' -- so the name in the `temporary' line and the name in every ADDRLP4
+  # that refers to it are the renamed one. sym.c's temporary() does NOT do
+  # this; only the backend does, which is why it is here and not there. The
+  # rename was unreachable until task-058, because nothing before it built a
+  # temporary that reached the frame: `?:' uses genident, and dag.c's CSE
+  # temporaries are a `!wants_dag' path the oracle does not take.
   localLine = st: p:
     let
-      q = sy.getsym st.s p;
+      q0 = sy.getsym st.s p;
+      s0 = if q0.temporary then sy.modsym st.s p (x: x // { name = "t${x.name}"; }) else st.s;
+      q = sy.getsym s0 p;
       off = roundup st.off q.type.align;
-      s1 = sy.modsym st.s p (x: x // { offset = off; });
+      s1 = sy.modsym s0 p (x: x // { offset = off; });
     in
     st // {
       s = emit s1 "${if q.temporary then "temporary" else "local"} ${symbolText s1 p}";

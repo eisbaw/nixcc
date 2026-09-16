@@ -168,7 +168,16 @@ rec {
         k1 = b.elemAt t.kids 1;
         # listnodes' first two lines: the node op is the tree op plus the width
         # of the tree's own type -- except for an array, which decays.
-        op = ops.sized t.op (if ty.isarray t.type then ty.voidptype.size else t.type.size);
+        #
+        # AND EXCEPT FOR A B-KIND OP, which carries no width at all: lcc writes
+        # `tp->op == INDIR+B ? tp->op : op' at the two sites where one can
+        # arrive, and the rule behind both is that INDIRB and ASGNB are spelled
+        # without a size. Adding one would print `ASGNB8' for an eight-byte
+        # struct, which is not an opcode and which the size operand -- printed
+        # separately, as `ASGNB #2 #3 8 4' -- already carries.
+        op =
+          if t.op.kind == "B" then t.op
+          else ops.sized t.op (if ty.isarray t.type then ty.voidptype.size else t.type.size);
         r = dispatch s0 tp t g k0 k1 op tlab flab;
       in
       { s = tr.setnode r.s tp r.v; inherit (r) v; };
@@ -405,9 +414,16 @@ rec {
         kty0 = (tr.get s0 k0).type;
         kty = if ty.isptr kty0 then (ty.unqual kty0).type else kty0;
       in
-      if ty.isvolatile kty then newnode a.s op a.v null null
+      # A load of a WHOLE aggregate that has any volatile member is built with
+      # newnode as well, so two copies of the same struct stay two INDIRB nodes
+      # rather than one shared node with count=2. The member's own qualifier
+      # covers `v->a'; this covers `w = x', where the type at this point is the
+      # struct and the volatility is a property of the tag.
+      if ty.isvolatile kty
+        || (ty.isstruct kty && (sy.getsym s0 (ty.unqual kty).sym).vfields)
+      then newnode a.s op a.v null null
       else node a.s op a.v null null
-    else if g == "FIELD" then sy.refuse s0 "dag: bit fields are outside slice 1"
+    else if g == "FIELD" then sy.refuse s0 "dag: bit fields belong to slice 4b (task-059)"
     else if g == "ADDRG" || g == "ADDRF" then
       node s0 (ops.sized t.op ty.voidptype.size) null null t.sym
     else if g == "ADDRL" then

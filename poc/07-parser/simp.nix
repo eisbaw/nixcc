@@ -16,11 +16,14 @@
 # boundary cases wrong, and lcc's are already right.
 #
 # WHAT IS NOT HERE. Every float case throws, naming decision-006. simp.c's
-# zerofield -- the bit-field rewrite in the EQ and NE cases -- is ABSENT rather
-# than throwing, because a bit field cannot reach simplify() at all: parse.nix
-# refuses `struct' before a field can be declared, and trees.nix refuses a
-# FIELD tree in asgntree. Saying it "throws" was wrong, and an inventory that
-# is wrong about itself is worse than no inventory. simp.c's addrtree -- the rewrite that
+# zerofield -- the bit-field rewrite in the EQ and NE cases -- now THROWS,
+# naming task-059, and the change is the point rather than tidiness. It used to
+# be ABSENT, on the recorded grounds that a bit field could not reach
+# simplify() at all because parse.nix refused `struct' before a field could be
+# declared. task-058 lifted exactly that gate. A guard satisfied by a refusal
+# in another file is a guard that can be un-gated by an edit that never reads
+# this one, and this is the only place in the frontend where that was true; it
+# is now the only place where it is not. simp.c's addrtree -- the rewrite that
 # turns `msg[2]' into `ADDRGP4 msg+8' -- throws naming the slice that owns it.
 # A missing case is a throw rather than a fallthrough to `tree(op,...)',
 # because a silently unsimplified tree is a node-for-node diff failure whose
@@ -229,6 +232,23 @@ rec {
       idI = k: s: t: l: r: idR k (ty.ones (8 * (ty.unqual t).size)) s t l r;
 
       lift = f: s: t: l: r: f s t l r;
+
+      # simp.c's zerofield(): `bitfield == 0' is rewritten into a mask and a
+      # comparison against the whole word, because there is no compare that
+      # takes a bit range. It is a REFUSAL here rather than a rewrite -- a bit
+      # field has no `lsb' or `bitsize' in this frontend to build the mask out
+      # of (task-059).
+      #
+      # It is UNREACHABLE today: parse.nix's `fields' refuses a `:' in a member
+      # declaration, so no FIELD tree is ever built. That is the point of
+      # having it anyway. Until task-058 the same argument was made one file
+      # further away -- `struct' itself was refused -- and lifting that refusal
+      # would have un-gated this rewrite silently, in an edit that never opened
+      # simp.nix. The guard now sits where the rewrite would have gone.
+      zerofield = k: s: _t: l: r:
+        if l != null && gen s l == "FIELD" && isCnst s r k && cval s r == 0
+        then sy.refuse s "simp: comparing a bit field against zero needs its mask (task-059)"
+        else null;
 
       # `(l, C)' -- evaluate l for its side effects, yield the constant C.
       rightConst = mkc: s: t: l: _r:
@@ -611,10 +631,13 @@ rec {
       ];
 
       # ---- comparisons ----
-      "EQ+I" = chain (ops.mk "EQ" "I") [ (cfold "I" (x: y: x == y)) swapRight ];
-      "EQ+U" = chain (ops.mk "EQ" "U") [ (cfold "U" (x: y: x == y)) swapRight ];
-      "NE+I" = chain (ops.mk "NE" "I") [ (cfold "I" (x: y: x != y)) swapRight ];
-      "NE+U" = chain (ops.mk "NE" "U") [ (cfold "U" (x: y: x != y)) swapRight ];
+      # The four `zerofield' entries sit exactly where simp.c's macro does,
+      # after the fold and the commute, because the rewrite it stands for reads
+      # the LEFT operand and the commute is what put the constant on the right.
+      "EQ+I" = chain (ops.mk "EQ" "I") [ (cfold "I" (x: y: x == y)) swapRight (zerofield "I") ];
+      "EQ+U" = chain (ops.mk "EQ" "U") [ (cfold "U" (x: y: x == y)) swapRight (zerofield "U") ];
+      "NE+I" = chain (ops.mk "NE" "I") [ (cfold "I" (x: y: x != y)) swapRight (zerofield "I") ];
+      "NE+U" = chain (ops.mk "NE" "U") [ (cfold "U" (x: y: x != y)) swapRight (zerofield "U") ];
       "GE+I" = chain (ops.mk "GE" "I") [ (cfold "I" (x: y: x >= y)) ];
       "GT+I" = chain (ops.mk "GT" "I") [ (cfold "I" (x: y: x > y)) ];
       "LE+I" = chain (ops.mk "LE" "I") [ (cfold "I" (x: y: x <= y)) ];

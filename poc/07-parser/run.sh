@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The C parser and DAG builder PoC: slices 1 and 2 of decision-007.
+# The C parser and DAG builder PoC: slices 1, 2 and 4a of decision-007.
 #
 # What this proves, in the order the stages run:
 #
@@ -7,13 +7,19 @@
 #      listing parser, which re-checks node numbering, reference counts,
 #      post-order and dangling `#n' from the CONSUMER's side; the corpus
 #      produces exactly the declared set of opcodes; a discarded call is still
-#      a listed root nothing references; and six C programs COMPILE FROM .c
+#      a listed root nothing references; and eight C programs COMPILE FROM .c
 #      AND RUN on the Nix RV32I emulator, printing what cases.nix independently
 #      computes -- one of them through a string literal with a NUL in the
-#      middle, which is the byte a Nix string cannot hold (decision-001).
-#   2. must-fail.nix -- the C outside slices 1 and 2 is refused, each reject paired
-#      with a control that must still compile, so a frontend that threw on
-#      everything could not pass.
+#      middle, which is the byte a Nix string cannot hold (decision-001), and
+#      one of them by writing a struct's members and reading the same storage
+#      back a byte at a time through a union.
+#   2. must-fail.nix -- the C these slices do not cover is refused, each reject
+#      paired with a control that must still compile, so a frontend that threw
+#      on everything could not pass. Three of those pairs are about TYPE
+#      IDENTITY, which no oracle diff can reach: lcc rejects all three
+#      programs, so the differential never runs on them, and lcc prints the tag
+#      NAME, so two distinct anonymous structs would look identical in a
+#      listing either way.
 #   3. messages.sh -- and each refusal says what it promised to say, which
 #      builtins.tryEval cannot check because it discards the message.
 #   4. oracle.py -- the listing AND lcc's stderr, diffed byte for byte against
@@ -26,7 +32,7 @@
 #      symbols all live, which decision-001 says is the constraint that decides
 #      whether any of this scales.
 #   7. A mutation test over the frontend AND this harness. This project has
-#      shipped nine suites that reported success while verifying nothing, so
+#      shipped ten suites that reported success while verifying nothing, so
 #      every check above is assumed broken until a mutation proves otherwise.
 #
 # NO TIMING LADDER, and so no contention self-test and no NO VERDICT path. The
@@ -179,8 +185,13 @@ mutate "frontend: the dag stops sharing common subexpressions" \
 # node's first symbol. Drop the symbol and CVUI4 from an int and CVUI4 from a
 # char become indistinguishable -- which is the trap the task-023/024/025 batch
 # carried forward.
+# The fragment is a line of ENUMS.C and not of the file that used to supply
+# it, which is the cost the note above collected a second time: oracle.py
+# prints the first two differing files, and adding c/enums.c -- which converts
+# an enum to unsigned and back for `sizeof' -- put a new file ahead of the one
+# this used to name.
 mutate "frontend: a conversion node loses its source width" \
-       "we  '17. CVPU4 #18'" \
+       "we  '5. CVIU4 #6'" \
        "sed -i 's|node c.s op a.v null c.v|node c.s op a.v null null|' dag.nix" \
        "$oracle"
 
@@ -318,9 +329,12 @@ mutate "frontend: a const local with an initialiser is refused" \
 
 # A volatile load is built with newnode rather than node, so two reads of the
 # same volatile object stay two dag nodes. Nothing but the listing shows it.
+# The condition it aims at grew a second clause in task-058 -- a struct with a
+# volatile MEMBER is loaded the same way -- so this sed now blinds only the
+# scalar half, and the struct half has a mutation of its own further down.
 mutate "frontend: a volatile load is common-subexpression-eliminated" \
        "we  '7. ADDI4 #8 #8'" \
-       "sed -i 's|if ty.isvolatile kty then newnode a.s op a.v null null|if false then newnode a.s op a.v null null|' dag.nix" \
+       "sed -i 's|      if ty.isvolatile kty$|      if false|' dag.nix" \
        "$oracle"
 
 # lcc collapses a nested array's dimensions into one list and names the
@@ -469,7 +483,7 @@ mutate "harness: a corpus file stops being offered to the differential" \
 
 # Criterion #4 is "the programs RUN". Nothing asserted how many.
 mutate "harness: one of the running programs goes missing" \
-       "run/ holds 6 programs" \
+       "run/ holds 7 programs" \
        "mv run/gcd.c run/gcd.c.off" \
        "$check"
 
@@ -598,6 +612,178 @@ mutate "harness: the argument run/strings.c assumes two digits of stops being on
        "sed -i 's@strings = 10;@strings = 5;@' cases.nix" \
        "$check"
 
+# --- slice 4a: struct, union and enum (task-058) ---------------------------
+# Eighteen, and the split says what the slice is: THREE are aimed at type
+# identity, five at the layout, seven at everything else the frontend learned,
+# and three at this harness's own second implementation of the layout.
+#
+# ZEROFIELD HAS NO MUTATION HERE and that is deliberate rather than an
+# omission. simp.nix's refusal for `bitfield == 0' is unreachable -- parse.nix
+# refuses a `:' in a member declaration first -- so corrupting it changes
+# nothing that runs, and a mutation of it would report "not detected" for the
+# right reason. What IS tested is the reachable gate: the bit-field refusal is
+# a must-fail case with a control, and messages.sh holds its text. The simp.nix
+# throw is a guard against a later slice un-gating the rewrite, which is
+# exactly what task-058 did to its predecessor.
+
+# THE ONE CRITERION #1 RESTS ON, and the only one here that would MISCOMPILE
+# rather than misdiagnose. An aggregate type carries the id of the tag symbol
+# lcc mints for it, and that id is the whole of its identity; blind the
+# comparison to it and a pointer to one anonymous struct becomes assignable to
+# a pointer to another with different members. `cast' does not catch that the
+# way it catches a struct-to-struct assignment -- one four-byte pointer to
+# another is a retype and nothing else -- so the program compiles and every
+# member access after it reads the wrong layout.
+mutate "frontend: two aggregate types compare without their tag symbols" \
+       "compiled fine: a pointer to one anonymous struct assigned to a pointer to another" \
+       "sed -i 's|ty.unqual xty.type == ty.unqual yty.type|b.removeAttrs (ty.unqual xty.type) \[ \"sym\" \] == b.removeAttrs (ty.unqual yty.type) \[ \"sym\" \]|g' trees.nix" \
+       "$must_fail"
+
+# Its partner on the struct-to-struct path. This one does NOT compile with the
+# mutation applied -- `cast' has no STRUCT arm and refuses it anyway -- so what
+# it proves is narrower and still worth proving: the refusal is lcc's OWN
+# diagnostic about incompatible types, not an accident of a missing conversion
+# rule further down.
+mutate "frontend: a struct assignment is refused by the cast rather than by the type" \
+       "'two DIFFERENT anonymous structs with identical members, assigned to each other' threw" \
+       "sed -i 's|else if ty.isstruct xty \&\& xty == yty then xty|else if ty.isstruct xty \&\& b.removeAttrs xty \[ \"sym\" \] == b.removeAttrs yty \[ \"sym\" \] then xty|' trees.nix" \
+       "$messages"
+
+# The incomplete-aggregate refusal (task-066), which is what keeps a stale copy
+# of a half-built type from ever existing. Its first version returned the TYPE
+# and Nix never forced it -- `struct N { struct N *next; }' compiled with an
+# unevaluated throw inside the member -- so this is aimed at a defect this
+# slice actually shipped for an hour.
+mutate "frontend: an incomplete aggregate is carried into a declarator" \
+       "compiled fine: a forward-declared tag used before its members are known" \
+       "sed -i 's|^  requireComplete = s: t:$|  requireComplete = s: _t: s; unusedRequireComplete = s: t:|' parse.nix" \
+       "$must_fail"
+
+# --- the layout, five ways --------------------------------------------------
+# THE ONE CRITERIA #4, #5 AND #6 REST ON. Three of these change the NUMBER
+# run/records.c prints rather than only its listing, which is why that program
+# reads its struct back byte by byte through a union: a member at the wrong
+# offset moves a non-zero byte and the weighted sum moves with it.
+
+mutate "frontend: a struct member is not aligned, so a char before an int costs no padding" \
+       "we  ' 6. CNSTI4 count=3 1'" \
+       "sed -i 's|at = if ty0.op == \"UNION\" then 0 else roundup acc.off a;|at = if ty0.op == \"UNION\" then 0 else acc.off;|' parse.nix" \
+       "$oracle"
+
+mutate "frontend: an aggregate's size is not rounded up to its own alignment" \
+       "printed \`11 16 4 113 190" \
+       "sed -i 's|      size = roundup laid.size laid.align;|      size = laid.size;|' parse.nix" \
+       "$check"
+
+# A union whose members are laid out one after another is a struct, and the
+# whole point of the type is gone. The C writes through one member and reads
+# through another, so the overlap is what the printed number is made of.
+mutate "frontend: a union's members are laid out one after another" \
+       "printed \`12 28 4 113 0" \
+       "sed -i 's|at = if ty0.op == \"UNION\" then 0 else roundup acc.off a;|at = roundup acc.off a;|' parse.nix" \
+       "$check"
+
+mutate "frontend: every member is at offset zero" \
+       "printed \`12 16 4 135 9" \
+       "sed -i 's|c = tr.consttree s0 q.offset ty.signedptr;|c = tr.consttree s0 0 ty.signedptr;|' parse.nix" \
+       "$check"
+
+# symbolicIR's structmetric is { 0, 4 }, so EVERY aggregate is four-byte
+# aligned here -- a one-char union is four bytes. That is the oracle's rule and
+# not RV32's, and nothing but the listing says which one we followed.
+mutate "frontend: an aggregate has no minimum alignment of its own" \
+       "we  'blockend off=13'" \
+       "sed -i 's|^  structAlign = 4;$|  structAlign = 1;|' parse.nix" \
+       "$oracle"
+
+# --- what else the frontend learned -----------------------------------------
+# decision-009's own mutation: with wants_argb = 0 a by-value struct parameter
+# is a POINTER with `flags=structarg', and the flag is the only trace in the
+# listing that the pointer is the compiler's rather than the program's.
+mutate "frontend: a by-value struct parameter is not marked structarg" \
+       "we  'caller v type=pointer to struct P sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000'" \
+       "sed -i 's|(x: x // { type = ty.ptr x.type; structarg = true; })|(x: x // { type = ty.ptr x.type; })|g' parse.nix" \
+       "$oracle"
+
+# ...and the other half of the same convention: the frame slot holds an
+# ADDRESS, so reading the struct takes two loads. One load reads the pointer as
+# if it were the struct.
+mutate "frontend: a by-value struct parameter is read with one load instead of two" \
+       "we  'address v+4 type=int sclass=auto scope=PARAM flags=computed offset=0 ref=1.000000'" \
+       "sed -i 's|    if structParam then rvalue structLoad.s structLoad.v|    if false then rvalue structLoad.s structLoad.v|' trees.nix" \
+       "$oracle"
+
+# dag.c builds the load of a struct with a VOLATILE member with newnode rather
+# than node, so two copies of it stay two INDIRB nodes. Nothing but the listing
+# shows it, and c/structs.c's `volat' is the only place in the corpus that can.
+mutate "frontend: a load of a struct with a volatile member is shared" \
+       "we  '3. INDIRB count=2 #4'" \
+       "sed -i 's|        vfields = b.any (f: ty.isvolatile f.type) laid.out;|        vfields = false;|' parse.nix" \
+       "$oracle"
+
+# `A = 1, B' is 2 because the implicit counter RESUMES from the explicit value.
+# A counter that did not would give the same answer for `{ A, B }' and the
+# wrong one for every enum anybody writes.
+# The fragment is the LOCAL's node number and not the constant that actually
+# changed, which looks like the wrong choice and is not: `we  ' 2. CNSTI4 0''
+# is what this mutation makes enums.c print, and it also appears in the
+# generated corpus under the shift-overflow mutation above. The distinctness
+# loop at the bottom caught that -- a fragment has to say something no other
+# mutation says, and an enumerator that stopped counting renumbers the forest
+# as well as changing the constant.
+mutate "frontend: an explicit enumerator value does not advance the counter" \
+       "we  ' 8. ADDRLP4 k'" \
+       "sed -i 's|if tk ins.s != \",\" then ins.s else loop (advance ins.s) e.v;|if tk ins.s != \",\" then ins.s else loop (advance ins.s) k;|' parse.nix" \
+       "$oracle"
+
+# An anonymous tag is named with a GENERATED LABEL NUMBER, so declaring one
+# consumes a label and shifts every label after it in the translation unit --
+# in later functions, not just its own. c/structs.c's `anon' is what makes that
+# visible: the function after it is where the number moves.
+mutate "frontend: an anonymous tag does not consume a label number" \
+       "we  ' 15:'" \
+       "sed -i 's|g = if tag0 == \"\" then sy.genlabel s0 1 else { s = s0; v = 0; };|g = if tag0 == \"\" then { s = s0; v = s0.labelctr; } else { s = s0; v = 0; };|' parse.nix" \
+       "$oracle"
+
+# A B-kind opcode carries NO width: `ASGNB', never `ASGNB8'. The size is
+# already a separate operand on the node, which is what makes the doubling
+# invisible to anything but a byte-for-byte diff.
+mutate "frontend: INDIRB and ASGNB print a width" \
+       "we  '4. INDIRB8 #5'" \
+       "sed -i 's|          if t.op.kind == \"B\" then t.op|          if false then t.op|' dag.nix" \
+       "$oracle"
+
+# symbolic.c's I(local) RENAMES a temporary as it lays it out, so `1' becomes
+# `t1' in the `temporary' line AND in every ADDRLP4 that refers to it. sym.c
+# does not do this; only the backend does.
+mutate "frontend: a temporary is not renamed when the frame is laid out" \
+       "we  'temporary 1 type=struct P" \
+       "sed -i 's|      s0 = if q0.temporary then sy.modsym st.s p (x: x // { name = \"t\${x.name}\"; }) else st.s;|      s0 = st.s;|' listing.nix" \
+       "$oracle"
+
+# --- and this harness's own second implementation of the layout -------------
+# cases.nix lays run/records.c's struct out again, in Nix, from decl.c's rule
+# rather than from the C -- so "the compiled program is right" is two
+# derivations agreeing. These three are what say that second implementation is
+# doing the work rather than restating an answer.
+mutate "harness: the expected layout stops aligning members" \
+       "wanted \`8 16 4 113 127" \
+       "sed -i 's|        let at = roundup acc.off f.align; in|        let at = acc.off; in|' cases.nix" \
+       "$check"
+
+mutate "harness: the expected byte sum stops weighting by position" \
+       "wanted \`12 16 4 113 24" \
+       "sed -i 's|a + b.elemAt img i \\* (i + 1)|a + b.elemAt img i|' cases.nix" \
+       "$check"
+
+# decision-004's little-endian override, seen from the expectation's end: the
+# C reads the struct back one byte at a time, so which byte of `i' lands at
+# offset 4 is the difference between the two byte orders.
+mutate "harness: the expected image stops decomposing a value into bytes" \
+       "wanted \`12 16 4 113 365" \
+       "sed -i 's|byte = b.bitAnd (vals.\${f.name} / pow256 k) 255;|byte = vals.\${f.name};|' cases.nix" \
+       "$check"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -617,7 +803,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=57
+declared=75
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

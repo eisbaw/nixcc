@@ -13,7 +13,10 @@
 #     rather than in any node;
 #   * and the programs of criterion #4 compile from .c and RUN, printing what
 #     cases.nix independently computes -- one of them through a string literal
-#     laid down in .data by data.nix, with a NUL in the middle of it.
+#     laid down in .data by data.nix, with a NUL in the middle of it, and one
+#     of them by writing a padded struct's members and reading the same storage
+#     back a byte at a time through a union, so that a member at the wrong
+#     offset changes the NUMBER and not only an address.
 { cpu }:
 let
   b = builtins;

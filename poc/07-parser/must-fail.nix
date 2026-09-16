@@ -39,7 +39,7 @@ let
   # Declared and checked for EQUALITY. poc/lib/mutant.sh's argument about
   # mutation counts applies to tables too: a floor can be spent downward in
   # silence, and equality forces the edit that was wanted anyway.
-  declaredCases = 25;
+  declaredCases = 37;
 
   cases = [
     # --- float, which decision-006 says must be REFUSED, not miscompiled ---
@@ -127,20 +127,128 @@ let
       control = "int f(void){ char *s; s = \"a\" \"b\"; return s[0]; }";
       expect = "different widths are joined here";
     }
+    # --- TYPE IDENTITY, which is what criterion #1 of task-058 is ---------
+    # These three are the whole argument for the `sym' field on an aggregate
+    # type. The IR diff CANNOT see any of them: lcc prints the tag name, so
+    # the listings would agree, and all three programs are rejected by lcc --
+    # which means the differential never runs on them at all. A frontend that
+    # compared aggregates structurally would accept all three, and nothing
+    # else in this suite would notice.
     {
-      what = "a struct declaration";
-      src = "struct s { int a; }; int f(void){ return 0; }";
-      control = "int f(void){ int a; a = 1; return a; }";
-      expect = "struct, union and enum types are outside slice 1";
+      what = "two DIFFERENT anonymous structs with identical members, assigned to each other";
+      src = "int f(void){ struct { int a; } x; struct { int a; } y; x = y; return x.a; }";
+      control = "int f(void){ struct { int a; } x; struct { int a; } y; x.a = y.a; return x.a; }";
+      # lcc's own diagnostic, verbatim: the two SPELLINGS are identical and
+      # only the tag symbol tells the types apart.
+      expect = "`struct defined at 1' and `struct defined at 1'";
     }
     {
-      # Same throw site as the struct case, reached from a LOCAL declaration
-      # rather than a file-scope one, so its fragment pins the line to stay
-      # distinguishable from it.
-      what = "an enum declaration, which reaches the same site by another route";
-      src = "int f(void)\n{\n    enum e { A } x;\n    return 0;\n}\n";
-      control = "int f(void)\n{\n    int A;\n    A = 0;\n    return A;\n}\n";
-      expect = "line 3: parse: struct, union and enum types";
+      # THE ONE THAT WOULD MISCOMPILE RATHER THAN MISDIAGNOSE, and so the one
+      # worth having. The two assignments above are caught twice over -- the
+      # second time by `cast', which has no STRUCT arm and would refuse them
+      # whatever assign() said. A POINTER assignment has no such second line:
+      # `cast' from one four-byte pointer to another is a retype and nothing
+      # else, so a frontend that thought these two types were the same would
+      # COMPILE this, and every `x->a' after it would read struct B's layout
+      # through a struct A pointer.
+      # The two structs are ANONYMOUS and declared on the same line, so their
+      # spellings are identical, their sizes are identical, and the ONLY thing
+      # that separates them is the tag symbol. A tagged pair would be
+      # separated by `name' as well, which is the older mechanism and would
+      # mask what this is testing.
+      what = "a pointer to one anonymous struct assigned to a pointer to another";
+      src = "int f(void){ struct { int a; } x; struct { int b; } *p; p = &x; return p->b; }";
+      control = "struct P { int a; }; int f(void){ struct P x; struct P *p; p = &x; return p->a; }";
+      expect = "`pointer to struct defined at 1' and `pointer to struct defined at 1'";
+    }
+    {
+      what = "a tag redeclared in an inner scope, which is a DIFFERENT type of the same name";
+      src = "struct P { int a; }; int f(struct P *o){ struct P { int a; }; struct P in; in = *o; return in.a; }";
+      control = "struct P { int a; }; int f(struct P *o){ struct P in; in = *o; return in.a; }";
+      expect = "illegal types `struct P' and `struct P'";
+    }
+
+    # --- the compound-type surface slice 4a does NOT cover ----------------
+    {
+      what = "a bit field";
+      src = "struct P { unsigned a : 3; }; int f(void){ return 0; }";
+      control = "struct P { unsigned a; }; int f(void){ return 0; }";
+      expect = "bit fields belong to slice 4b (task-059)";
+    }
+    {
+      what = "a forward-declared tag used before its members are known";
+      src = "struct P; int f(struct P *p){ return 0; }";
+      control = "struct P { int a; }; int f(struct P *p){ return p->a; }";
+      expect = "line 1: parse: `incomplete struct P' has no members yet";
+    }
+    {
+      # The SAME throw site as the case above, reached from a field list
+      # rather than from a parameter list, so its fragment pins the line. This
+      # is the one that costs a linked list, and it is here so that the cost
+      # is written down as a test rather than as a sentence.
+      what = "a self-referential struct, which is what task-066 actually costs";
+      src = "struct N {\n    int v;\n    struct N *next;\n};\nint f(struct N *p){ return p->v; }\n";
+      control = "struct N {\n    int v;\n    int next;\n};\nint f(struct N *p){ return p->v; }\n";
+      expect = "line 3: parse: `incomplete struct N' has no members yet";
+    }
+    {
+      what = "a typedef of an aggregate with no tag, whose spelling lcc looks up at print time";
+      src = "typedef struct { int a; } T; int f(T *t){ return t->a; }";
+      control = "typedef struct P { int a; } T; int f(T *t){ return t->a; }";
+      expect = "`typedef' of an aggregate with no tag";
+    }
+    {
+      what = "DEFINING a function that returns a struct by value";
+      src = "struct P { int a; }; struct P mk(void){ struct P p; p.a = 1; return p; }";
+      control = "struct P { int a; }; int mk(void){ struct P p; p.a = 1; return p.a; }";
+      expect = "needs the hidden return parameter (task-068)";
+    }
+    {
+      # The other half of task-068, and a separate throw site: a function
+      # declared elsewhere can be CALLED without ever being defined here.
+      what = "CALLING a function that returns a struct by value";
+      src = "struct P { int a; }; extern struct P mk(void); int f(void){ struct P p; p = mk(); return p.a; }";
+      control = "struct P { int a; }; extern int mk(void); int f(void){ struct P p; p.a = mk(); return p.a; }";
+      expect = "builds a CALLB (task-068)";
+    }
+    {
+      what = "a braced initialiser for a local aggregate";
+      src = "struct P { int a; }; int f(void){ struct P p = { 1 }; return p.a; }";
+      control = "struct P { int a; }; int f(struct P *q){ struct P p = *q; return p.a; }";
+      expect = "a braced initialiser belongs to slice 3 (task-029)";
+    }
+
+    # --- compound-type C that lcc itself rejects --------------------------
+    {
+      # The CONTROL is the interesting half. enode.c's asgn() clears the tag's
+      # `cfields' bit around an assignment and puts it back, which is the only
+      # thing that lets an INITIALISER of a struct with a const member
+      # compile; the reject is the same struct assigned to a line later.
+      what = "assigning to a struct that has a const member";
+      src = "struct C { const int a; int b; }; int f(struct C *d){ struct C c; c = *d; return c.a; }";
+      control = "struct C { const int a; int b; }; int f(struct C *d){ struct C c = *d; return c.a; }";
+      expect = "assignment to const identifier `c'";
+    }
+    {
+      what = "a member the struct does not have";
+      src = "struct P { int a; }; int f(struct P *p){ return p->z; }";
+      control = "struct P { int a; }; int f(struct P *p){ return p->a; }";
+      expect = "unknown field `z' of `struct P'";
+    }
+    {
+      what = "`struct' with neither a tag nor a body";
+      src = "int f(void){ struct ; return 0; }";
+      control = "int f(void){ struct S { int a; } s; s.a = 1; return s.a; }";
+      expect = "missing struct tag";
+    }
+    {
+      # decl.c accepts a specifier with no declarator only when it named
+      # something that can be referred to later. An anonymous aggregate cannot
+      # be, so the declaration is empty and lcc says so.
+      what = "an anonymous struct declared and never named";
+      src = "struct { int a; };\nint f(void){ return 0; }\n";
+      control = "struct P { int a; };\nint f(void){ return 0; }\n";
+      expect = "line 1: empty declaration";
     }
     {
       # Pointer arithmetic on a pointer to an INCOMPLETE type. lcc errors and
@@ -159,10 +267,10 @@ let
       expect = "operands of - have illegal types";
     }
     {
-      what = "a struct member";
+      what = "a member selected from something that is not a struct";
       src = "int f(int a){ return a.x; }";
       control = "int f(int a){ return a; }";
-      expect = "struct members are outside slice 1";
+      expect = "left operand of . has incompatible type";
     }
     {
       what = "a tentative global";

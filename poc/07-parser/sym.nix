@@ -66,6 +66,12 @@ rec {
     register = "register";
     static = "static";
     typedef = "typedef";
+    # An enumeration constant's storage class is the ENUM token itself in lcc,
+    # so `%k' would spell it `enum'. It is never printed today -- decl.c's
+    # doglobal tests for extern/auto/static and an enum constant is none of
+    # them -- but it IS compared, by expr.c's primary(), which is how an
+    # identifier is recognised as a constant rather than an object.
+    enumconst = "enum";
     none = "";
   };
 
@@ -90,6 +96,19 @@ rec {
     equatedto = null; # u.l.equatedto
     value = null; # ENUM symbols carry their value, CONSTANTS theirs
     loc = null; # u.c.loc: the generated static a string constant is laid out under
+
+    # u.s, on a TAG symbol -- the symbol lcc's newstruct() mints for a struct,
+    # union or enum. It is the one lcc keeps the field list on, and it is also
+    # the one an aggregate TYPE points at, which is what makes two structs with
+    # identical fields different types (see types.nix's `aggregate').
+    #
+    # The fields live HERE rather than inside the type for the reason lcc's do:
+    # decl.c's fields() fills them in AFTER the type has been handed out, and a
+    # second copy of the type would not see them appear. `null' is "no field
+    # list yet", which is not the same as `[ ]'.
+    fields = null; # [ { name; type; offset; } ], in declaration order
+    cfields = false; # u.s.cfields: some field is const-qualified
+    vfields = false; # u.s.vfields: some field is volatile-qualified
   };
 
   initial = {
@@ -108,8 +127,13 @@ rec {
     refinc = 1.0;
     regcount = 0;
     level = GLOBAL;
-    scopes = [ ]; # [ { level; tbl = { name -> symid }; } ], innermost first
+    # [ { level; tbl; tags; } ], innermost first. TWO tables per frame, because
+    # lcc has two: `identifiers' and `types'. A struct tag and a variable may
+    # share a name -- `struct stat stat;' is ordinary C -- and one table would
+    # make them collide.
+    scopes = [ ];
     globals = { }; # `identifiers' at GLOBAL
+    globalTags = { }; # `types' at GLOBAL: tag name -> the tag symbol's id
     globalOrder = [ ]; # installation order, so finalize can walk it in reverse
     externals = { };
     externalOrder = [ ];
@@ -150,7 +174,7 @@ rec {
   enterscope = s: s // {
     level = s.level + 1;
     tempid = if s.level + 1 == LOCAL then 0 else s.tempid;
-    scopes = [ { level = s.level + 1; tbl = { }; } ] ++ s.scopes;
+    scopes = [ { level = s.level + 1; tbl = { }; tags = { }; } ] ++ s.scopes;
   };
 
   exitscope = s: s // {
@@ -158,16 +182,30 @@ rec {
     scopes = if s.scopes == [ ] then [ ] else b.tail s.scopes;
   };
 
+  # THE TWO NAMESPACES, declared once. sym.c's install(), lookup() and
+  # foreach() all take the TABLE as an argument, precisely so that the scope
+  # walk exists once and serves both `identifiers' and `types'. Writing a
+  # second copy of the walk for tags is how a fix to one misses the other --
+  # and the walk is where the shadowing rules live.
+  #
+  # `ordered' is the difference that is NOT cosmetic: decl.c's finalize()
+  # walks the identifiers installed at GLOBAL, in reverse, to emit `import'
+  # and the tentative-definition diagnostics. Tags are not in that walk, so
+  # they must not be in `globalOrder'.
+  namespaces = {
+    identifiers = { inScope = "tbl"; atGlobal = "globals"; ordered = true; };
+    types = { inScope = "tags"; atGlobal = "globalTags"; ordered = false; };
+  };
+
   # install into the innermost scope whose level is `lev'. lcc's install()
   # takes the table and walks `previous' links; here the scope stack is the
-  # table chain, and GLOBAL lives outside it in `globals'.
-  install = s: name: lev: attrs:
+  # table chain, and GLOBAL lives outside it in `globals'/`globalTags'.
+  installNS = ns: s: name: lev: attrs:
     let r = newsym s (attrs // { inherit name; scope = lev; }); in
     if lev <= GLOBAL then {
       s = r.s // {
-        globals = r.s.globals // { ${name} = r.v; };
-        globalOrder = r.s.globalOrder ++ [ r.v ];
-      };
+        ${ns.atGlobal} = r.s.${ns.atGlobal} // { ${name} = r.v; };
+      } // (if ns.ordered then { globalOrder = r.s.globalOrder ++ [ r.v ]; } else { });
       inherit (r) v;
     }
     else
@@ -184,27 +222,55 @@ rec {
         {
           s = r.s // {
             scopes = b.genList
-              (i: if i == k then sc // { tbl = sc.tbl // { ${name} = r.v; }; } else b.elemAt r.s.scopes i)
+              (i: if i == k
+              then sc // { ${ns.inScope} = sc.${ns.inScope} // { ${name} = r.v; }; }
+              else b.elemAt r.s.scopes i)
               (b.length r.s.scopes);
           };
           inherit (r) v;
         };
 
   # lookup searches innermost first, then the globals.
-  lookup = s: name:
+  lookupNS = ns: s: name:
     let
-      found = b.filter (sc: sc.tbl ? ${name}) s.scopes;
+      found = b.filter (sc: sc.${ns.inScope} ? ${name}) s.scopes;
     in
-    if found != [ ] then (b.head found).tbl.${name}
-    else s.globals.${name} or null;
+    if found != [ ] then (b.head found).${ns.inScope}.${name}
+    else s.${ns.atGlobal}.${name} or null;
 
   # The symbol a name resolves to in the CURRENT scope only, which is what
   # decl.c's redeclaration checks want.
-  lookupIn = s: name: lev:
-    let hit = b.filter (sc: sc.level == lev && sc.tbl ? ${name}) s.scopes; in
-    if hit != [ ] then (b.head hit).tbl.${name}
-    else if lev <= GLOBAL then s.globals.${name} or null
+  lookupInNS = ns: s: name: lev:
+    let hit = b.filter (sc: sc.level == lev && sc.${ns.inScope} ? ${name}) s.scopes; in
+    if hit != [ ] then (b.head hit).${ns.inScope}.${name}
+    else if lev <= GLOBAL then s.${ns.atGlobal}.${name} or null
     else null;
+
+  install = installNS namespaces.identifiers;
+  lookup = lookupNS namespaces.identifiers;
+  lookupIn = lookupInNS namespaces.identifiers;
+
+  # ...and the same walk over lcc's `types' table, which holds struct, union
+  # and enum TAGS. There is no `lookupTagIn' to match `lookupIn' above, and the
+  # asymmetry is lcc's: types.c's newstruct does a full `lookup(tag, types)'
+  # and then TESTS the symbol's scope, because the two cases it has to tell
+  # apart -- a redefinition here and a shadowing declaration from an outer
+  # scope -- both need the outer symbol in hand.
+  installTag = installNS namespaces.types;
+  lookupTag = lookupNS namespaces.types;
+
+  # The field list decl.c's fields() laid down, by tag symbol. `null' here is
+  # an aggregate whose body was never seen, which is a different thing from one
+  # with no fields, and the caller has to be able to tell them apart.
+  fieldlist = s: t: (getsym s t.sym).fields;
+
+  # types.c's fieldref(): the field of `t' called `name', or null.
+  fieldref = s: name: t:
+    let
+      fs = fieldlist s t;
+      hit = if fs == null then [ ] else b.filter (f: f.name == name) fs;
+    in
+    if hit == [ ] then null else b.head hit;
 
   lookupExternal = s: name: s.externals.${name} or null;
 

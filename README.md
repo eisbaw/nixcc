@@ -44,13 +44,26 @@ assembles and executes it in one `nix eval` with a `PATH` holding nothing but
 `nix`. `hello.sym` is still there and still regenerated from lcc -- as the
 ORACLE the listing is diffed against, not as the input.
 
+**`struct`, `union` and `enum` compile from `.c` as of TASK-058**, which was a
+frontend-only slice: a full record program reaches sixteen IR opcodes and every
+one of them already had a rule, so it ran end to end on the day it landed.
+`run/records.c` writes four members of a padded struct and reads the same
+storage back one byte at a time through a union, so a dropped, misaligned or
+wrong-offset member changes the number it prints rather than only an address.
+Aggregate layout follows the ORACLE and not the RV32 ABI: `symbolicIR`'s
+`structmetric` is `{ 0, 4 }`, so every aggregate here is four-byte aligned and
+`struct { char a; char b; }` is four bytes. So is argument passing, for a
+reason `backlog/decisions/decision-009` writes down.
+
 What compiles from `.c` today is `char`, `short`, `int`, `long` and `unsigned`
-locals, parameters and pointers; arrays and subscripting; string literals,
-including wide ones; the integer and bitwise operators, assignment,
-`if`/`while`/`for`/`do`, calls and `return`. Outside that: file-scope variables
-and their initialisers, local statics, `struct`, `union`, `enum`, `switch`,
-`goto` and floating point, each refused by name with the task that owns it
-rather than guessed at.
+locals, parameters and pointers; `struct`, `union` and `enum`, through a
+pointer, as a local and as a by-value parameter; arrays and subscripting;
+string literals, including wide ones; the integer and bitwise operators,
+assignment, `if`/`while`/`for`/`do`, calls and `return`. Outside that:
+file-scope variables and their initialisers, local statics, bit fields,
+self-referential and forward-declared aggregates, returning an aggregate by
+value, `switch`, `goto` and floating point, each refused by name with the task
+that owns it rather than guessed at.
 
 ## Why lcc and not tcc
 
