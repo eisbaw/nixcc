@@ -4,7 +4,7 @@ title: 'cpp slice 1: object-like macros and the conditional family'
 status: Done
 assignee: []
 created_date: '2026-09-16 17:27'
-updated_date: '2026-09-16 19:17'
+updated_date: '2026-09-16 19:56'
 labels:
   - frontend
   - preprocessor
@@ -103,6 +103,24 @@ LIMITS, none of them hidden:
   * The macro table's cost above: real today only for a hand-written file with thousands of defines, and task-013.03 is where it becomes real.
 
 ALL SIX CRITERIA MET. Nothing was reticked to match what was built; the scope line about line splicing is the one place the work is part done and part refused, and it says so above rather than being spelled as done.
+
+CROSS-MODEL REVIEW ROUND, commit c59a551. codex found nine defects that 39 mutations, a 44-unit differential and two same-model reviews all passed. Two were silent miscompiles. That is the finding, and it is about the review design rather than about any one of them.
+
+FIXED -- TWO SILENT MISCOMPILES:
+  * A backslash-newline inside a block comment's terminator. ISO C's phase 2 runs BEFORE comments are recognised, so `*\\<newline>/' is `*/' and ends the comment; what follows it is code. This scanner ran on to the next terminator and swallowed it. Reproduced: gcc returns 2 on the reviewer's input and we returned 1, with no diagnostic. Refused now, naming task-008. Nothing downstream could have caught it -- a comment sets `solid', so `checkGlue' is structurally blind to it, which is the part worth remembering: the flag was designed against the case I already knew about.
+  * An expansion pasting onto the token AFTER it. Manufactured tokens got a leading space; the original token following one kept its empty `ws'. `#define P +' used as `a P+ +2' rendered `a ++ +2', which increments a, where gcc renders `a + + +2', which does not -- both compile. The fix is not a rule about macros: `render' now asks, at every boundary it writes with nothing between, whether those two lexemes still lex as those two lexemes. That is the same question `checkGlue' asks, so `staysApart' moved to module level and there is one answer to it. Our TOKEN stream was never wrong, which is exactly why the gcc differential could not see it; the render round-trip in oracle.nix can, and cpp/adjacent.c is now in the corpus so it does.
+
+FIXED -- A TEST THAT ASSERTED NOTHING, the fourth time in this project. Both operands of the unsigned-division case were positive, so signed and unsigned division agree and the conversion was never exercised; the corpus reused the same pair. Review demonstrated it by swapping the branch and watching every check pass. It needed a NEGATIVE left operand -- and a second case that does not reach its bit pattern through `wrap', or the wrap mutation breaks it too and the two cannot be told apart. `'\\377'' is that value, because plain char is signed on this target.
+
+FIXED -- a function-like #define hidden behind a continuation was accepted as object-like, letting an explicitly out-of-scope feature through instead of refusing it with task-013.02. `glue' already means "adjacent after phase 2", so it joins the emptiness test.
+
+FILED RATHER THAN FIXED, each referenced from the line it describes: task-073 (a file opening with a continuation dies with `elemAt called with index -1' -- the first token is the one place `bol' does not come from trivia, which the comment I wrote above checkGlue got wrong), task-074 (the #if parser's depth tracks OPERATORS, not nesting, so a 3000-term #if overflows -- decision-001 forbids that outright and my comment claimed an exemption it does not have), task-075 (#line 010 is 8 here and 10 to gcc, because evalICON reads the C spelling and the standard wants a decimal digit sequence), task-076 (a directive's extent is its last TOKEN, so trailing trivia that spans lines puts everything after it one line early).
+
+GATE after all of it: 8 PoC(s) passed. Mutations 13 / 62 / 28 / 37 / 20 / 75 / 39. Differential 44 units, 2723 tokens. 52 #if cases, 36 cpp refusals, 23 lexer refusals.
+
+WHAT THE CROSS-MODEL PASS CONFIRMED rather than faulted, recorded so it is not re-litigated: the differential does compare token streams, the five #if width divergences reproduce and are honestly pinned, and the macro-table memory agrees with the quadratic shape declared.
+
+NOT MINE: cpp-example.c at the repo root appeared during the review window. It compiles and runs through this pipeline -- `just run cpp-example.c 4' prints 84 -- but I did not write it and left it uncommitted.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
