@@ -127,6 +127,13 @@ e2e:
     just lint
     just poc
 
+# Compile a C file with nixcc and run it on the Nix RV32I emulator.
+# It must define `int run(int)'; `extern int wc(int)' writes one character.
+#   just run poc/07-parser/run/sumto.c 10
+run FILE ARG="10":
+    @NIXCC_FILE="{{justfile_directory()}}/{{FILE}}" NIXCC_ARG="{{ARG}}" \
+        nix eval --impure --raw --file run.nix
+
 # Lint the Nix and shell sources
 lint:
     #!/usr/bin/env bash
