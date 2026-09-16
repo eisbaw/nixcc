@@ -84,10 +84,22 @@
           # measured, `unsigned b:5` shifts by 24 at 0 and by 3 at 1. Diffing
           # against raw `rcc -target=symbolic` would silently compare us to a
           # target that is not ours, so always go through this wrapper.
+          #
+          # symbolicIR also declares wants_argb = 1, which keeps a by-value
+          # struct argument a STRUCT all the way to the backend: an ARGB node
+          # and a PARAM symbol with flags=computed, which poc/03-matcher's
+          # `frameOf' throws on. decision-009 chose the other lowering, the one
+          # null.c and bytecode.c -- the real backends in lcc's own tree --
+          # both choose: with wants_argb = 0 the FRONTEND turns the parameter
+          # into `pointer to struct P flags=structarg' and the call site into a
+          # temporary plus ASGNB plus an ordinary ARGP4. Measured before it was
+          # taken: across all 62 .c files under poc/ the two settings produce
+          # byte-identical output, because nothing in the corpus passed a
+          # struct by value until task-058.
           mkdir -p $out/bin
           cat > $out/bin/rcc-rv32 <<EOF
           #!${pkgs.runtimeShell}
-          exec $out/bin/rcc -target=symbolic -little_endian=1 "\$@"
+          exec $out/bin/rcc -target=symbolic -little_endian=1 -wants_argb=0 "\$@"
           EOF
           chmod +x $out/bin/rcc-rv32
         '';
