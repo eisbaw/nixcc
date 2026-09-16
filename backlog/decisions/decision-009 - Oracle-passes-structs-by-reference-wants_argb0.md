@@ -51,3 +51,28 @@ This is not a patch in decision-004's sense. `-little_endian=1` corrects an
 oracle that describes the wrong machine; `-wants_argb=0` selects between two
 lowerings lcc supports deliberately, and picks the one every real lcc backend
 picks.
+
+## Addendum after slice 4a: the divergences are now stacked
+
+This decision made the compiler pass every struct by reference. Slice 4a added a
+second divergence of the same kind, and they should be read together.
+
+Aggregate layout follows **symbolicIR**, not RV32. `structmetric` is `{0,4}`, so
+every aggregate is 4-aligned and `struct { char a; char b; }` occupies four
+bytes, where the RV32 ABI would give it two with 1-byte alignment.
+
+So two things now differ from the platform ABI:
+
+1. every struct passes by reference, where RV32 passes aggregates of at most two
+   XLEN words in `a0`/`a1`;
+2. every aggregate is 4-aligned and 4-padded.
+
+Both are safe for the same reason and only that reason: this compiler is
+whole-program, emits no relocations, and links nothing external (task-022).
+Neither is safe the moment it interoperates with code from another compiler, and
+the failure mode is silent -- wrong offsets and wrong argument registers, not a
+link error.
+
+Nothing needs doing now. What matters is that this is written in one place, so
+whoever first makes this compiler link against anything else finds both at once
+rather than discovering the second after fixing the first.
