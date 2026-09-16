@@ -191,9 +191,10 @@ done
   exit 1; }
 echo "  no toolchain in the sandbox: $absent host binaries checked by absolute path, none present"
 
-# ONE evaluation. It reads hello.sym, selects instructions, assembles them to
-# bytes and executes those bytes on the RV32I machine, and hands back what the
-# program printed.
+# ONE evaluation. It reads hello.c -- the C, not lcc's listing, since task-028
+# closed the last arrow that left the evaluator -- lexes it, parses it into the
+# DAG, selects instructions, assembles them to bytes, executes those bytes on
+# the RV32I machine, and hands back what the program printed.
 got=$(in_sandbox eval --impure --json --expr "
   let cpu = import (/. + \"$NIX_RISCV/rv32.nix\");
       d = import $poc/demo.nix { inherit cpu; };

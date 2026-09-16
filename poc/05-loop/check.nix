@@ -45,6 +45,32 @@ let
   };
   inherit (demo) asm image report driver;
 
+  # THE FRONT END'S OWN ANSWER, AGAINST lcc's. hello.c is compiled by
+  # poc/07-parser now, and hello.sym is the oracle rather than the input
+  # (task-028). The comparison is here and not inside demo.nix because nothing
+  # downstream of the listing reads lcc's copy: a demo that stopped agreeing
+  # with it would still assemble, still run, and still print the right answer
+  # for as long as the disagreement happened not to matter.
+  #
+  # Reported as the FIRST line of the verdict rather than as a floor, because
+  # it is the claim this PoC exists to make: the arrow that used to leave the
+  # evaluator.
+  listingDiffers =
+    let
+      ours = b.filter b.isString (b.split "\n" demo.listing);
+      theirs = b.filter b.isString (b.split "\n" demo.oracleListing);
+      n = if b.length ours < b.length theirs then b.length ours else b.length theirs;
+      bad = b.filter (i: b.elemAt ours i != b.elemAt theirs i) (b.genList (i: i) n);
+    in
+    if demo.listing == demo.oracleListing then null
+    else if bad != [ ] then
+      let i = b.head bad; in
+      "our frontend's listing for hello.c differs from lcc's at line ${
+        toString (i + 1)}: lcc says `${b.elemAt theirs i}', we say `${b.elemAt ours i}'"
+    else
+      "our frontend's listing for hello.c is ${toString (b.length ours)} lines against lcc's ${
+        toString (b.length theirs)}, agreeing as far as the shorter one goes";
+
   # Floors, not targets. Raise them if the tables legitimately grow.
   minFaults = 10;
   minControls = 12;
@@ -342,6 +368,12 @@ else if b.length (b.attrNames cases.demo.symbols) < minDemoSymbols then fault "t
 else if missingDemonstrations != [ ] then fault "the demo's `demonstrates' table says nothing about ${b.head missingDemonstrations}, so nothing keeps hello.c using what that task fixed"
 else if cases.demo.minCompiledBranches < 1 then fault "the compiled-branch floor is ${toString cases.demo.minCompiledBranches}, which no image can fall below"
 
+# --- our own front end, against lcc's --------------------------------------
+# Before the image, because everything below is about a program this listing
+# produced: a listing that disagrees with lcc's makes every number after it a
+# measurement of the wrong program.
+else if listingDiffers != null then throw "loop: ${listingDiffers}"
+
 # --- the image the numbers below are about ---------------------------------
 else if firstError imageErrors != null then throw "loop: ${firstError imageErrors}"
 else if firstError symbolErrors != null then throw "loop: ${firstError symbolErrors}"
@@ -372,6 +404,7 @@ else if b.length branches < minBranches then fault "only ${toString (b.length br
 else if b.length demo.items < minItems then fault "the demo is ${toString (b.length demo.items)} items, fewer than the ${toString minItems} a compiled function plus a driver and a runtime comes to"
 else if b.length image.bytes < minImageBytes then fault "the demo image is ${toString (b.length image.bytes)} bytes, fewer than ${toString minImageBytes}"
 else ''
+  loop: hello.c compiled by this project's own frontend, and the listing is lcc's byte for byte over ${toString (b.length (b.filter b.isString (b.split "\n" demo.listing)))} lines
   loop: ${toString (b.length demo.items)} items, ${toString (b.length image.bytes)} bytes, assembled and executed in this evaluation
   loop: every byte of the machine's RAM is the byte the assembler put there
   loop: the demo ran ${toString report.steps} instructions, wrote ${toString (b.length report.stdoutBytes)} bytes and exited ${toString report.exitCode} through the exit syscall

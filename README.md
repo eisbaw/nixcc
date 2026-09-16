@@ -6,8 +6,8 @@ The goal is that `nix eval` alone can compile and run a C program — no gcc, no
 assembler, no linker, no emulator binary. C source in, program output out,
 inside a single evaluation.
 
-Status: **early, but the back half of the loop is closed.** `just poc-loop`
-compiles a C program, assembles it and executes it on a pure-Nix RV32I machine
+Status: **early, but the loop is closed end to end.** `just poc-loop` reads a
+`.c` file, compiles it, assembles it and executes it on a pure-Nix RV32I machine
 inside a single `nix eval`, in a sandbox that binds nix's own runtime closure,
 this project's own sources and nothing else — no assembler, linker or objcopy
 exists there to be reached, by name or by absolute path, and the stage checks
@@ -27,19 +27,27 @@ The front half is closed too, for the integer subset. `just poc-parser`
 compiles C from `.c` — lexer, parser, DAG builder and IR listing, all in Nix —
 and diffs the result against lcc's own frontend byte for byte: node numbers,
 `#n` back-references, reference counts, storage classes, frame offsets and
-every line lcc prints on stderr. Five of those programs are then assembled and
-executed in the same evaluation, printing `55`, `21 55`, `22 57`, `3 21 15` and
-`1431655683 3 242` -- the last two being the bitwise and unsigned operators,
-which until TASK-051 compiled to correct IR and were then refused by the rule
-table.
+every line lcc prints on stderr. Six of those programs are then assembled and
+executed in the same evaluation, printing `55`, `21 55`, `22 57`, `3 21 15`,
+`1431655683 3 242` and `ab-cd10` -- the last of which copies a string literal
+with a NUL in the middle of it, which is the byte a Nix string cannot hold
+(`backlog/decisions/decision-001`) and the reason a decoded literal is a byte
+list from the lexer to the `.data`.
 
-The honest limit: **`poc/05-loop`'s `hello.c` is not one of them.** It uses a
-global `char` array and a pointer parameter, which are slices 2 and 3
-(TASK-028, TASK-029); the demo above still enters at lcc's IR listing for that
-file. What compiles from `.c` today is `int`, `long` and `unsigned` locals and
-parameters, the integer operators, assignment, `if`/`while`/`for`/`do`, calls
-and `return`. Everything outside that is refused by name, with the task that
-owns it, rather than guessed at.
+**`poc/05-loop`'s `hello.c` compiles from `.c` too, as of TASK-028.** It needs
+a subscript, a pointer parameter and a `char` array, and that was the last
+arrow leaving the evaluator: `just poc-loop` now lexes, parses, selects,
+assembles and executes it in one `nix eval` with a `PATH` holding nothing but
+`nix`. `hello.sym` is still there and still regenerated from lcc -- as the
+ORACLE the listing is diffed against, not as the input.
+
+What compiles from `.c` today is `char`, `short`, `int`, `long` and `unsigned`
+locals, parameters and pointers; arrays and subscripting; string literals,
+including wide ones; the integer and bitwise operators, assignment,
+`if`/`while`/`for`/`do`, calls and `return`. Outside that: file-scope variables
+and their initialisers, local statics, `struct`, `union`, `enum`, `switch`,
+`goto` and floating point, each refused by name with the task that owns it
+rather than guessed at.
 
 ## Why lcc and not tcc
 

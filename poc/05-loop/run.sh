@@ -6,8 +6,12 @@
 # Five stages, and the last two are the ones that decide whether the first
 # three mean anything:
 #
-#   1. provenance.sh regenerates hello.sym from hello.c with lcc and diffs it,
-#      so "this IR is real compiler output" is re-proved rather than claimed.
+#   1. provenance.sh regenerates hello.sym from hello.c with lcc and diffs it.
+#      hello.sym is the ORACLE now and not the input (task-028): check.nix
+#      compares this project's own listing for hello.c against it, so this
+#      stage is what keeps lcc's answer current for that comparison to mean
+#      anything -- and "lcc's answer is what we are being compared against" is
+#      re-proved rather than claimed.
 #   2. check.nix runs the whole chain, compares the loaded machine's RAM
 #      byte-for-byte against the image the assembler produced, pins what the
 #      program printed and what it exited with, cross-checks every branch
@@ -67,12 +71,17 @@ python3 "$poc/measure.py" "$poc"
 # harness is mutated as well as the thing it checks.
 #
 # The mutated copy needs its sibling PoCs beside it, because demo.nix reaches
-# ../03-matcher and ../04-assembler by relative path. They are symlinked
-# rather than copied: they are not what is being mutated, and a copy of them
-# is a copy that could go stale.
+# ../03-matcher and ../04-assembler by relative path -- and, since task-028
+# closed the last arrow that left the evaluator, ../07-parser as well, which in
+# turn reaches ../02-lexer and ../06-constants. They are symlinked rather than
+# copied: they are not what is being mutated, and a copy of them is a copy that
+# could go stale.
+#
+# Symlinked ALSO means a mutation must never sed one of them: the sed would
+# land on the real tree. Nothing here does, and nothing here may.
 mut=$work/poc/05-loop
 mkdir -p "$work/poc"
-for sib in 01-encoder 03-matcher 04-assembler lib; do
+for sib in 01-encoder 02-lexer 03-matcher 04-assembler 06-constants 07-parser lib; do
   ln -s "$root/$sib" "$work/poc/$sib"
 done
 
@@ -339,6 +348,18 @@ mutate "harness: the memory measurement measures something other than the demo" 
        "sed -i \"s@in toString d.report.steps@in toString 1@\" measure.py" \
        "$measure_check"
 
+# --- the arrow that used to leave the evaluator (task-028) -----------------
+# hello.c is compiled by poc/07-parser now and hello.sym is the ORACLE. Nothing
+# downstream of the listing reads lcc's copy, so without this guard the two
+# could drift apart and the demo would go on printing the right answer. The
+# mutation edits the ORACLE rather than the frontend -- the frontend is a
+# symlink to the real tree and must not be touched -- which demonstrates the
+# same thing from the other side: a listing that is not lcc's is caught.
+mutate "loop: the frontend's listing stops being lcc's" \
+       "differs from lcc's at line" \
+       "sed -i 's|^maxoff=8$|maxoff=12|' hello.sym" \
+       "$mutated_check"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -358,7 +379,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=36
+declared=37
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

@@ -1,13 +1,20 @@
 # The loop, closed: C in, program output out, inside one evaluation.
 #
-#   hello.c  --(lcc, outside)-->  hello.sym
-#            --poc/03-matcher-->  assembly for one function
-#            --poc/04-assembler->  items -> bytes
-#            --nix-riscv-------->  a running RV32I machine, stdout and an exit code
+#   hello.c  --poc/02-lexer------>  tokens
+#            --poc/07-parser----->  the DAG, as lcc's symbolic listing
+#            --poc/03-matcher---->  assembly for one function
+#            --poc/04-assembler->   items -> bytes
+#            --nix-riscv-------->   a running RV32I machine, stdout and an exit code
 #
-# Only the first arrow leaves the evaluator, and it is the one task-005 has to
-# cost: lcc is still the front end, so a .sym listing is this compiler's real
-# entry point today, not a .c file. Everything downstream of it is Nix.
+# NO ARROW LEAVES THE EVALUATOR any more. task-005 costed the first one -- lcc
+# was the front end and a .sym listing was this compiler's real entry point --
+# and slices 1 and 2 closed it: hello.c needs a global `char' array, a pointer
+# parameter and a subscript, and task-028 is where those arrived.
+#
+# hello.sym IS STILL HERE and is still regenerated from lcc. It is no longer
+# the input; it is the ORACLE, and check.nix diffs our own listing against it
+# byte for byte. Deleting it would leave nothing saying that the frontend this
+# demo now runs on agrees with the one it replaced.
 #
 # The third arrow is the remaining seam INSIDE Nix: poc/03-matcher emits
 # assembly TEXT, which poc/04-assembler's text front end immediately turns
@@ -24,6 +31,8 @@
 { cpu
 , matcher ? ../03-matcher
 , assembler ? ../04-assembler
+, frontend ? ../07-parser
+, source ? ./hello.c
 , ir ? ./hello.sym
 , base ? 65536
 , ramSize ? 1048576
@@ -37,8 +46,16 @@ let
   emit = import (matcher + "/emit.nix") { };
   irParse = import (matcher + "/parse.nix");
   driver = import ./driver.nix { };
+  cc = import (frontend + "/compile.nix");
 
-  compiled = emit.compile (irParse.parse (b.readFile ir));
+  # OUR listing, and lcc's, side by side. check.nix compares them; nothing
+  # downstream of here reads `oracleListing', so a demo that quietly stopped
+  # consulting lcc would still run -- which is exactly why the comparison is a
+  # guard in check.nix and not an `assert' hidden in this let.
+  listing = cc.listingOf (b.readFile source);
+  oracleListing = b.readFile ir;
+
+  compiled = emit.compile (irParse.parse listing);
 
   # Order is a choice, not an inheritance: the symbol table spans the whole
   # item list, so any order resolves -- but `_start' has to be the first thing
@@ -64,7 +81,7 @@ in
   # instance other than the one that built THIS image would be reading a
   # different table -- and a second `emit.compile' of the same listing is also
   # a second DAG live at once, which decision-007 says is the budget to watch.
-  inherit asm items image loaded driver compiled;
+  inherit asm items image loaded driver compiled listing oracleListing;
   report = cpu.report final;
 
   # Assemble and run an arbitrary item list on the same machine, which is what

@@ -9,8 +9,12 @@ node and the assembler about 8.6-9.4 kB per item. This reports the closed
 loop's own figure -- kB of peak RSS per emulated instruction -- and holds it
 to a ceiling, because a compiler that can only run seven-hundred-instruction
 programs is not one. It is an UPPER bound on the execution stage: the net
-figure also carries selecting the instructions and assembling them, and this
-PoC has no ladder to separate the two.
+figure also carries LEXING AND PARSING hello.c, selecting the instructions and
+assembling them, and this PoC has no ladder to separate them. The front end
+joined that list when task-028 made the demo start from the .c rather than
+from lcc's listing, and it moved the reading: this file recorded 44 kB per
+instruction before that and measures 53 kB after, against a ceiling of 70.
+Both are single readings on one machine, so read the ceiling and not the gap.
 
 There is no timing ladder here and so no contention guard: a ceiling on peak
 RSS is not a comparison between two measurements, and a busy machine does not
@@ -38,9 +42,10 @@ except ImportError as e:
 
 REPEATS = 3
 # Net of the evaluator's own start-up, which is measured rather than assumed.
-# The demo executes ~700 instructions and measured about 44 kB of peak RSS for
-# each of them; the ceiling is set above that with room for the evaluator to
-# change. An assertion rather than a report: this is the number that decides
+# The demo executes ~700 instructions and measures about 53 kB of peak RSS for
+# each of them -- the figure recorded here was 44 kB before the front end moved
+# inside the evaluation (task-028); the ceiling is set above that with room for
+# the evaluator to change. An assertion rather than a report: this is the number that decides
 # whether a real program can be run inside an evaluation at all.
 MAX_KB_PER_STEP = 70.0
 MAX_RSS_KB = 512 * 1024
@@ -89,7 +94,8 @@ def main(argv):
           f"{steps} RV32I instructions executed")
     print(f"  net of the baseline: {net_cpu:.2f} s CPU and {net_rss / 1024:.0f} MB, "
           f"which is at most {per_step:.1f} kB per emulated instruction -- at most, because "
-          f"the same figure also carries selecting the instructions and assembling them")
+          f"the same figure also carries lexing and parsing the C, selecting the "
+          f"instructions and assembling them")
 
     if run.rss > MAX_RSS_KB:
         sys.exit(f"the closed loop peaked at {run.rss / 1024:.0f} MB, over the "
