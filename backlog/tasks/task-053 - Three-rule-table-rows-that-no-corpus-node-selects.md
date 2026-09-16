@@ -4,7 +4,7 @@ title: Three rule-table rows that no corpus node selects
 status: Done
 assignee: []
 created_date: '2026-09-15 23:52'
-updated_date: '2026-09-16 02:33'
+updated_date: '2026-09-16 03:46'
 labels:
   - backend
   - rules
@@ -224,4 +224,18 @@ the difference being one ablation per declared row. They run only on a pass,
 because Nix's laziness puts the census behind the whole verdict chain.
 
 Matcher mutation count 53 -> 58.
+
+ORCHESTRATOR: verified and accepted, with one finding worth more than the task itself.
+
+Census verified directly: 113 rule rows, 7 declared unexercised, so 106 reduced, and check.nix asserts the identity. Good.
+
+THE THING THAT MATTERS MORE. reg_cvup4_4 was selected, reduced, AND named in the lowerings table -- so this task's own census would have passed it -- and it was still tested by nothing. A one-kid node reduces at the same depth as its kid, so 'mv %c,%0' was a self-move; setting it to 'mv %c,%c' left the assembly byte-identical and the program printing the same string in the same step count.
+
+That is task-051's defect recurring ONE TASK AFTER the check written to prevent it, in a form the check structurally cannot see. Verified myself: with the fix, ir/ptr.c returns 103398 pristine and 101392 with the self-move restored, so the mutation now bites.
+
+The lesson to carry, and it is sharper than the one this task was filed for: SELECTED is not TESTED, and REDUCED is not TESTED either. A rule is tested when corrupting it changes an executed answer. The census proves a rule is reached; only a mutation proves it matters. Three variants of this disease have now shipped -- a rule named but never selected, a rule selected but never reduced, and a rule reduced but whose corruption is unobservable -- and the third was found by a reviewer, not by the check.
+
+Accepting the removal of minReduced. The reasoning holds: with the floors at their actual values, and the census asserting reduced + declared = total, lowering the reduced count requires ADDING a declaration, which is a visible act someone has to write a reason for. A floor adds nothing on top of that. Noting that the implementer's first stated reason for the removal was wrong and it corrected itself before reporting.
+
+Criterion #1 said 'deliberately left unexercised' and five of the seven are KNOWN rather than deliberate. The criterion's intent was that no rule goes unexercised without someone knowing and saying why, which is satisfied. 'Deliberately' was too strong -- my wording, and the fourth time it has been the loose part rather than the work. Tasks 055 and 056 are the fix, not a re-wording.
 <!-- SECTION:NOTES:END -->

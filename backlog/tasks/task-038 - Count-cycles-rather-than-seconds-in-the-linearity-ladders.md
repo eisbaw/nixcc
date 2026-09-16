@@ -1,9 +1,10 @@
 ---
 id: TASK-038
 title: Count cycles rather than seconds in the linearity ladders
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-15 10:48'
+updated_date: '2026-09-16 08:22'
 labels:
   - poc
   - testing
@@ -30,3 +31,9 @@ Would let the tolerances be tightened from 1.35 towards the 1.05 the measurement
 - [ ] #3 The tolerance used is the one measured for the unit in play; a cycles-based run does not silently keep a seconds-based constant
 - [ ] #4 Works inside the bwrap sandbox task-034 introduces, or the sandbox says clearly that it has given the counter up
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as won't-do, citing decision-008's own argument. Counting cycles needs perf_event_open, which cannot be assumed inside the bwrap sandbox task-034 built. Leaving it open as a task read as 'someone should do this' when the project had already reasoned it out and declined. The reasoning lives in decision-008.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -4,7 +4,7 @@ title: 'Slice 3: globals, arrays and initializers'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-16 03:35'
+updated_date: '2026-09-16 08:22'
 labels:
   - frontend
   - parser
@@ -12,7 +12,7 @@ labels:
 dependencies:
   - TASK-023
   - TASK-028
-priority: medium
+priority: high
 ---
 
 ## Description

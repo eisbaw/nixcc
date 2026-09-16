@@ -1,10 +1,10 @@
 ---
 id: TASK-036
 title: CALLP4 and CALLD4 have no rule in either position
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-15 07:57'
-updated_date: '2026-09-15 08:39'
+updated_date: '2026-09-16 08:22'
 labels:
   - poc
   - matcher
@@ -34,3 +34,9 @@ Found while implementing task-025.
 - [ ] #2 The corpus case comes from real lcc output, not hand-written IR
 - [ ] #3 poc/03-matcher/check.nix's derived call-rule guard covers the new rows automatically; nothing has to be added to a second list
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged into task-057, which covers CALLP4 with the rows spelled out and warns that stmt_callp_direct is a name a mutation depends on. Closing the duplicate rather than carrying two tasks for one gap.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -4,10 +4,13 @@ title: Symbol expressions accept only base+N in plain decimal
 status: To Do
 assignee: []
 created_date: '2026-09-15 05:33'
+updated_date: '2026-09-16 08:22'
 labels:
   - poc
   - assembler
-dependencies: []
+dependencies:
+  - TASK-029
+priority: high
 ---
 
 ## Description
@@ -33,3 +36,9 @@ Found by the task-023 review.
 - [ ] #2 A leading-zero displacement is read as octal, as GNU as reads it, or refused; the differential in progs/ covers a case where octal and decimal differ
 - [ ] #3 There is one integer parser in poc/04-assembler, used by both parse.nix and asm.nix
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR, from the COMPASS consult: this is a HIDDEN HARD DEPENDENCY of compound types at file scope, not assembler polish. Measured: 'struct P ga[2] = {{1,2},{3,4}}; ga[1].y' makes lcc emit 'address ga+8+4' and 'ADDRGP4 ga+8+4' -- a MULTI-TERM symbol expression, exactly the form poc/04-assembler/asm.nix refuses by name. Nested aggregates at file scope cannot work until the multi-term half lands. Raised to high and given the edge from task-029.
+<!-- SECTION:NOTES:END -->
