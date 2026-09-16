@@ -23,6 +23,9 @@
     { name = "gsym"; fn = "pick"; what = "a global at a constant index, which lcc folds into one ADDRGP4 sym+N"; }
     { name = "chars"; fn = "scan"; what = "char and short: byte and halfword loads and stores, and the conversions over them"; }
     { name = "voidcall"; fn = "emit"; what = "an int-returning function called for its effect, beside a void call"; }
+    { name = "bits"; fn = "mask"; what = "the bitwise and unary operators, each in both its register and its immediate form"; }
+    { name = "unsig"; fn = "wide"; what = "the U-typed opcodes, on data whose top bit is set: the logical shift, the unsigned branches and the two libcalls with no signed counterpart"; }
+    { name = "udiv"; fn = "wrap"; what = "an unsigned DIVISOR above 2^31, which is what the runtime routines' own comparison turns on"; }
   ];
 
   # Acceptance criterion 4 and 9: these opcodes must appear in the corpus DAGs
@@ -39,6 +42,22 @@
     "ASGNI1" "ASGNU1" "ASGNI2" "ASGNU2" "ASGNU4"
     "CVII4" "CVUI4" "CVIU4" "CVII2" "CVUU1" "CVUU2"
     "CNSTI1"
+    # task-051: the bitwise and unary operators, which RV32I has instructions
+    # for, and the two it has not -- BCOMI4 is `xori' with all ones and NEGI4
+    # is `sub' from the zero register.
+    "BANDI4" "BORI4" "BXORI4" "BCOMI4" "NEGI4"
+    # task-051: the U-typed family. These are not the I-typed opcodes on
+    # differently-typed operands, they are separate opcodes with separate
+    # rules, and for RSHU4, DIVU4, MODU4 and the four ordering comparisons
+    # they are separate INSTRUCTIONS.
+    "CNSTU4" "ADDU4" "SUBU4" "MULU4" "DIVU4" "MODU4" "LSHU4" "RSHU4"
+    "BANDU4" "BORU4" "BXORU4" "BCOMU4"
+    "LEU4" "LTU4" "GEU4" "GTU4" "EQU4" "NEU4"
+    "ARGU4" "CALLU4" "RETU4"
+    # task-051 again, and these are I-typed: ir/bits.c gave the corpus its
+    # first signed `>>' and its first `<=' and `==', so the signed halves of
+    # the pairs above are now selected somewhere rather than only described.
+    "RSHI4" "GTI4" "NEI4"
   ];
 
   # WHICH INSTRUCTION EACH OPCODE LOWERS TO, and mostly the only place that
@@ -88,6 +107,112 @@
     { op = "CVUI4"; rule = "reg_cvui4_1"; mnemonic = "andi"; }
     { op = "CVUU1"; rule = "reg_cvuu1"; mnemonic = "andi"; }
     { op = "CVII1"; rule = "reg_cvii1"; mnemonic = "slli"; }
+
+    # --- task-051 ---------------------------------------------------------
+    # WHAT THESE ROWS DO AND DO NOT SAY. Each one names a rule and the
+    # mnemonic its template must start with. That is a claim about the TABLE
+    # and not about the reduction: it does not say the named rule is the one
+    # the matcher selects, and a cheaper shadowing rule added beside it would
+    # satisfy every row here. `selections' is what pins the choice; these rows
+    # pin what the chosen row emits, which is the half no executed answer
+    # reaches for most of the conversions above.
+    #
+    # Both forms of each operator are listed, because the immediate form and
+    # the register form are separate rules and a one-sided edit is the
+    # realistic mistake.
+    { op = "RSHI4"; rule = "reg_rshi_imm"; mnemonic = "srai"; }
+    { op = "RSHI4"; rule = "reg_rshi_reg"; mnemonic = "sra"; }
+    { op = "RSHU4"; rule = "reg_rshu_imm"; mnemonic = "srli"; }
+    { op = "RSHU4"; rule = "reg_rshu_reg"; mnemonic = "srl"; }
+    { op = "LSHI4"; rule = "reg_lshi_imm"; mnemonic = "slli"; }
+    { op = "LSHI4"; rule = "reg_lshi_reg"; mnemonic = "sll"; }
+    { op = "LSHU4"; rule = "reg_lshu_imm"; mnemonic = "slli"; }
+    { op = "LSHU4"; rule = "reg_lshu_reg"; mnemonic = "sll"; }
+    { op = "SUBU4"; rule = "reg_subu"; mnemonic = "sub"; }
+    # `andi' is a prefix of nothing here, but `ori' is a substring of `xori',
+    # which is exactly why this check compares the template's first TOKEN and
+    # not a substring.
+    { op = "BANDI4"; rule = "reg_bandi_imm"; mnemonic = "andi"; }
+    { op = "BANDI4"; rule = "reg_bandi_reg"; mnemonic = "and"; }
+    { op = "BORI4"; rule = "reg_bori_imm"; mnemonic = "ori"; }
+    { op = "BORI4"; rule = "reg_bori_reg"; mnemonic = "or"; }
+    { op = "BXORI4"; rule = "reg_bxori_imm"; mnemonic = "xori"; }
+    { op = "BXORI4"; rule = "reg_bxori_reg"; mnemonic = "xor"; }
+    { op = "BANDU4"; rule = "reg_bandu_imm"; mnemonic = "andi"; }
+    { op = "BANDU4"; rule = "reg_bandu_reg"; mnemonic = "and"; }
+    { op = "BORU4"; rule = "reg_boru_imm"; mnemonic = "ori"; }
+    { op = "BORU4"; rule = "reg_boru_reg"; mnemonic = "or"; }
+    { op = "BXORU4"; rule = "reg_bxoru_imm"; mnemonic = "xori"; }
+    { op = "BXORU4"; rule = "reg_bxoru_reg"; mnemonic = "xor"; }
+    # The two RV32I has no instruction for at all.
+    { op = "BCOMI4"; rule = "reg_bcomi"; mnemonic = "xori"; }
+    { op = "BCOMU4"; rule = "reg_bcomu"; mnemonic = "xori"; }
+    { op = "NEGI4"; rule = "reg_negi"; mnemonic = "sub"; }
+    # The branches, signed beside unsigned. GTI4/GTU4 carry no row: their
+    # templates SWAP the operands rather than changing the mnemonic, so the
+    # mnemonic alone cannot tell a correct rule from one that dropped the
+    # swap. What pins those two is the emitted text in `emitted'.
+    { op = "LEI4"; rule = "stmt_lei4"; mnemonic = "ble"; }
+    { op = "LTI4"; rule = "stmt_lti4"; mnemonic = "blt"; }
+    { op = "GEI4"; rule = "stmt_gei4"; mnemonic = "bge"; }
+    { op = "LEU4"; rule = "stmt_leu4"; mnemonic = "bleu"; }
+    { op = "LTU4"; rule = "stmt_ltu4"; mnemonic = "bltu"; }
+    { op = "GEU4"; rule = "stmt_geu4"; mnemonic = "bgeu"; }
+  ];
+
+  # WHICH I-TYPED AND U-TYPED RULES MUST AGREE, AND WHICH MUST NOT (task-051).
+  #
+  # The U-typed block in rules.nix is mostly the I-typed block with a letter
+  # changed, and that duplication is the right shape for a table of data --
+  # `grep RSHU4 rules.nix' finds the row, and lburg's own machine descriptions
+  # list ADDI4 and ADDU4 separately for the same reason. What the duplication
+  # costs is that nothing stops the two drifting, in EITHER direction: an edit
+  # that makes RSHU4 arithmetic and an edit that makes ADDU4 a subtract are
+  # both one character, and both leave a table that still looks symmetrical.
+  #
+  # So the pairing is written down as data and checked against the templates.
+  # `same' means the two rules must emit byte-identical text -- which is how
+  # "MULU4 shares __mulsi3 with MULI4" stops being prose and becomes a checked
+  # property. `different' means they must NOT, which is the whole of the
+  # signed/unsigned distinction on this target: those five pairs are the ones
+  # that compile, assemble, run and give the wrong answer on operands with bit
+  # 31 set.
+  #
+  # NEGI4 has no partner because lcc has no NEGU4 (its ops.h gives NEG only
+  # the I and F kinds), and that absence is stated here rather than left to be
+  # noticed as a gap in the list.
+  pairs = [
+    { i = "reg_addi_imm"; u = "reg_addu_imm"; relation = "same"; }
+    { i = "reg_addi_reg"; u = "reg_addu_reg"; relation = "same"; }
+    { i = "reg_subi"; u = "reg_subu"; relation = "same"; }
+    { i = "reg_lshi_imm"; u = "reg_lshu_imm"; relation = "same"; }
+    { i = "reg_lshi_reg"; u = "reg_lshu_reg"; relation = "same"; }
+    { i = "reg_bandi_imm"; u = "reg_bandu_imm"; relation = "same"; }
+    { i = "reg_bandi_reg"; u = "reg_bandu_reg"; relation = "same"; }
+    { i = "reg_bori_imm"; u = "reg_boru_imm"; relation = "same"; }
+    { i = "reg_bori_reg"; u = "reg_boru_reg"; relation = "same"; }
+    { i = "reg_bxori_imm"; u = "reg_bxoru_imm"; relation = "same"; }
+    { i = "reg_bxori_reg"; u = "reg_bxoru_reg"; relation = "same"; }
+    { i = "reg_bcomi"; u = "reg_bcomu"; relation = "same"; }
+    { i = "reg_muli_libcall"; u = "reg_mulu_libcall"; relation = "same"; }
+    { i = "stmt_reti"; u = "stmt_retu"; relation = "same"; }
+    { i = "stmt_argi"; u = "stmt_argu"; relation = "same"; }
+    { i = "reg_calli_direct"; u = "reg_callu_direct"; relation = "same"; }
+    { i = "reg_calli_indirect"; u = "reg_callu_indirect"; relation = "same"; }
+    { i = "stmt_calli_direct"; u = "stmt_callu_direct"; relation = "same"; }
+    { i = "stmt_calli_indirect"; u = "stmt_callu_indirect"; relation = "same"; }
+    { i = "stmt_eqi4"; u = "stmt_equ4"; relation = "same"; }
+    { i = "stmt_nei4"; u = "stmt_neu4"; relation = "same"; }
+    # And the five that must differ. Every one of them is a pair of RV32I
+    # instructions that agree on every operand below 2^31.
+    { i = "reg_rshi_imm"; u = "reg_rshu_imm"; relation = "different"; }
+    { i = "reg_rshi_reg"; u = "reg_rshu_reg"; relation = "different"; }
+    { i = "reg_divi_libcall"; u = "reg_divu_libcall"; relation = "different"; }
+    { i = "reg_modi_libcall"; u = "reg_modu_libcall"; relation = "different"; }
+    { i = "stmt_lei4"; u = "stmt_leu4"; relation = "different"; }
+    { i = "stmt_lti4"; u = "stmt_ltu4"; relation = "different"; }
+    { i = "stmt_gei4"; u = "stmt_geu4"; relation = "different"; }
+    { i = "stmt_gti4"; u = "stmt_gtu4"; relation = "different"; }
   ];
 
   # RV32I has no M extension (decision-003). The oracle prints MUL/DIV inline
@@ -97,6 +222,13 @@
     { op = "MULI4"; rule = "reg_muli_libcall"; symbol = "__mulsi3"; }
     { op = "DIVI4"; rule = "reg_divi_libcall"; symbol = "__divsi3"; }
     { op = "MODI4"; rule = "reg_modi_libcall"; symbol = "__modsi3"; }
+    # task-051. MULU4 shares __mulsi3 with MULI4 deliberately -- the low 32
+    # bits of a product do not depend on how the operands are read -- and
+    # DIVU4/MODU4 do NOT share the signed routines, because a quotient does.
+    # That asymmetry is the whole content of these three rows.
+    { op = "MULU4"; rule = "reg_mulu_libcall"; symbol = "__mulsi3"; }
+    { op = "DIVU4"; rule = "reg_divu_libcall"; symbol = "__udivsi3"; }
+    { op = "MODU4"; rule = "reg_modu_libcall"; symbol = "__umodsi3"; }
   ];
 
 
@@ -294,6 +426,224 @@
       what = "so p->y is one lw with the displacement folded in";
       file = "field"; forest = 1; node = "4"; nt = "reg"; rule = "reg_indiri"; cost = 2;
     }
+
+    # --- the bitwise, shift and unary operators (task-051) -----------------
+    # BOTH FORMS OF EVERY BINARY OPERATOR. The register row and the immediate
+    # row are two rules, and the immediate one wins by exactly the `li' it
+    # does not need -- which is why their costs differ by one and why both are
+    # pinned here rather than one standing for the pair.
+    {
+      what = "a & b over two loaded values is the register form";
+      file = "bits"; forest = 2; node = "3"; nt = "reg"; rule = "reg_bandi_reg"; cost = 3;
+    }
+    {
+      what = "x & 255 is the immediate form, cheaper by the constant it does not materialise";
+      file = "bits"; forest = 2; node = "16"; nt = "reg"; rule = "reg_bandi_imm"; cost = 2;
+    }
+    {
+      what = "x | b is `or'";
+      file = "bits"; forest = 2; node = "20"; nt = "reg"; rule = "reg_bori_reg"; cost = 3;
+    }
+    {
+      what = "and x | 16 is `ori'";
+      file = "bits"; forest = 2; node = "9"; nt = "reg"; rule = "reg_bori_imm"; cost = 2;
+    }
+    {
+      what = "x ^ b is `xor'";
+      file = "bits"; forest = 2; node = "13"; nt = "reg"; rule = "reg_bxori_reg"; cost = 3;
+    }
+    {
+      what = "and x ^ 3 is `xori'";
+      file = "bits"; forest = 2; node = "23"; nt = "reg"; rule = "reg_bxori_imm"; cost = 2;
+    }
+    {
+      # The signed half of the pair ir/unsig.c pins the unsigned half of. Both
+      # halves have to be SELECTED somewhere, or the claim that RSHI4 and
+      # RSHU4 are different instructions rests on a table describing itself.
+      what = "a signed right shift by a constant is srai";
+      file = "bits"; forest = 2; node = "29"; nt = "reg"; rule = "reg_rshi_imm"; cost = 2;
+    }
+    {
+      what = "and by a register, sra";
+      file = "bits"; forest = 2; node = "38"; nt = "reg"; rule = "reg_rshi_reg"; cost = 4;
+    }
+    {
+      what = "a left shift by a constant is slli, whatever the sign";
+      file = "bits"; forest = 2; node = "34"; nt = "reg"; rule = "reg_lshi_imm"; cost = 2;
+    }
+    {
+      what = "and by a register, sll";
+      file = "bits"; forest = 2; node = "44"; nt = "reg"; rule = "reg_lshi_reg"; cost = 4;
+    }
+    {
+      what = "~x has no RV32I instruction and is `xori' with all ones";
+      file = "bits"; forest = 2; node = "47"; nt = "reg"; rule = "reg_bcomi"; cost = 2;
+    }
+    {
+      what = "-x has none either, and is a subtract from the zero register";
+      file = "bits"; forest = 2; node = "50"; nt = "reg"; rule = "reg_negi"; cost = 2;
+    }
+    {
+      # The two signed comparisons no other corpus file reaches, and the two
+      # whose unsigned twins ir/unsig.c pins below.
+      what = "`x <= b' inverts into branch-if-greater, which is blt with its operands swapped";
+      file = "bits"; forest = 2; node = "52"; nt = "stmt"; rule = "stmt_gti4"; cost = 3;
+    }
+    {
+      what = "and `x == b' into bne";
+      file = "bits"; forest = 5; node = "1"; nt = "stmt"; rule = "stmt_nei4"; cost = 3;
+    }
+
+    # --- the U-typed opcodes (task-051) ------------------------------------
+    {
+      what = "an unsigned divide is a call on __udivsi3, and is priced like the signed one";
+      file = "unsig"; forest = 2; node = "3"; nt = "reg"; rule = "reg_divu_libcall"; cost = 12;
+    }
+    {
+      what = "and an unsigned remainder a call on __umodsi3";
+      file = "unsig"; forest = 2; node = "11"; nt = "reg"; rule = "reg_modu_libcall"; cost = 12;
+    }
+    {
+      what = "an unsigned multiply shares __mulsi3 with the signed one";
+      file = "unsig"; forest = 2; node = "32"; nt = "reg"; rule = "reg_mulu_libcall"; cost = 12;
+    }
+    {
+      # The rows that distinguish this whole block from the I-typed one. A
+      # shift is a shift; a LOGICAL shift is a different instruction, in both
+      # the immediate and the register form.
+      what = "an unsigned right shift by a constant is srli, where the signed one is srai";
+      file = "unsig"; forest = 2; node = "15"; nt = "reg"; rule = "reg_rshu_imm"; cost = 2;
+    }
+    {
+      what = "and by a register, srl, where the signed one is sra";
+      file = "unsig"; forest = 2; node = "25"; nt = "reg"; rule = "reg_rshu_reg"; cost = 4;
+    }
+    {
+      what = "a left shift has no signedness to get wrong, and is slli either way";
+      file = "unsig"; forest = 2; node = "20"; nt = "reg"; rule = "reg_lshu_imm"; cost = 2;
+    }
+    {
+      what = "nor in its register form";
+      file = "unsig"; forest = 2; node = "30"; nt = "reg"; rule = "reg_lshu_reg"; cost = 4;
+    }
+    {
+      what = "unsigned subtraction is the same `sub', because two's complement makes it so";
+      file = "unsig"; forest = 2; node = "35"; nt = "reg"; rule = "reg_subu"; cost = 3;
+    }
+    {
+      what = "unsigned & against a register";
+      file = "unsig"; forest = 2; node = "38"; nt = "reg"; rule = "reg_bandu_reg"; cost = 3;
+    }
+    {
+      what = "and against a constant that fits the immediate field";
+      file = "unsig"; forest = 2; node = "52"; nt = "reg"; rule = "reg_bandu_imm"; cost = 2;
+    }
+    {
+      what = "unsigned | against a register";
+      file = "unsig"; forest = 2; node = "41"; nt = "reg"; rule = "reg_boru_reg"; cost = 3;
+    }
+    {
+      what = "and against a constant";
+      file = "unsig"; forest = 2; node = "56"; nt = "reg"; rule = "reg_boru_imm"; cost = 2;
+    }
+    {
+      what = "unsigned ^ against a register";
+      file = "unsig"; forest = 2; node = "44"; nt = "reg"; rule = "reg_bxoru_reg"; cost = 3;
+    }
+    {
+      what = "and against a constant";
+      file = "unsig"; forest = 2; node = "59"; nt = "reg"; rule = "reg_bxoru_imm"; cost = 2;
+    }
+    {
+      what = "unsigned ~ is the same `xori' with all ones";
+      file = "unsig"; forest = 2; node = "47"; nt = "reg"; rule = "reg_bcomu"; cost = 2;
+    }
+    {
+      # lcc spells an unsigned constant as its UNSIGNED value, so this rule's
+      # range starts at zero where the signed one starts at -2048.
+      what = "a small unsigned constant is an immediate, at no cost of its own";
+      file = "unsig"; forest = 2; node = "54"; nt = "con"; rule = "con_cnstu"; cost = 0;
+    }
+    {
+      # lcc prints an unsigned constant in HEX once bit 15 is set, so `%a'
+      # hands poc/04-assembler `0xdeadbeef' and its `parseInt' has to read it.
+      # This is the only node in the corpus that takes that path.
+      what = "an unsigned constant too wide for the immediate field is materialised with li";
+      file = "unsig"; forest = 2; node = "66"; nt = "reg"; rule = "reg_cnstu_wide"; cost = 2;
+    }
+    {
+      # Costs nothing because it emits nothing: x0 already reads as zero.
+      what = "an unsigned zero is the zero register, not an instruction";
+      file = "unsig"; forest = 2; node = "73"; nt = "reg"; rule = "reg_zerou"; cost = 0;
+    }
+    {
+      what = "adding a small unsigned constant folds it into `addi'";
+      file = "unsig"; forest = 3; node = "3"; nt = "reg"; rule = "reg_addu_imm"; cost = 2;
+    }
+    {
+      what = "and adding two registers is `add', at the price of the libcalls under it";
+      file = "unsig"; forest = 2; node = "9"; nt = "reg"; rule = "reg_addu_reg"; cost = 14;
+    }
+    {
+      what = "`u > v' inverts into branch-if-less-or-equal-UNSIGNED, which is bleu and not ble";
+      file = "unsig"; forest = 2; node = "74"; nt = "stmt"; rule = "stmt_leu4"; cost = 3;
+    }
+    {
+      what = "and `u <= v' into the swapped bltu the greater-than rule is written as";
+      file = "unsig"; forest = 5; node = "1"; nt = "stmt"; rule = "stmt_gtu4"; cost = 3;
+    }
+    {
+      what = "`u < v' inverts into bgeu";
+      file = "unsig"; forest = 8; node = "1"; nt = "stmt"; rule = "stmt_geu4"; cost = 3;
+    }
+    {
+      what = "`u >= v' into bltu";
+      file = "unsig"; forest = 11; node = "1"; nt = "stmt"; rule = "stmt_ltu4"; cost = 3;
+    }
+    {
+      what = "`u == v' into bne, which equality gives no unsigned form to choose between";
+      file = "unsig"; forest = 14; node = "1"; nt = "stmt"; rule = "stmt_neu4"; cost = 3;
+    }
+    {
+      what = "and `u != v' into beq";
+      file = "unsig"; forest = 17; node = "1"; nt = "stmt"; rule = "stmt_equ4"; cost = 3;
+    }
+    {
+      what = "an unsigned argument is deposited in its argument register like any other word";
+      file = "unsig"; forest = 23; node = "1"; nt = "stmt"; rule = "stmt_argu"; cost = 2;
+    }
+    {
+      # ALL FOUR CALLU4 ROWS, in the four forests that reach them. task-025
+      # built this split for CALLI4: a call whose result nothing wants reduces
+      # to `stmt' and is one instruction cheaper for exactly the result move it
+      # does not emit. The U-typed family needs all four rows for the same
+      # reason, and a rule nothing selects is a rule nothing tests.
+      what = "a discarded direct call reduces to a statement";
+      file = "unsig"; forest = 23; node = "7"; nt = "stmt"; rule = "stmt_callu_direct"; cost = 4;
+    }
+    {
+      what = "a discarded call through a function pointer is the indirect statement rule";
+      file = "unsig"; forest = 24; node = "7"; nt = "stmt"; rule = "stmt_callu_indirect"; cost = 8;
+    }
+    {
+      what = "and the same shape with its value used is the indirect value rule, one dearer";
+      file = "unsig"; forest = 25; node = "7"; nt = "reg"; rule = "reg_callu_indirect"; cost = 9;
+    }
+    {
+      what = "a direct call whose value is used moves a0, and costs one more than the statement form";
+      file = "unsig"; forest = 26; node = "7"; nt = "reg"; rule = "reg_callu_direct"; cost = 5;
+    }
+    {
+      what = "returning an unsigned moves to a0 and jumps to the epilogue, exactly as an int does";
+      file = "unsig"; forest = 26; node = "9"; nt = "stmt"; rule = "stmt_retu"; cost = 6;
+    }
+    {
+      # The two libcalls priced together: a quotient combined with a remainder
+      # costs two of them plus the combining instruction, and this is the one
+      # place in the corpus where that whole shape sits in a single node.
+      what = "the quotient combined with the remainder is two libcalls and an xor, priced as such";
+      file = "udiv"; forest = 0; node = "2"; nt = "reg"; rule = "reg_bxoru_reg"; cost = 25;
+    }
   ];
 
   # --- cost-driven choice (acceptance criterion 5) ------------------------
@@ -323,6 +673,16 @@
       file = "field"; forest = 1; node = "5"; nt = "addr";
       winner = "addr_addp"; loser = "addr_from_reg"; penalty = 3;
       winnerAsm = "lw s2,4(s11)"; loserAsm = "addi s2,s11,4";
+    }
+    {
+      # The immediate/register split the whole bitwise block is built on. Both
+      # rules match `x & 255'; the immediate one wins by the `li' it does not
+      # need, and raising it by two hands the node to the register form with
+      # the constant materialised beside it.
+      what = "a mask that fits the immediate field folds in, or the constant is materialised first";
+      file = "bits"; forest = 2; node = "16"; nt = "reg";
+      winner = "reg_bandi_imm"; loser = "reg_bandi_reg"; penalty = 2;
+      winnerAsm = "andi s2,s2,255"; loserAsm = "and s2,s2,s3";
     }
   ];
 
@@ -471,6 +831,125 @@
       instructions = 19;
       follows = [ ];
     }
+    {
+      file = "bits";
+      # One line per rule this file exists to select: the register form and
+      # the immediate form of each of the three bitwise operators, both forms
+      # of both shifts, the two RV32I has no instruction for, and the two
+      # comparisons no other corpus file reaches.
+      present = [
+        "and s2,s11,s10"
+        "ori s2,s2,16"
+        "xor s2,s2,s10"
+        "andi s2,s2,255"
+        "or s2,s2,s10"
+        "xori s2,s2,3"
+        "srai s3,s11,2"
+        "slli s3,s10,3"
+        "sra s3,s11,s4"
+        "sll s3,s10,s4"
+        "xori s2,s2,-1"
+        "sub s2,zero,s2"
+        "blt s10,s1,.Lmask_2"
+        "bne s1,s2,.Lmask_4"
+      ];
+      # `srl' as a substring catches BOTH logical-for-arithmetic substitutions
+      # at once -- `srai'->`srli' and `sra'->`srl' -- and nothing in this file
+      # may shift logically, because every right shift here is signed.
+      #
+      # `not' and `neg' ARE implemented by poc/04-assembler, so a rule reaching
+      # for them would assemble, run and give the right answer. `lowerings'
+      # above catches that for reg_bcomi and reg_negi and fires first; these
+      # two entries are the cheaper second line, and they also cover a rule
+      # with no `lowerings' row of its own reaching for the same shortcut.
+      #
+      # `li s3,255' is the other half of the duel below: the mask folded into
+      # the immediate field, so nothing materialised it.
+      absent = [ "%" "srl" "not " "neg " "li s3,255" ];
+      instructions = 61;
+      follows = [ ];
+    }
+    {
+      file = "unsig";
+      present = [
+        "call __udivsi3"
+        "call __umodsi3"
+        "call __mulsi3"
+        # Both forms of both shifts. `srli'/`srl' are the rows that make this
+        # file a different program from ir/bits.c rather than the same one on
+        # differently-declared variables.
+        "srli s3,s11,3"
+        "slli s3,s11,1"
+        "srl s3,s11,s8"
+        "sll s3,s11,s8"
+        "sub s2,s2,s10"
+        # Both forms of all three bitwise operators.
+        "and s2,s2,s11"
+        "andi s2,s2,3"
+        "or s2,s2,s10"
+        "ori s2,s2,3"
+        "xor s2,s2,s10"
+        "xori s2,s2,5"
+        "xori s2,s2,-1"
+        # An unsigned constant too wide for the immediate field, in lcc's own
+        # hexadecimal spelling, which poc/04-assembler's parseInt has to read.
+        "li s4,0xdeadbeef"
+        # And an unsigned zero, which is the zero register and no instruction.
+        "sw zero,-64(s0)"
+        "bne s1,zero,.Lwide_14"
+        # The four ordering branches, each with its operands in the order its
+        # rule puts them. `bltu s2,s1' and `bltu s1,s2' are the same mnemonic
+        # and different comparisons -- GTU4 swaps and LTU4 does not -- so the
+        # operand order is the assertion, and `lowerings' above cannot make it.
+        "bleu s11,s10,.Lwide_2"
+        "bltu s2,s1,.Lwide_4"
+        "bgeu s1,s2,.Lwide_6"
+        "bltu s1,s2,.Lwide_8"
+        "bne s1,s2,.Lwide_10"
+        "beq s1,s2,.Lwide_12"
+        # A direct call and an indirect one, and the result move the value
+        # forms make and the statement forms do not.
+        "call uh"
+        "jalr s1"
+        "mv s11,a0"
+      ];
+      # Every signed instruction that would compile, assemble and run here, and
+      # answer differently only because the data has bit 31 set. This is the
+      # list a table with the U-typed rules missing -- or pointed at the
+      # I-typed lowerings -- would trip. `sra' as a substring covers `srai'
+      # too, which is why there is no separate entry for it.
+      absent = [
+        "%"
+        "sra"
+        "call __divsi3"
+        "call __modsi3"
+        "blt "
+        "bge "
+        "ble "
+      ];
+      instructions = 144;
+      follows = [ ];
+    }
+    {
+      file = "udiv";
+      # `present' is MEMBERSHIP over whole lines, so these four lines say the
+      # two libcalls are reached with the argument registers set up, and NOT
+      # that each call sets up its own -- both rules emit the same two `mv'
+      # lines, so one occurrence satisfies both entries. What catches a second
+      # call left reading the first call's registers is the instruction count
+      # below and the executed answer. Said plainly because the first version
+      # of this comment claimed the stronger property.
+      present = [
+        "mv a0,s11"
+        "mv a1,s10"
+        "call __udivsi3"
+        "call __umodsi3"
+        "xor s1,s1,s2"
+      ];
+      absent = [ "%" "call __divsi3" "call __modsi3" ];
+      instructions = 13;
+      follows = [ ];
+    }
   ];
 
   # --- execution (run.sh) --------------------------------------------------
@@ -523,6 +1002,38 @@
       # with 7 it computes 7+20=27, then 27+28=55, then 55+57=112. Dropping
       # either put() gives 48 or 49, and dropping the indirect call gives 48.
       why = "emit(20): acc 7 + 20 = 27, + 21 = 48, then hook(22) through the pointer = 70";
+    }
+    {
+      file = "bits";
+      expect = 73501;
+      # `a' is negative, so the right shifts run over a value with bit 31 set
+      # and `sra' and `srl' give different answers here.
+      #
+      # THE CHAIN BELOW WAS COMPUTED, NOT WRITTEN OUT. The first version of
+      # this string was a step-by-step derivation for an earlier choice of
+      # arguments; every intermediate in it was wrong and its final value
+      # contradicted the `expect' three lines above, which nothing checks and
+      # two reviews caught. Only the steps that DISCRIMINATE a rule are named
+      # now -- the rest is what the host compiler and the emulator agree on.
+      why = "mask(-1234,5678): the bitwise chain reaches 5693, then + (a>>2) = -309 arithmetic (srl would give 1073741515), + (b<<3) = 45424, + (a>>6) = -20, + (b<<2) = 22712, giving 73500; ~ then - leaves 73501, and neither trailing comparison fires";
+    }
+    {
+      file = "unsig";
+      expect = 3123634320;
+      # Not a number anybody chose: the arguments were chosen (see
+      # ir/unsig.c's header) so that each of the seven signed-for-unsigned
+      # substitutions moves this answer, and then the host compiler and the
+      # emulator were asked what it is. Both say 3758096711.
+      why = "wide(0xfffffff0,9): unsigned division, remainder, both logical shifts and four unsigned branches over a dividend whose top bit is set -- every one of which the signed rule answers differently -- plus a wide hexadecimal constant, an unsigned zero and all four CALLU4 rows";
+    }
+    {
+      file = "udiv";
+      expect = 2147483644;
+      # The one number in this table that is about runtime.s rather than about
+      # rules.nix. Every rule here is already covered by ir/unsig.c; what is
+      # not covered there is the comparison INSIDE __udivsi3 and __umodsi3,
+      # which only a divisor above 2^31 can reach.
+      why = "wrap(0xfffffffe,0x80000001) = 1 ^ 0x7ffffffd = 0x7ffffffc; a signed compare inside the routines subtracts at every iteration instead of none, giving 0xffffffff ^ 0x7fffffff = 0x80000000 -- see ir/udiv.c for why the operator is `^' and not `+'";
     }
   ];
 }

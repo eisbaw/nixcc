@@ -1,0 +1,20 @@
+export wrap
+segment text
+function wrap type=unsigned int function(unsigned int,unsigned int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller a type=unsigned int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=unsigned int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=unsigned int sclass=auto scope=PARAM flags=0 offset=0 ref=2.000000
+callee b type=unsigned int sclass=auto scope=PARAM flags=0 offset=4 ref=2.000000
+blockbeg off=0
+blockend off=0
+ 5. ADDRFP4 a
+4. INDIRU4 count=2 #5
+7. ADDRFP4 b
+6. INDIRU4 count=2 #7
+3. DIVU4 #4 #6
+8. MODU4 #4 #6
+2. BXORU4 #3 #8
+1' RETU4 #2
+ 1:
+maxoff=0
+progend

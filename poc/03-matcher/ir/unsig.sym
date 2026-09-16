@@ -1,0 +1,206 @@
+export wide
+segment text
+function wide type=unsigned int function(unsigned int,unsigned int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=4
+caller a type=unsigned int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=unsigned int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=unsigned int sclass=register scope=PARAM flags=0 offset=0 ref=15.000000
+callee b type=unsigned int sclass=register scope=PARAM flags=0 offset=4 ref=19.000000
+blockbeg off=0
+local x type=unsigned int sclass=register scope=LOCAL flags=0 offset=0 ref=37.000000
+local y type=unsigned int sclass=register scope=LOCAL flags=0 offset=4 ref=10.000000
+local z type=unsigned int sclass=auto scope=LOCAL flags=0 offset=8 ref=2.000000
+blockend off=12
+ 2. ADDRFP4 a
+4. ADDRFP4 a
+3. INDIRU4 #4
+1' ASGNU4 #2 #3 4 4
+ 2. ADDRFP4 b
+4. ADDRFP4 b
+3. INDIRU4 #4
+1' ASGNU4 #2 #3 4 4
+ 2. ADDRLP4 count=25 x
+5. ADDRFP4 a
+4. INDIRU4 count=9 #5
+7. ADDRFP4 b
+6. INDIRU4 count=8 #7
+3. DIVU4 #4 #6
+1' ASGNU4 #2 #3 4 4
+10. INDIRU4 #2
+11. MODU4 count=2 #4 #6
+9. ADDU4 #10 #11
+8' ASGNU4 #2 #9 4 4
+14. INDIRU4 #2
+16. CNSTI4 3
+15. RSHU4 #4 #16
+13. ADDU4 #14 #15
+12' ASGNU4 #2 #13 4 4
+19. INDIRU4 #2
+21. CNSTI4 1
+20. LSHU4 #4 #21
+18. ADDU4 #19 #20
+17' ASGNU4 #2 #18 4 4
+24. INDIRU4 #2
+26. CVUI4 count=2 #6 4
+25. RSHU4 #4 #26
+23. ADDU4 #24 #25
+22' ASGNU4 #2 #23 4 4
+29. INDIRU4 #2
+30. LSHU4 #4 #26
+28. ADDU4 #29 #30
+27' ASGNU4 #2 #28 4 4
+33. INDIRU4 #2
+32. MULU4 #33 #6
+31' ASGNU4 #2 #32 4 4
+36. INDIRU4 #2
+35. SUBU4 #36 #6
+34' ASGNU4 #2 #35 4 4
+39. INDIRU4 #2
+38. BANDU4 #39 #4
+37' ASGNU4 #2 #38 4 4
+42. INDIRU4 #2
+41. BORU4 #42 #6
+40' ASGNU4 #2 #41 4 4
+45. INDIRU4 #2
+44. BXORU4 #45 #6
+43' ASGNU4 #2 #44 4 4
+48. INDIRU4 #2
+47. BCOMU4 #48
+46' ASGNU4 #2 #47 4 4
+50. ADDRLP4 count=10 y
+49' ASGNU4 #50 #11 4 4
+53. INDIRU4 #50
+54. CNSTU4 count=2 3
+52. BANDU4 #53 #54
+51' ASGNU4 #50 #52 4 4
+57. INDIRU4 #50
+56. BORU4 #57 #54
+55' ASGNU4 #50 #56 4 4
+60. INDIRU4 #50
+61. CNSTU4 5
+59. BXORU4 #60 #61
+58' ASGNU4 #50 #59 4 4
+64. INDIRU4 #50
+66. CNSTU4 0xdeadbeef
+65. BANDU4 #4 #66
+63. ADDU4 #64 #65
+62' ASGNU4 #50 #63 4 4
+69. INDIRU4 #2
+70. INDIRU4 #50
+68. ADDU4 #69 #70
+67' ASGNU4 #2 #68 4 4
+72. ADDRLP4 z
+73. CNSTU4 0
+71' ASGNU4 #72 #73 4 4
+74' LEU4 #4 #6 2
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 1
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 2:
+ 3. ADDRFP4 a
+2. INDIRU4 #3
+5. ADDRFP4 b
+4. INDIRU4 #5
+1' GTU4 #2 #4 4
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 2
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 4:
+ 3. ADDRFP4 a
+2. INDIRU4 #3
+5. ADDRFP4 b
+4. INDIRU4 #5
+1' GEU4 #2 #4 6
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 4
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 6:
+ 3. ADDRFP4 a
+2. INDIRU4 #3
+5. ADDRFP4 b
+4. INDIRU4 #5
+1' LTU4 #2 #4 8
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 8
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 8:
+ 3. ADDRFP4 a
+2. INDIRU4 #3
+5. ADDRFP4 b
+4. INDIRU4 #5
+1' NEU4 #2 #4 10
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 16
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 10:
+ 3. ADDRFP4 a
+2. INDIRU4 #3
+5. ADDRFP4 b
+4. INDIRU4 #5
+1' EQU4 #2 #4 12
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 32
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 12:
+ 3. ADDRLP4 z
+2. INDIRU4 #3
+4. CNSTU4 0
+1' NEU4 #2 #4 14
+ 2. ADDRLP4 count=2 x
+4. INDIRU4 #2
+5. CNSTU4 64
+3. ADDU4 #4 #5
+1' ASGNU4 #2 #3 4 4
+ 14:
+ 3. ADDRLP4 x
+2. INDIRU4 #3
+1' ARGU4 #2 4 4
+6. ADDRFP4 b
+5. INDIRU4 #6
+4' ARGU4 #5 4 4
+8. ADDRGP4 uh
+7' CALLU4 #8 {unsigned int function(unsigned int,unsigned int)}
+ 3. ADDRLP4 x
+2. INDIRU4 #3
+1' ARGU4 #2 4 4
+6. ADDRFP4 b
+5. INDIRU4 #6
+4' ARGU4 #5 4 4
+9. ADDRGP4 uhook
+8. INDIRP4 #9
+7' CALLU4 #8 {unsigned int function(unsigned int,unsigned int)}
+ 3. ADDRLP4 count=2 x
+2. INDIRU4 #3
+1' ARGU4 #2 4 4
+6. ADDRFP4 b
+5. INDIRU4 #6
+4' ARGU4 #5 4 4
+9. ADDRGP4 uhook
+8. INDIRP4 #9
+7' CALLU4 #8 {unsigned int function(unsigned int,unsigned int)}
+10' ASGNU4 #3 #7 4 4
+ 3. ADDRLP4 x
+2. INDIRU4 #3
+1' ARGU4 #2 4 4
+6. ADDRFP4 b
+5. INDIRU4 #6
+4' ARGU4 #5 4 4
+8. ADDRGP4 uh
+7' CALLU4 #8 {unsigned int function(unsigned int,unsigned int)}
+9' RETU4 #7
+ 1:
+maxoff=12
+import uhook
+import uh
+progend

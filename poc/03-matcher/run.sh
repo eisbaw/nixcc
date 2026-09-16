@@ -502,6 +502,123 @@ mutate "matcher: a call rule is added to the table and forgotten everywhere else
        "sed -i '/stmt_calli_indirect/a\\    { id = \"stmt_callp_direct\"; nt = \"stmt\"; op = \"CALLP4\"; kids = [ \"acon\" ]; cost = 4; tmpl = \"jal %0\\n\"; }' rules.nix" \
        "$matcher_check"
 
+# --- the bitwise, unary and unsigned rows (task-051) ---
+# EVERY ONE OF THESE COMPILES, ASSEMBLES AND RUNS. What makes them wrong is
+# that RV32I reads a 32-bit pattern two different ways and these rows pick the
+# other one, so each is invisible on any operand below 2^31 -- which is why
+# ir/unsig.c's data has bit 31 set and why these mutations exist at all.
+mutate "matcher: an unsigned right shift becomes an arithmetic one" \
+       "RSHU4 must be lowered by rule \`reg_rshu_imm'" \
+       "sed -i '/reg_rshu_imm/ s@\"srli @\"srai @' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: an unsigned divide calls the signed routine" \
+       "DIVU4 must be lowered by rule \`reg_divu_libcall'" \
+       "sed -i 's@call __udivsi3@call __divsi3@' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: an unsigned remainder calls the signed routine" \
+       "MODU4 must be lowered by rule \`reg_modu_libcall'" \
+       "sed -i 's@call __umodsi3@call __modsi3@' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: an unsigned ordering branch becomes its signed twin" \
+       "GEU4 must be lowered by rule \`stmt_geu4'" \
+       "sed -i '/stmt_geu4/ s@\"bgeu @\"bge @' rules.nix" \
+       "$matcher_check"
+
+# The one the mnemonic table deliberately CANNOT see. GTU4 and LTU4 both emit
+# `bltu' and differ only in which operand comes first, so `lowerings' has no
+# row for either and the emitted text is the whole assertion.
+mutate "matcher: the unsigned greater-than rule stops swapping its operands" \
+       "is missing \`bltu s2,s1,.Lwide_4'" \
+       "sed -i '/stmt_gtu4/ s@bltu %1,%0@bltu %0,%1@' rules.nix" \
+       "$matcher_check"
+
+# An opcode left with no rule, rather than a rule made wrong: the table is
+# meant to REFUSE such an opcode by name, and that has to keep being true as
+# rows are added.
+#
+# Other checks WOULD go red here -- `emitted' lists `xori s2,s2,-1' and the
+# executed answer depends on `~x'. What this mutation demonstrates is that
+# they do not get the chance: labelling fails first and names the opcode, which
+# is the difference between "the answer was wrong" and "this target cannot
+# compile that". The guard ordering in check.nix is what makes that true, and
+# this is the only thing holding it.
+#
+# The row is RETARGETED at an opcode nothing emits rather than deleted,
+# because deleting it trips the rule-count floor first and the suite then
+# reports a harness fault instead of the refusal this is about. Both are red;
+# only one of them is evidence.
+mutate "matcher: an opcode is left with no rule at all" \
+       "no rule labels BCOMU4" \
+       "sed -i '/id = \"reg_bcomu\"/ s@op = \"BCOMU4\"@op = \"BCOMX4\"@' rules.nix" \
+       "$matcher_check"
+
+# THE REGISTER FORMS. Review found five of these rows selectable by nothing
+# in the corpus and asserted by nothing but a mnemonic table describing them:
+# the register forms of both unsigned shifts and of `|', the unsigned zero and
+# the wide unsigned constant. ir/unsig.c now reaches all five, and these are
+# what say so -- each was run against the old corpus first and passed clean.
+mutate "matcher: an unsigned right shift by a register becomes an arithmetic one" \
+       "RSHU4 must be lowered by rule \`reg_rshu_reg'" \
+       "sed -i '/reg_rshu_reg/ s@\"srl @\"sra @' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: an unsigned left shift by a register shifts the other way" \
+       "LSHU4 must be lowered by rule \`reg_lshu_reg'" \
+       "sed -i '/reg_lshu_reg/ s@\"sll @\"srl @' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: an unsigned or against a register becomes an and" \
+       "BORU4 must be lowered by rule \`reg_boru_reg'" \
+       "sed -i '/reg_boru_reg/ s@\"or @\"and @' rules.nix" \
+       "$matcher_check"
+
+# An unsigned zero is the zero register and no instruction at all. A rule
+# naming any OTHER register still reduces, still assembles and still runs --
+# `s0' is the frame pointer, which is never zero -- so what catches it is the
+# emitted text and, because ir/unsig.c stores the zero and then tests it, the
+# answer.
+mutate "matcher: an unsigned zero is read out of the frame pointer" \
+       "is missing \`sw zero,-64(s0)'" \
+       "sed -i '/reg_zerou/,/}/ s@tmpl = \"zero\";@tmpl = \"s0\";@' rules.nix" \
+       "$matcher_check"
+
+# lcc prints an unsigned constant in hexadecimal from 32768 up, so this is
+# also the only node in the corpus that hands poc/04-assembler a `0x...'
+# operand. `lui' is chosen over a nonsense mnemonic because it is a real
+# instruction that takes the same two operands and truncates the low twelve
+# bits -- the plausible mistake, not an obvious one.
+mutate "matcher: a wide unsigned constant is materialised with lui alone" \
+       "is missing \`li s4,0xdeadbeef'" \
+       "sed -i '/reg_cnstu_wide/ s@\"li %c,%a@\"lui %c,%a@' rules.nix" \
+       "$matcher_check"
+
+mutate "matcher: the unsigned multiply stops sharing __mulsi3 with the signed one" \
+       "MULU4 must be lowered by rule \`reg_mulu_libcall'" \
+       "sed -i '/reg_mulu_libcall/,/}/ s@call __mulsi3@call __umulsi3@' rules.nix" \
+       "$matcher_check"
+
+# THE PAIRING TABLE, which is the only check that reads the I-typed and
+# U-typed halves of the rule table against EACH OTHER.
+#
+# Aimed at ADDU4 because it is a pair that must AGREE and that NO other table
+# mentions: no `lowerings' row, no `libcalls' row, no line in any
+# `present'/`absent' list. With the pairing table gone this edit selects the
+# same rule at the same cost and emits the same number of instructions, so
+# nothing else in check.nix has anything to say about it -- which is the only
+# way to aim at a check rather than past it.
+mutate "matcher: unsigned addition quietly becomes subtraction" \
+       "must emit same code and do not" \
+       "sed -i '/reg_addu_reg/ s@\"add @\"sub @' rules.nix" \
+       "$matcher_check"
+
+mutate "harness: the signed/unsigned pairing table is emptied" \
+       "pairs only 0 of the I-typed" \
+       "sed -i 's@^  pairs = \[@  pairs = [ ]; unusedPairs = [@' cases.nix" \
+       "$matcher_check"
+
 mutate "harness: the opcode-lowering table is emptied" \
        "opcode lowerings, fewer than the" \
        "sed -i 's@^  lowerings = \[@  lowerings = [ ]; unusedLowerings = [@' cases.nix" \
@@ -655,6 +772,54 @@ mutate "harness: the semantic oracle stops running the program to completion" \
        "sed -i 's|cpu.run 200000|cpu.run 20|' build-and-run.sh" \
        "$exec_check"
 
+# THE SECOND THING ONLY EXECUTION CAN SEE, and it is in a different file from
+# the first: runtime.s. check.nix never reads it -- it checks that DIVU4's rule
+# CALLS __udivsi3 and has nothing to say about what __udivsi3 then does -- so
+# without this the runtime routines task-051 added would be pinned by nothing
+# but the answer they happen to produce today.
+#
+# `bltu' -> `blt' inside the unsigned divide and remainder. On ir/unsig.c's
+# operands, where the divisor is 9, the two comparisons agree and the mutation
+# is invisible; ir/udiv.c exists to divide by 0x80000001, where a signed
+# comparison makes `remainder < divisor' false at every iteration, so the
+# subtract happens every time instead of none and the quotient saturates. Which
+# is the argument for that file being in the corpus at all.
+#
+# The sed is anchored on `/^__udivsi3:/,$' and not on the label number the
+# unsigned loops happen to use: the two signed routines contain the same
+# instruction with a different forward label, and an anchor on `2f' would
+# quietly start corrupting all four the day somebody renumbered them -- which
+# the comment in runtime.s saying the loops are identical positively invites.
+udiv_want=$(nix eval --impure --raw --expr \
+  "let c = builtins.head (builtins.filter (e: e.file == \"udiv\")
+     (import $poc/cases.nix).execution); in toString c.expect")
+udiv_exec_check="bash $mut/build-and-run.sh $mut udiv $mut/uexec > $mut/uexec.json
+python3 -c \"
+import json, sys
+r = json.load(open(sys.argv[1]))
+if r['reason'] != 'exit':
+    sys.exit('udiv: the emulator stopped with reason %r instead of exiting'
+             % (r['reason'],))
+if r['exitCode'] != $udiv_want:
+    sys.exit('udiv: the emulator returned %s, but cases.nix expects $udiv_want'
+             % (r['exitCode'],))
+\" $mut/uexec.json"
+udiv_semantic_run="control=\$($matcher_check 2>&1 >/dev/null) || {
+  echo 'CONTROL LOST: check.nix no longer PASSES a change confined to runtime.s,'
+  echo 'which it does not read. Either something now makes it read runtime.s --'
+  echo 'in which case this mutation no longer demonstrates what only execution'
+  echo 'can see -- or check.nix is broken for a reason of its own. Its own'
+  echo 'diagnostic, which is what tells those apart:'
+  echo \"\$control\"
+  exit 9
+}
+$udiv_exec_check"
+
+mutate "runtime: the unsigned divide and remainder compare as signed" \
+       "but cases.nix expects $udiv_want" \
+       "sed -i '/^__udivsi3:/,\$ s|bltu\tt1,a1|blt\tt1,a1|' runtime.s" \
+       "$udiv_semantic_run"
+
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
@@ -674,7 +839,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=36
+declared=51
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

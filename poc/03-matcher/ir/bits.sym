@@ -1,0 +1,94 @@
+export mask
+segment text
+function mask type=int function(int,int) sclass=auto scope=GLOBAL flags=0 ref=0.000000 ncalls=0
+caller a type=int sclass=auto scope=PARAM flags=0 offset=0 ref=0.000000
+caller b type=int sclass=auto scope=PARAM flags=0 offset=4 ref=0.000000
+callee a type=int sclass=register scope=PARAM flags=0 offset=0 ref=4.000000
+callee b type=int sclass=register scope=PARAM flags=0 offset=4 ref=8.000000
+blockbeg off=0
+local x type=int sclass=register scope=LOCAL flags=0 offset=0 ref=28.000000
+blockend off=4
+ 2. ADDRFP4 a
+4. ADDRFP4 a
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRFP4 b
+4. ADDRFP4 b
+3. INDIRI4 #4
+1' ASGNI4 #2 #3 4 4
+ 2. ADDRLP4 count=24 x
+5. ADDRFP4 a
+4. INDIRI4 count=4 #5
+7. ADDRFP4 b
+6. INDIRI4 count=7 #7
+3. BANDI4 #4 #6
+1' ASGNI4 #2 #3 4 4
+10. INDIRI4 #2
+11. CNSTI4 16
+9. BORI4 #10 #11
+8' ASGNI4 #2 #9 4 4
+14. INDIRI4 #2
+13. BXORI4 #14 #6
+12' ASGNI4 #2 #13 4 4
+17. INDIRI4 #2
+18. CNSTI4 255
+16. BANDI4 #17 #18
+15' ASGNI4 #2 #16 4 4
+21. INDIRI4 #2
+20. BORI4 #21 #6
+19' ASGNI4 #2 #20 4 4
+24. INDIRI4 #2
+25. CNSTI4 count=3 3
+23. BXORI4 #24 #25
+22' ASGNI4 #2 #23 4 4
+28. INDIRI4 #2
+30. CNSTI4 2
+29. RSHI4 #4 #30
+27. ADDI4 #28 #29
+26' ASGNI4 #2 #27 4 4
+33. INDIRI4 #2
+34. LSHI4 #6 #25
+32. ADDI4 #33 #34
+31' ASGNI4 #2 #32 4 4
+37. INDIRI4 #2
+40. CNSTI4 7
+39. BANDI4 #6 #40
+38. RSHI4 #4 #39
+36. ADDI4 #37 #38
+35' ASGNI4 #2 #36 4 4
+43. INDIRI4 #2
+45. BANDI4 #4 #25
+44. LSHI4 #6 #45
+42. ADDI4 #43 #44
+41' ASGNI4 #2 #42 4 4
+48. INDIRI4 #2
+47. BCOMI4 #48
+46' ASGNI4 #2 #47 4 4
+51. INDIRI4 #2
+50. NEGI4 #51
+49' ASGNI4 #2 #50 4 4
+53. INDIRI4 #2
+52' GTI4 #53 #6 2
+ 2. ADDRLP4 count=2 x
+4. INDIRI4 #2
+5. CNSTI4 7
+3. ADDI4 #4 #5
+1' ASGNI4 #2 #3 4 4
+ 2:
+ 3. ADDRLP4 x
+2. INDIRI4 #3
+5. ADDRFP4 b
+4. INDIRI4 #5
+1' NEI4 #2 #4 4
+ 2. ADDRLP4 count=2 x
+4. INDIRI4 #2
+5. CNSTI4 11
+3. ADDI4 #4 #5
+1' ASGNI4 #2 #3 4 4
+ 4:
+ 3. ADDRLP4 x
+2. INDIRI4 #3
+1' RETI4 #2
+ 1:
+maxoff=4
+progend

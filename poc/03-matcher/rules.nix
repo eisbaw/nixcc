@@ -40,11 +40,12 @@
 # and `srcSize`, on a conversion's SOURCE width -- see the conversion block
 # below for why the second one has to exist.
 #
-# MULI4/DIVI4/MODI4 are NOT instructions here. RV32I has no M extension
-# (decision-003), so they are libcalls into __mulsi3/__divsi3/__modsi3. The
-# oracle prints them inline because it runs with mulops_calls=0 (decision-004);
-# a rule table is exactly the right place to absorb that difference, and doing
-# it here rather than by rewriting the DAG is itself evidence for the approach.
+# MULI4/DIVI4/MODI4 -- and their unsigned twins MULU4/DIVU4/MODU4 -- are NOT
+# instructions here. RV32I has no M extension (decision-003), so they are
+# libcalls into __mulsi3/__divsi3/__modsi3/__udivsi3/__umodsi3. The oracle
+# prints them inline because it runs with mulops_calls=0 (decision-004); a rule
+# table is exactly the right place to absorb that difference, and doing it here
+# rather than by rewriting the DAG is itself evidence for the approach.
 let
   # Sizes and costs are in "instructions", the unit lburg mds use.
   callCost = 4; # jal + the pipeline it costs, roughly
@@ -115,6 +116,46 @@ in
       tmpl = "%a";
       when = { range = [ (-2048) 2047 ]; };
     }
+
+    # An UNSIGNED constant, which lcc spells differently from a signed one:
+    # sym.c prints it as `0x...' from 32768 up and in decimal below that
+    # (`(v.u&~0x7FFF) ? "0x%X" : "%U"' -- the mask is bit 15 INCLUSIVE). Two
+    # consequences, and both are load-bearing:
+    #
+    #   * the `range' predicate reads `emit.nix''s `constValue', which parses
+    #     DECIMAL only and returns null for a hex spelling, so `con_cnstu'
+    #     simply never matches one. That is not a gap: the cut is at 32768 and
+    #     this range stops at 2047, so every value this rule could accept is
+    #     printed in decimal anyway.
+    #   * the wide fallback hands `%a' to the assembler verbatim, hex and
+    #     all, and poc/04-assembler's `parseInt' reads `0x...'. So
+    #     `li %c,0xffffff0a' assembles; it is `encode.u32' that decides what
+    #     the 32-bit pattern is, which is where decision-001's overflow rule
+    #     belongs.
+    #
+    # The range is [0, 2047] and not [-2048, 2047]: an unsigned constant's
+    # listed value is its UNSIGNED reading, so a negative bound could only be
+    # matched by a value that is not there, and 2047 is the largest positive
+    # immediate the I-type field holds.
+    {
+      id = "con_cnstu";
+      nt = "con";
+      op = "CNSTU4";
+      kids = [ ];
+      cost = 0;
+      tmpl = "%a";
+      when = { range = [ 0 2047 ]; };
+    }
+    {
+      id = "reg_zerou";
+      nt = "reg";
+      op = "CNSTU4";
+      kids = [ ];
+      cost = 0;
+      tmpl = "zero";
+      when = { range = [ 0 0 ]; };
+    }
+    { id = "reg_cnstu_wide"; nt = "reg"; op = "CNSTU4"; kids = [ ]; cost = 2; tmpl = "li %c,%a\n"; }
 
     { id = "acon_addrgp"; nt = "acon"; op = "ADDRGP4"; kids = [ ]; cost = 0; tmpl = "%a"; }
 
@@ -302,6 +343,28 @@ in
     { id = "reg_rshi_imm"; nt = "reg"; op = "RSHI4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "srai %c,%0,%1\n"; }
     { id = "reg_rshi_reg"; nt = "reg"; op = "RSHI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "sra %c,%0,%1\n"; }
 
+    # --- bitwise and unary (task-051) --------------------------------------
+    # One RV32I instruction each, in both the register and the immediate
+    # form, exactly like the adds above. `andi'/`ori'/`xori' sign-extend
+    # their 12-bit field, which is why `con' stops at 2047: a mask wider than
+    # that is materialised by `reg_cnst_wide' and uses the register form.
+    { id = "reg_bandi_imm"; nt = "reg"; op = "BANDI4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "andi %c,%0,%1\n"; }
+    { id = "reg_bandi_reg"; nt = "reg"; op = "BANDI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "and %c,%0,%1\n"; }
+    { id = "reg_bori_imm"; nt = "reg"; op = "BORI4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "ori %c,%0,%1\n"; }
+    { id = "reg_bori_reg"; nt = "reg"; op = "BORI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "or %c,%0,%1\n"; }
+    { id = "reg_bxori_imm"; nt = "reg"; op = "BXORI4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "xori %c,%0,%1\n"; }
+    { id = "reg_bxori_reg"; nt = "reg"; op = "BXORI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "xor %c,%0,%1\n"; }
+
+    # RV32I HAS NEITHER OF THESE as an instruction, and both are written out
+    # rather than spelled as the `neg'/`not' pseudo-instructions
+    # poc/04-assembler also implements. The expansion is the whole content of
+    # the rule -- `sub' from the zero register and `xor' with all ones -- and
+    # writing it here keeps it in the table, where a reader auditing what this
+    # target can do sees it, instead of in the assembler's pseudo-instruction
+    # list where it looks like an instruction that exists.
+    { id = "reg_negi"; nt = "reg"; op = "NEGI4"; kids = [ "reg" ]; cost = 1; tmpl = "sub %c,zero,%0\n"; }
+    { id = "reg_bcomi"; nt = "reg"; op = "BCOMI4"; kids = [ "reg" ]; cost = 1; tmpl = "xori %c,%0,-1\n"; }
+
     # --- the multiply/divide libcalls (decision-003) -----------------------
     # These read as instructions in the oracle's listing and are not ones.
     # Nothing else in the compiler needs to know: the difference lives in
@@ -329,6 +392,84 @@ in
       kids = [ "reg" "reg" ];
       cost = libcallCost;
       tmpl = "mv a0,%0\nmv a1,%1\ncall __modsi3\nmv %c,a0\n";
+    }
+
+    # --- the U-typed opcodes (task-051) -------------------------------------
+    # lcc types every operator by its OPERANDS, so `unsigned' arithmetic
+    # arrives as a parallel family of opcodes -- ADDU4 beside ADDI4, RSHU4
+    # beside RSHI4 -- and a table with only the I-typed half refuses every C
+    # program that says `unsigned'. Most of these rows are the signed row with
+    # the letter changed, and saying so is more honest than implying they are
+    # all interesting. FOUR ARE NOT, and they are the reason this block cannot
+    # be generated from the signed one:
+    #
+    #   RSHU4   is `srl', a LOGICAL shift, where RSHI4 is `sra' -- in both
+    #           the immediate and the register form, so that is two rows.
+    #           Selecting `sra' here compiles, assembles, runs, and gives the
+    #           wrong answer for every value with bit 31 set -- and for no
+    #           other value, so a test whose data stays small cannot see it.
+    #   DIVU4   and MODU4 are __udivsi3/__umodsi3, NOT the signed routines.
+    #           Same argument: they agree on every operand below 2^31.
+    #   the four ORDERING comparisons are `bltu'/`bgeu' and their two swapped
+    #           forms, not `blt'/`bge'. Same argument again. EQU4 and NEU4 are
+    #           not in this list: equality orders nothing, so they are `beq'
+    #           and `bne' exactly as the signed pair is.
+    #
+    # cases.nix's `pairs' table is where that four-against-the-rest split is
+    # written down as data and checked against these templates, in both
+    # directions -- so a row that stopped differing, and a row that started,
+    # are each a named failure rather than a comment nobody re-read.
+    #
+    # MULU4 deliberately shares __mulsi3 with MULI4: the low 32 bits of a
+    # product do not depend on how the operands are read, which is why one
+    # shift-and-add routine answers both. That is a claim about two's
+    # complement, not an approximation.
+    #
+    # THERE IS NO NEGU4 ROW because there is no NEGU4: lcc's ops.h gives NEG
+    # the I and F kinds and not U, so `-u' on an unsigned operand arrives as
+    # BCOMU4 followed by ADDU4(.,CNSTU4 1) -- two's complement written out in
+    # the IR. Checked against rcc-rv32 rather than reasoned from the header.
+    # An absent row is a loud refusal naming the opcode, so a reader auditing
+    # for completeness should expect to add rows rather than find them.
+    { id = "reg_addu_imm"; nt = "reg"; op = "ADDU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "addi %c,%0,%1\n"; }
+    { id = "reg_addu_reg"; nt = "reg"; op = "ADDU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "add %c,%0,%1\n"; }
+    { id = "reg_subu"; nt = "reg"; op = "SUBU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "sub %c,%0,%1\n"; }
+    { id = "reg_lshu_imm"; nt = "reg"; op = "LSHU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "slli %c,%0,%1\n"; }
+    { id = "reg_lshu_reg"; nt = "reg"; op = "LSHU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "sll %c,%0,%1\n"; }
+    # THE ONE ROW IN THIS BLOCK THAT IS NOT ITS SIGNED TWIN. `srl', not `sra'.
+    { id = "reg_rshu_imm"; nt = "reg"; op = "RSHU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "srli %c,%0,%1\n"; }
+    { id = "reg_rshu_reg"; nt = "reg"; op = "RSHU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "srl %c,%0,%1\n"; }
+    { id = "reg_bandu_imm"; nt = "reg"; op = "BANDU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "andi %c,%0,%1\n"; }
+    { id = "reg_bandu_reg"; nt = "reg"; op = "BANDU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "and %c,%0,%1\n"; }
+    { id = "reg_boru_imm"; nt = "reg"; op = "BORU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "ori %c,%0,%1\n"; }
+    { id = "reg_boru_reg"; nt = "reg"; op = "BORU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "or %c,%0,%1\n"; }
+    { id = "reg_bxoru_imm"; nt = "reg"; op = "BXORU4"; kids = [ "reg" "con" ]; cost = 1; tmpl = "xori %c,%0,%1\n"; }
+    { id = "reg_bxoru_reg"; nt = "reg"; op = "BXORU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "xor %c,%0,%1\n"; }
+    { id = "reg_bcomu"; nt = "reg"; op = "BCOMU4"; kids = [ "reg" ]; cost = 1; tmpl = "xori %c,%0,-1\n"; }
+
+    {
+      id = "reg_mulu_libcall";
+      nt = "reg";
+      op = "MULU4";
+      kids = [ "reg" "reg" ];
+      cost = libcallCost;
+      tmpl = "mv a0,%0\nmv a1,%1\ncall __mulsi3\nmv %c,a0\n";
+    }
+    {
+      id = "reg_divu_libcall";
+      nt = "reg";
+      op = "DIVU4";
+      kids = [ "reg" "reg" ];
+      cost = libcallCost;
+      tmpl = "mv a0,%0\nmv a1,%1\ncall __udivsi3\nmv %c,a0\n";
+    }
+    {
+      id = "reg_modu_libcall";
+      nt = "reg";
+      op = "MODU4";
+      kids = [ "reg" "reg" ];
+      cost = libcallCost;
+      tmpl = "mv a0,%0\nmv a1,%1\ncall __umodsi3\nmv %c,a0\n";
     }
 
     # --- calls ------------------------------------------------------------
@@ -370,8 +511,19 @@ in
     { id = "stmt_argi"; nt = "stmt"; op = "ARGI4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
     { id = "stmt_argp"; nt = "stmt"; op = "ARGP4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
 
+    # The U-typed call, argument and return. A word is a word whichever way it
+    # is read, so these are the I-typed rows with the letter changed and the
+    # same costs for the same reasons -- including the two `stmt' rows, which
+    # are cheaper by exactly the result move they do not emit (task-025).
+    { id = "reg_callu_direct"; nt = "reg"; op = "CALLU4"; kids = [ "acon" ]; cost = callCost + 1; tmpl = "call %0\nmv %c,a0\n"; }
+    { id = "reg_callu_indirect"; nt = "reg"; op = "CALLU4"; kids = [ "reg" ]; cost = callCost + 2; tmpl = "jalr %0\nmv %c,a0\n"; }
+    { id = "stmt_callu_direct"; nt = "stmt"; op = "CALLU4"; kids = [ "acon" ]; cost = callCost; tmpl = "call %0\n"; }
+    { id = "stmt_callu_indirect"; nt = "stmt"; op = "CALLU4"; kids = [ "reg" ]; cost = callCost + 1; tmpl = "jalr %0\n"; }
+    { id = "stmt_argu"; nt = "stmt"; op = "ARGU4"; kids = [ "reg" ]; cost = 1; tmpl = "mv %A,%0\n"; }
+
     # --- control flow -----------------------------------------------------
     { id = "stmt_reti"; nt = "stmt"; op = "RETI4"; kids = [ "reg" ]; cost = 1; tmpl = "mv a0,%0\nj %E\n"; }
+    { id = "stmt_retu"; nt = "stmt"; op = "RETU4"; kids = [ "reg" ]; cost = 1; tmpl = "mv a0,%0\nj %E\n"; }
     { id = "stmt_jumpv"; nt = "stmt"; op = "JUMPV"; kids = [ "acon" ]; cost = 1; tmpl = "j %0\n"; }
 
     # lcc emits the *inverted* test and branches to the join label, so
@@ -383,5 +535,27 @@ in
     { id = "stmt_gti4"; nt = "stmt"; op = "GTI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "blt %1,%0,%a\n"; }
     { id = "stmt_eqi4"; nt = "stmt"; op = "EQI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "beq %0,%1,%a\n"; }
     { id = "stmt_nei4"; nt = "stmt"; op = "NEI4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bne %0,%1,%a\n"; }
+
+    # And the unsigned four, which are DIFFERENT INSTRUCTIONS and not the same
+    # ones on differently-typed operands: `bltu'/`bgeu' order the operands as
+    # 32-bit magnitudes where `blt'/`bge' order them as two's-complement
+    # integers, and the two disagree on exactly the values with bit 31 set.
+    # A corpus whose unsigned data stays below 2^31 cannot tell them apart, so
+    # ir/unsig.c's does not.
+    #
+    # `bleu' and `bgtu' are poc/04-assembler pseudo-instructions that swap the
+    # operands of `bgeu' and `bltu'. The spelling follows the signed rows
+    # above verbatim, swap and all, so that each pair reads as a pair: LEI4
+    # uses the pseudo-instruction and GTI4 writes the swap out, and LEU4 and
+    # GTU4 do the same.
+    #
+    # EQU4 and NEU4 are `beq'/`bne' with no unsigned form to choose between,
+    # because equality does not order anything.
+    { id = "stmt_leu4"; nt = "stmt"; op = "LEU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bleu %0,%1,%a\n"; }
+    { id = "stmt_ltu4"; nt = "stmt"; op = "LTU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bltu %0,%1,%a\n"; }
+    { id = "stmt_geu4"; nt = "stmt"; op = "GEU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bgeu %0,%1,%a\n"; }
+    { id = "stmt_gtu4"; nt = "stmt"; op = "GTU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bltu %1,%0,%a\n"; }
+    { id = "stmt_equ4"; nt = "stmt"; op = "EQU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "beq %0,%1,%a\n"; }
+    { id = "stmt_neu4"; nt = "stmt"; op = "NEU4"; kids = [ "reg" "reg" ]; cost = 1; tmpl = "bne %0,%1,%a\n"; }
   ];
 }

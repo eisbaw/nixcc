@@ -31,17 +31,23 @@ let
   # last three in cases.nix and emptying every list AND zeroing every floor was
   # a single sed, after which the suite passed while printing "0 required
   # opcodes matched".
-  minFunctions = 10;
-  minSelections = 40;
-  minDuels = 4;
-  minRules = 65;
-  minNodes = 315;
-  minRequiredOps = 41;
-  minLibcalls = 3;
-  minCallRules = 6;
-  minLowerings = 13;
-  minForbidden = 5;
+  minFunctions = 13;
+  minSelections = 88;
+  minDuels = 5;
+  minRules = 107;
+  minNodes = 590;
+  minRequiredOps = 70;
+  minLibcalls = 6;
+  minCallRules = 10;
+  minLowerings = 44;
+  minForbidden = 6;
   minFollows = 2;
+  minPairs = 29;
+  # `totalAssertions' is derived from the `emitted' table rather than from a
+  # list length, so it moves with the corpus rather than with one edit. It was
+  # 20 while the actual was over a hundred, which is the kind of slack this
+  # block exists to refuse.
+  minAssertions = 152;
 
   fault = msg: throw "HARNESS FAULT: ${msg}";
 
@@ -101,6 +107,34 @@ let
   uncalled = b.filter
     (r: !(b.any (m: contains m r.tmpl) table.callMarkers))
     callRules;
+
+  # THE I/U PAIRING, checked against the templates rather than described in
+  # prose. Two rules that must agree have to emit byte-identical text; two
+  # that must differ have to not. That catches drift in BOTH directions with
+  # one table -- an edit that makes RSHU4 arithmetic and an edit that makes
+  # ADDU4 a subtract are each one character, and each leaves a rule table that
+  # still looks symmetrical (task-051).
+  #
+  # Deliberately a comparison of whole templates and not of mnemonics: the
+  # divide and remainder libcalls both start `mv a0,%0', so a first-token test
+  # would call them identical and pass a table that had pointed DIVU4 at
+  # __divsi3.
+  pairResults = map
+    (q:
+      let
+        ri = ruleById.${q.i} or null;
+        ru = ruleById.${q.u} or null;
+      in
+      q // {
+        missing = if ri == null then q.i else if ru == null then q.u else null;
+        broken =
+          ri != null && ru != null
+          && (if q.relation == "same" then ri.tmpl != ru.tmpl else ri.tmpl == ru.tmpl);
+      })
+    cases.pairs;
+  pairMissing = b.filter (r: r.missing != null) pairResults;
+  pairBad = b.filter (r: r.broken) pairResults;
+  badRelation = b.filter (q: !(b.elem q.relation [ "same" "different" ])) cases.pairs;
 
   badLibcall = b.filter
     (l:
@@ -315,6 +349,13 @@ else if b.length cases.lowerings < minLowerings then
 else if b.length cases.forbiddenMnemonics < minForbidden then
   fault "cases.nix forbids only ${toString (b.length cases.forbiddenMnemonics)} mnemonics, fewer than the ${
     toString minForbidden} floor -- emptying that list stops the check that RV32I has no multiplier"
+else if b.length cases.pairs < minPairs then
+  fault "cases.nix pairs only ${toString (b.length cases.pairs)} of the I-typed and U-typed rules, fewer than the ${
+    toString minPairs} floor -- shortening that list stops the check that the two families have not drifted"
+else if badRelation != [ ] then
+  fault "cases.nix's pairing table says `${(b.head badRelation).relation}', which is neither `same' nor `different'; an unknown relation would be checked by nothing"
+else if pairMissing != [ ] then
+  fault "cases.nix's pairing table names rule `${(b.head pairMissing).missing}', which is not in the table"
 else if totalFollows < minFollows then
   fault "only ${toString totalFollows} after-a-label assertions, fewer than the ${
     toString minFollows} floor -- those are what pin that a register is not assumed live across a branch target"
@@ -338,6 +379,14 @@ else if uncalled != [ ] then
 else if badLibcall != [ ] then
   throw "matcher: ${(b.head badLibcall).op} must be lowered by rule `${(b.head badLibcall).rule}' to a call on ${
     (b.head badLibcall).symbol}, and is not (decision-003)"
+# LAST of the table-only verdicts, on purpose. `lowerings' and `libcalls' name
+# one rule and the instruction or symbol it owes; this names two rules and
+# their relation. When both would fire, the specific one is the more useful
+# message, so it goes first and this catches what it leaves -- the pairs no
+# other table mentions at all.
+else if pairBad != [ ] then
+  throw "matcher: rules `${(b.head pairBad).i}' and `${(b.head pairBad).u}' must emit ${
+    (b.head pairBad).relation} code and do not -- the I-typed and U-typed halves of the table have drifted (task-051)"
 else if selectionBad != [ ] then
   throw "matcher: ${toString (b.length selectionBad)} of ${
     toString (b.length selectionResults)} labelling expectations failed\n  ${
@@ -358,12 +407,14 @@ else if opMissing != [ ] then
   fault "${b.concatStringsSep ", " (map (c: c.op) opMissing)} is required by cases.nix but appears in none of the test DAGs, so nothing was checked for it"
 else if totalInstructions == 0 then
   fault "the three cases emitted no instructions at all"
-else if totalAssertions < 20 then
-  fault "only ${toString totalAssertions} emitted-assembly assertions in total; the `present'/`absent' lists look emptied"
+else if totalAssertions < minAssertions then
+  fault "only ${toString totalAssertions} emitted-assembly assertions in total, against the ${
+    toString minAssertions} floor; the `present'/`absent' lists look emptied"
 else
   "${toString (b.length cases.functions)} functions from real lcc output: ${
     toString totalNodes} DAG nodes labelled, ${toString (b.length cases.selections)} rule/cost expectations, ${
     toString (b.length cases.duels)} cost duels each flipped by a cost change, ${
     toString totalAssertions} assertions over ${toString totalInstructions} emitted instructions, ${
     toString (b.length cases.requiredOps)} required opcodes matched, ${
-    toString (b.length (b.attrNames opsSeen))} distinct opcodes seen\n"
+    toString (b.length (b.attrNames opsSeen))} distinct opcodes seen, ${
+    toString (b.length cases.pairs)} signed/unsigned rule pairs checked for drift\n"
