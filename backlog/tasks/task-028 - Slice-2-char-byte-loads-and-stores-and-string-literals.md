@@ -1,10 +1,10 @@
 ---
 id: TASK-028
 title: 'Slice 2: char, byte loads and stores, and string literals'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-16 00:13'
+updated_date: '2026-09-16 01:30'
 labels:
   - frontend
   - parser
@@ -25,11 +25,24 @@ This is the slice that makes string handling real. Note decision-001: Nix string
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 char declarations, byte loads and stores, and string literals parse and reach the DAG
-- [ ] #2 String literals are byte lists end to end; a literal containing an embedded NUL survives compilation and execution
-- [ ] #3 A C program using char arrays and string literals compiles from .c and runs, printing correct output
-- [ ] #4 DAG diffs against rcc-rv32 for the extended corpus
+- [x] #1 char declarations, byte loads and stores, and string literals parse and reach the DAG
+- [x] #2 String literals are byte lists end to end; a literal containing an embedded NUL survives compilation and execution
+- [x] #3 A C program using char arrays and string literals compiles from .c and runs, printing correct output
+- [x] #4 DAG diffs against rcc-rv32 for the extended corpus
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify task-027's claim about what the frontend already does (done: hello.c reaches line 35 and stops at the subscript; extern char msg[], char* params, int* params all parse).
+2. Frontend, part 1 -- the SUBSCRIPT and pointer arithmetic: postfix '[', enode.c's addtree/subtree pointer arms, simp.c's ADD+P/SUB+P including addrtree, the Address code item, and symbolic.c's I(address). This is what hello.c needs; it needs no string literal and no global definition, because 'extern char msg[]' is a declaration the driver defines.
+3. Frontend, part 2 -- STRING LITERALS: parse.nix's SCON arm joining adjacent literals and appending exactly one 0 (task-011), sym.c's constant() with u.c.loc = genident(STATIC,...,GLOBAL), and decl.c's doconst in finalize -> segment lit / global / defstring, with symbolic.c's emitString escaping.
+4. Backend -- task-032: emit.nix's operand must split 'sym+N' and must not hand a bare numeric name to the assembler, which reads it as a GAS positional label. Also ADDRLP4/ADDRFP4 with a displacement, which a local array indexed by a constant produces.
+5. Data emission: 03-matcher/parse.nix learns to READ the lit segment rather than ignore it, and 07-parser/demo.nix lays the bytes down as .data so a string literal program can run.
+6. Corpus and programs: new c/ cases for the subscript, pointer arithmetic and strings; a run/ program with an EMBEDDED NUL whose output proves the byte after it survived. oracle.py's five counts and cases.nix's opcode set updated.
+7. The headline: poc/05-loop/demo.nix gains a .c path through 07-parser, so hello.c compiles from .c rather than from lcc's .sym.
+8. Mutations for every new check, declared count raised, and each mutation RUN before the harness is believed.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -133,4 +146,48 @@ AND THE ONE THAT COST THE SECOND MOST: a test case's ARGUMENTS are part of the t
 For slice 2 specifically: the narrow load and store rules (task-024) are in and executed, and the signed/unsigned load pair is still INVISIBLE to any executed answer because lcc promotes every narrow access -- cases.nix's lowerings table is what tells lb from lbu, and task-033 is what would make it observable.
 
 For slice 3: ADDRGP4 sym+N is taken verbatim by the rule table and resolved by poc/04-assembler at layout time (task-023), so the matcher's only job there is not to lose the displacement. ir/gsym.c pins that.
+
+WHAT LANDED, and the first thing to know is that task-027's claim held: the frontend already did `char'. hello.c reached line 35 and stopped at `v[i]'. So this slice was the SUBSCRIPT, the POINTER and the STRING LITERAL, exactly as task-027 said, plus one thing nobody had listed.
+
+THE THING NOBODY HAD LISTED: THE NULL POINTER CONSTANT. `char *p; p = 0;' is not exotic C -- it is how every pointer written before nullptr is tested -- and it needs CNST+P, which trees.nix's cnsttree refused. lcc reaches it through int -> unsigned -> pointer with a fold at each step, and the fold consults the POINTER type's own limits (types.c's `T*' symbol, min 0 and max all-ones over the pointer width), which types.nix did not have. Four files and about twenty lines. It was found by writing the must-fail case for what I thought was an unreachable opcode and discovering that `p = 0' reached it. If a slice looks finished, write the refusal cases: they are where the hole is.
+
+`vtoa' for a pointer is `0' for null and `0x' plus LOWER-CASE hex otherwise -- lcc's own %p prints the prefix only when the pointer is non-null, so `CNSTP4 0' and not `CNSTP4 0x0'. Read off output.c, not guessed.
+
+WHAT IS NOW TRUE, measured rather than asserted:
+  * SIX programs under poc/07-parser/run/ compile from .c and run: sumto 55, gcd `21 55', primes `22 57', bits `3 21 15', unsigned `1431655683 3 242', and strings `ab-cd10'.
+  * poc/05-loop/hello.c compiles from .c as well, and that was the headline. `just poc-loop' now lexes, parses, selects, assembles and executes it in ONE `nix eval' in a sandbox with no toolchain, printing `1..10 = 55' in 714 instructions. hello.sym is still regenerated from lcc by provenance.sh; it is the ORACLE now, and check.nix diffs our listing against it line for line before it believes any number that follows.
+  * The differential is 29 translation units, 58 functions, 1540 node lines, 1315 back-references and 16 lines of lcc's stderr, byte for byte.
+
+THE THREE THINGS THAT WILL BITE THE NEXT SLICE.
+
+1. A SYMBOL WITH A DISPLACEMENT IS NOT A NAME (task-032, closed here). lcc folds `msg[8]' into ONE node over a symbol NAMED `msg+8', and `buf[3]' into `ADDRLP4 buf+3' -- a FRAME SLOT plus an integer, which is a different thing again. poc/03-matcher/emit.nix now splits base from displacement and rejoins them, and a numeric base is renamed two different ways depending on whether the function DEFINES it as a label: `.L<fn>_<n>' if it does, `.Llit_<n>' if it does not, because lcc numbers branch labels and file-scope statics from one counter and a bare number is a GAS POSITIONAL label to poc/04-assembler. `litLabel' is exported from emit.nix precisely so poc/07-parser/data.nix, which LAYS THE BYTES DOWN, cannot spell it differently.
+
+2. THE LIT SEGMENT IS A CONSUMER poc/03-matcher DOES NOT HAVE. Its parse.nix reads forests and ignores `segment lit', `global N' and `defstring' as directive noise. That was right while nothing outside a function mattered; a string literal is the other half of the program. poc/07-parser/data.nix reads those three lines back and produces .data items. It goes through the listing TEXT and not through the compiler's own byte lists, for compile.nix's stated reason: the text is the interface, so the bytes in the image are the bytes the oracle compared.
+
+3. FIVE OPCODES THE FRONTEND NOW EMITS HAVE NO BACKEND ROW: CNSTP4, CVUP4, CVPU4, SUBP4, RETP4. That is task-054. They diff clean against lcc and are refused at instruction selection, loudly and by name, which is why no program under run/ compares a pointer against zero, subtracts two pointers or returns one. poc/07-parser/cases.nix's opcode list says so in its own words. Do not read that list as a claim about the backend.
+
+ON THE TWO LESSONS I WAS HANDED, and what they cost.
+
+"A rule the corpus never SELECTS is asserted by nothing." I added no rows to rules.nix, so task-053's check is not what this slice needed -- but the same shape appeared in emit.nix, which grew three new paths. Two of them (a global's displacement, a numeric base that is a branch label) are caught by poc/03-matcher/check.nix's emitted-line table. The third -- a FRAME symbol's displacement -- is not, and I left it not: ir/lbuf.c is in the corpus with no `emitted' entry, so check.nix has nothing to say about which slot `buf[3]' addresses, and the mutation that drops the displacement is caught only by the program returning 105 instead of 293. Pinning the lines would have caught it in the cheaper stage and left "executing it is what catches this" untested.
+
+"A test case's ARGUMENTS are part of the test." run/strings.c prints its argument as two digits, and cases.nix carries a guard saying 10 <= n <= 99 ON THE CRITICAL PATH (not in a comment) with a mutation aimed at it. ir/lbuf.c's three constant indices hold three different values and are weighted 2, 4 and 8, so a dropped displacement returns 105 rather than 293; with equal weights it would have returned the right answer for the wrong reason.
+
+AND THE MUTATIONS WERE RUN BEFORE THEY WERE BELIEVED. Every one of the fourteen new mutations was DETECTED on the first attempt -- and seven of the twelve in poc/07-parser had the WRONG FRAGMENT, so the harness would have gone red anyway. Three PRE-EXISTING mutations also broke: oracle.py prints only the first two differing files, and `ptrs.c' and `strings.c' sort into that window, which moved two fragments out of it and changed a third's number (`run/ holds 4 programs' became 5). run.sh's own header warns that adding a corpus file can do this; that is what it costs.
+
+The technique that found them all in ONE pass rather than one per 25-minute run: temporarily change the distinctness loop at the bottom of run.sh to record a mismatch and `continue' instead of `exit 1', run once, read every mismatch, then put the loop back. And check the sed PATTERNS separately -- one mutation reported "changed nothing" because a lint fix (`v = c.v' to `inherit (c) v') had moved the line it anchored on, and mutant.sh aborts the whole stage on that.
+
+WHAT I DID NOT DO, and each is a deliberate stop rather than an oversight.
+
+  * Mixed-width literal joins (`"a" L"b"') are REFUSED naming task-047. lcc does not join them either -- its lexer stops at the width change and reports a syntax error -- so both frontends refuse and they refuse in different words. That is a divergence and must-fail.nix records it as one.
+  * A source byte above 127 in a literal still throws (task-046). `\NNN' and `\xNN' reach every byte, so it constrains the corpus and not the feature; c/strs.c uses `\377'.
+  * File-scope variables, their initialisers and local statics are still slice 3 (task-029). hello.c did NOT need them: `extern char msg[]' is a declaration and poc/05-loop/driver.nix defines the bytes.
+  * poc/03-matcher/rules.nix is untouched. See task-054.
+
+FOUR ACCEPTANCE CRITERIA, four met, and no criterion was rewritten.
+  #1 char declarations, byte loads and stores, string literals parse and reach the DAG -- met; char and the narrow accesses were already there (task-024, task-027) and the literals are new.
+  #2 byte lists end to end, embedded NUL survives compilation AND execution -- met: evalSCON's units -> the parser's join -> the constant symbol's value -> `defstring "ab\000cd\000"' -> data.nix -> six bytes in .data -> a program that prints `ab-cd'.
+  #3 a program using char arrays and string literals compiles from .c and runs -- met by run/strings.c, and by hello.c in poc/05-loop.
+  #4 DAG diffs against rcc-rv32 for the extended corpus -- met: 29 TUs, 58 functions, byte for byte, plus 40 generated programs and 803 boundary forms.
+
+COST. The parser PoC's mutation stage went from 44 to 56 mutations and the whole PoC now takes roughly twice as long; poc/03-matcher went 51 -> 53. poc/05-loop's memory reading moved from 44 kB to 53 kB per emulated instruction against a ceiling of 70, because the front end is now inside the evaluation it measures; measure.py says so in its own header. The frontend's own per-line figures did not move: 142 kB/line for many small functions and 359 kB/line for one large one, the same as task-027 measured.
 <!-- SECTION:NOTES:END -->

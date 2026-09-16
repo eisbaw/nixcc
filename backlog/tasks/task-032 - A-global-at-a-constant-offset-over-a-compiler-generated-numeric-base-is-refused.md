@@ -3,9 +3,10 @@ id: TASK-032
 title: >-
   A global at a constant offset over a compiler-generated numeric base is
   refused
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-15 05:33'
+updated_date: '2026-09-16 01:30'
 labels:
   - poc
   - matcher
@@ -35,3 +36,11 @@ Found by the task-023 review.
 - [ ] #2 The numeric base is mangled by the same rule a bare numeric ADDRGP4 goes through, in one place
 - [ ] #3 A matcher corpus case covers it, taken from real lcc output
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed by task-028. poc/03-matcher/emit.nix's `operand' now splits a symbol from its displacement (`splitDisp'/`withDisp') and renames a numeric base two ways: `.L<fn>_<n>' when the function DEFINES it as a label, `.Llit_<n>' when it does not, because lcc numbers branch labels and file-scope statics from one counter. `litLabel' is exported so poc/07-parser/data.nix, which lays the lit segment down, spells the same name.
+
+The task described the ADDRGP4 half. There is a second half it did not: `ADDRLP4 buf+3', which a LOCAL array at a constant index produces. That is a FRAME SLOT plus an integer, not a name at all, and the slot lookup failed with "which is neither a parameter nor a local". poc/03-matcher/ir/lbuf.c is the case, and it deliberately has NO entry in cases.nix's `emitted' table so that only executing the program catches a dropped displacement: it returns 105 instead of 293.
+<!-- SECTION:NOTES:END -->

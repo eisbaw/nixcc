@@ -4,7 +4,7 @@ title: 'Slice 3: globals, arrays and initializers'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-16 00:13'
+updated_date: '2026-09-16 01:30'
 labels:
   - frontend
   - parser
@@ -58,4 +58,71 @@ AND THE ONE THAT COST THE SECOND MOST: a test case's ARGUMENTS are part of the t
 For slice 2 specifically: the narrow load and store rules (task-024) are in and executed, and the signed/unsigned load pair is still INVISIBLE to any executed answer because lcc promotes every narrow access -- cases.nix's lowerings table is what tells lb from lbu, and task-033 is what would make it observable.
 
 For slice 3: ADDRGP4 sym+N is taken verbatim by the rule table and resolved by poc/04-assembler at layout time (task-023), so the matcher's only job there is not to lose the displacement. ir/gsym.c pins that.
+
+FORWARD-CARRIED from task-028 (slice 2). Read this before writing a file-scope variable.
+
+WHAT SLICE 2 LEFT YOU, and it is more than the criteria say. The machinery for
+laying BYTES DOWN AT FILE SCOPE now exists and works end to end: listing.nix
+has `defglobal' (decl.c's, which picks the segment, exports a non-static and
+announces it), `doconst' and `defstringText'; poc/07-parser/data.nix reads
+`segment lit', `global N', `defstring' and `defconst' back out of the listing
+and produces .data items; and poc/03-matcher/emit.nix knows how to name a
+generated file-scope symbol (`.Llit_<n>') as distinct from a branch label
+(`.L<fn>_<n>'). A slice-3 global in `segment data' or `segment bss' needs
+data.nix to grow TWO more line kinds -- `space N' for bss and `defaddress' for
+a pointer initialiser -- and a decision about the label name for a NAMED
+global, which is not `.Llit_' anything: it is the identifier itself.
+
+`defglobal' takes the segment as a bare integer (1 text, 2 bss, 3 data, 4 lit)
+because that is how parse.nix already calls `swtoseg'. listing.nix's `segName'
+is the one table that names them. If slice 3 grows a third caller, that is the
+moment to make the enum a named attrset rather than three bare numbers.
+
+WHAT WILL BITE YOU FIRST, and it is not the initialiser. `listing.nix's
+doglobal' refuses a TENTATIVE global naming task-029, and `parse.nix' refuses
+`int g = 1;' and a local `static'. All three are one-line refusals with the
+task named, so they are easy to find -- but the THIRD one is the interesting
+one: a local static is a GLOBAL with a generated name, and it reaches
+`idtree' through the `scope == GLOBAL || sclass == static' arm that string
+literals now use. Two consumers of one path.
+
+lcc's init.c is the file you have not read yet and it is where the endianness
+lives. decision-004 says the oracle must be rcc-rv32 and NEVER raw
+`rcc -target=symbolic', because the raw one declares little_endian = 0 and
+init.c consults that when it SPLITS an initialiser into defconst pieces. Slice
+2 hit the same seam from the other side: a wide string literal is emitted as
+one `defconst unsigned.2' per unit and data.nix lays those down little-endian.
+If your defconst bytes come out backwards, that is where to look first.
+
+THE BACKEND HAS FIVE GAPS SLICE 2 OPENED and did not close: CNSTP4, CVUP4,
+CVPU4, SUBP4 and RETP4 have no row in poc/03-matcher/rules.nix. That is
+task-054. `char *p; p = 0;' compiles to IR that diffs clean against lcc and is
+refused at instruction selection. A slice-3 global whose initialiser is a
+pointer will meet the same wall, so 054 is probably a prerequisite rather than
+a neighbour.
+
+STILL REFUSED AND STILL YOURS: struct, union, enum, switch, goto, labels,
+float, the preprocessor (task-013), a literal byte above 127 (task-046) and a
+mixed-width literal join (task-047).
+
+AND THE TWO LESSONS, restated because they cost this project the most:
+
+  * A rule the corpus never SELECTS is asserted by nothing (task-053, still
+    unwritten). Slice 2 added no rows to rules.nix but did add three paths to
+    emit.nix, and each got its own mutation; one of them deliberately has NO
+    entry in cases.nix's `emitted' table so that only executing the program
+    catches it.
+
+  * A test case's ARGUMENTS are part of the test. run/strings.c prints its
+    argument, and the assumption that it is two digits is a guard on the
+    critical path in cases.nix with a mutation aimed at it -- not a comment.
+
+ONE PRACTICAL THING. The parser PoC's mutation stage is 56 mutations and takes
+the best part of half an hour. Several fragments are a LINE OF THE DIFF, and
+oracle.py prints only the first two differing files, so ADDING A CORPUS FILE
+THAT SORTS EARLY moves fragments out of the window: `ptrs.c' and `strings.c'
+did that to four existing mutations in this slice. To find them all in one run
+rather than one per run, temporarily change the distinctness loop at the bottom
+of run.sh to record a mismatch and `continue' instead of `exit 1', run once,
+read every mismatch, then put the loop back. Half a day saved.
 <!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: Minimal C preprocessor in Nix
 status: To Do
 assignee: []
 created_date: '2026-09-14 20:04'
-updated_date: '2026-09-15 22:26'
+updated_date: '2026-09-16 01:30'
 labels:
   - frontend
   - preprocessor
@@ -73,4 +73,46 @@ THE PARSER NOW NAMES YOU. A `#' at file scope is refused with: "parse: \`#' -- t
 WHAT THE SEAM LOOKS LIKE. poc/07-parser/compile.nix takes a SOURCE STRING and lexes it itself (`lexer.lex src'). A preprocessor that produced a token stream rather than text would slot in there -- but note that the parser reads `ws' off each token to make lcc's `*cp != '='' peek (task-002's no-compound-assignment-tokens decision), and it reads `line' for every diagnostic. Any stage between the lexer and the parser has to preserve both or the stderr differential (criterion #7 of task-027) goes red.
 
 THE SIZE YOU HAVE TO FIT IN. Measured on the frontend as it stands: 142 kB of peak RSS per source line for a file of many small functions and 359 kB for one large function, so the 1 GB mark arrives at about 2800 source lines in one function. A preprocessed translation unit that includes real headers is well past that. This is the number decision-005 should be re-read against before scoping #include.
+
+FORWARD-CARRIED from task-028 (slice 2), because the preprocessor's output is
+now consumed by something that can tell it is wrong.
+
+WHAT CHANGED FOR YOU. The frontend handles string literals end to end, and
+that means three things the preprocessor will meet.
+
+1. ADJACENT LITERALS ARE JOINED BY THE PARSER, not by the lexer. poc/02-lexer
+   emits one SCON token per literal, poc/06-constants decodes one literal's
+   units with NO terminator, and poc/07-parser/parse.nix's SCON arm
+   concatenates the run and appends EXACTLY ONE 0 -- lcc's scon() in that
+   order. A preprocessor that pastes `"ab" "cd"' into a single `"abcd"' token
+   would still be correct; one that emitted `"ab\0" "cd"' would not. If `#'
+   stringification (`#x') lands, it produces a literal token and joins with
+   its neighbours by that rule and no other.
+
+2. THE LITERAL'S BYTES ARE A BYTE LIST, NOT A NIX STRING, all the way from
+   the lexeme to the .data (decision-001: a Nix string cannot hold a NUL, and
+   `"a\0b"' is perfectly good C). If the preprocessor ever needs to
+   MANIPULATE a literal's content -- stringification and token pasting both
+   do -- it works on the lexeme text, which is fine, but anything that wants
+   the VALUE must go through poc/06-constants' evalSCON and get units back.
+
+3. A SOURCE BYTE ABOVE 127 IN A LITERAL STILL THROWS (task-046). `\NNN' and
+   `\xNN' reach every byte. A preprocessor that reads real-world headers will
+   meet UTF-8 in a comment (fine, the lexer discards comments) and in a string
+   literal (not fine). That is the first thing to check against a real header,
+   and it is a poc/06-constants change, not yours.
+
+WHAT THE FRONTEND STILL SAYS WHEN IT MEETS A `#'. poc/07-parser/parse.nix's
+`program' refuses it by name: "this frontend is fed raw C and has no
+preprocessor yet; decision-005 chose to write one in Nix and task-013 is where
+it lives". That refusal is covered by poc/07-parser/must-fail.nix, so when the
+preprocessor lands, that case has to change with it rather than quietly start
+failing.
+
+AND THE PRACTICAL ONE. The whole corpus under poc/07-parser/c/ and run/ is
+preprocessor-free C by construction -- no `#include', no `#define' -- because
+the frontend cannot take anything else. That is 29 translation units of C this
+project already compiles and diffs against lcc byte for byte, which makes it
+the obvious first differential for a preprocessor: run it through, and the
+output must be the input.
 <!-- SECTION:NOTES:END -->
