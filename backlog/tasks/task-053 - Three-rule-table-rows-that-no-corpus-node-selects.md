@@ -4,10 +4,12 @@ title: Three rule-table rows that no corpus node selects
 status: To Do
 assignee: []
 created_date: '2026-09-15 23:52'
+updated_date: '2026-09-16 00:33'
 labels:
   - backend
   - rules
 dependencies: []
+priority: high
 ---
 
 ## Description
@@ -37,3 +39,13 @@ stmt_callv_indirect is the interesting one: poc/03-matcher/run.sh aims a mutatio
 - [ ] #2 The suite computes that set rather than a reader computing it: a rule added to the table and selected by nothing is a named failure, not a silence
 - [ ] #3 The mutation aimed at stmt_callv_indirect still demonstrates what it says it demonstrates, or is re-aimed and says why
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+ORCHESTRATOR: raised to high. Task-051's implementer is right that this is not a tidy-up -- it is the check that would have caught its own five unselected U-typed rows, including reg_rshu_reg where sra-for-srl is the exact defect that task existed to prevent. Two reviewers found it; the implementer had not.
+
+The window matters: slice 2 (task-028) is adding rules as I write this, and it has been briefed on the lesson but cannot lean on a check that does not exist. Every rule added before this lands is a rule asserted only by a table that names it rather than by a corpus that selects it.
+
+Schedule it immediately after slice 2, before slice 3 adds more.
+<!-- SECTION:NOTES:END -->
