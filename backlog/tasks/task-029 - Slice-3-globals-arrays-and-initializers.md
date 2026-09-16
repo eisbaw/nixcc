@@ -4,7 +4,7 @@ title: 'Slice 3: globals, arrays and initializers'
 status: To Do
 assignee: []
 created_date: '2026-09-15 04:40'
-updated_date: '2026-09-16 08:22'
+updated_date: '2026-09-16 13:58'
 labels:
   - frontend
   - parser
@@ -178,4 +178,43 @@ slack in minFunctions and minNodes a whole corpus FUNCTION could be deleted and
 the rules it reached declared unexercised instead, with the suite still green.
 Adding a case means raising them, and that edit is where you notice what the
 new case brought.
+
+WHAT task-058 CHANGED UNDER THIS TASK'S FEET, and what it left ready.
+
+THE ENTRY POINT FOR THE INITIALISER WALKER IS ONE LINE. parse.nix's `dcllocal'
+now splits on `= {' and refuses it naming this task, which is exactly decl.c's
+own split: `isscalar(p->type) || (isstruct(p->type) && t != '{')' takes the
+assignment path and everything else goes to init.c. `struct P p = q;' already
+COMPILES through the assignment path, so what is missing is the braced form and
+not aggregates as such.
+
+THE FIELD LIST THE WALKER NEEDS EXISTS, with offsets, on the tag symbol
+(sym.nix's `fields'). init.c walks it in declaration order and that is the
+order it is stored in.
+
+TWO REFUSALS NOW MEET ON A STRUCT GLOBAL. `struct P { int a; } g;' at file
+scope reaches dclglobal and then listing.nix's tentative-global refusal, which
+is this task's. A file-scope aggregate is therefore refused by the SLICE-3 site
+and not by anything compound-types added, which is the right seam and worth
+keeping when this lands.
+
+ONE RULE THIS TASK INHERITS AND SHOULD NOT RE-DERIVE: decl.c's test for a
+specifier with no declarator. It is an error unless the specifier declared an
+enum, or an aggregate whose tag somebody WROTE -- lcc spells that as
+`*name < '1' || *name > '9'', because an anonymous tag is named with a
+generated label number. parse.nix has it as `namedTag', reading the tag
+symbol's name, and there is a must-fail pair for the anonymous case.
+
+THE FLAG THAT MATTERS TO YOU. init.c consults IR->little_endian for initialiser
+layout, which is why the rcc-rv32 wrapper exists at all (decision-004). It now
+passes -wants_argb=0 as well (decision-009), which does not touch initialisers.
+
+AND A LAZINESS TRAP THIS SLICE PAID FOR, because an initialiser walker is
+exactly the shape that hits it again: a guard whose RESULT nothing consumes
+never fires in Nix. `requireComplete' first returned the type it was checking;
+`dclr' builds `pointer to <t>' without looking at `t', a field's type is never
+printed, and the throw sat unevaluated inside the member type of a
+self-referential struct, which compiled clean. It returns the STATE now, and
+the state is forced by the next token read. Check where each of your guards'
+results goes.
 <!-- SECTION:NOTES:END -->

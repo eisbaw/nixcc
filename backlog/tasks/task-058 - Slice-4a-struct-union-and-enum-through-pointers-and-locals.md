@@ -1,10 +1,10 @@
 ---
 id: TASK-058
 title: 'Slice 4a: struct, union and enum through pointers and locals'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-16 08:21'
-updated_date: '2026-09-16 12:35'
+updated_date: '2026-09-16 13:59'
 labels:
   - frontend
   - slice
@@ -34,13 +34,13 @@ Genuinely new: a TAG NAMESPACE in sym.nix (a parallel table per scope frame, thr
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Type identity for aggregates is decided and written down BEFORE fields are built on it: two distinct structs with identical field lists must not compare equal, nor must a tag redeclared in an inner scope
-- [ ] #2 struct, union and enum parse, reach the DAG, and diff byte-for-byte against rcc-rv32 including the listing spellings (type=struct P, type=array 2 of struct P, type=pointer to union U)
-- [ ] #3 A C program using a struct through a pointer AND a local struct compiles from .c and runs on the emulator
-- [ ] #4 The executed answer weights fields 1/2/4/8 so a dropped, misaligned or wrong-offset field changes the NUMBER, not just an address -- a struct whose fields all hold the same value discriminates nothing
-- [ ] #5 A member forcing padding (char then int) and a union overlap are both in the corpus, so a layout ignoring alignment returns a different number
-- [ ] #6 sizeof(struct) is checked against the EXECUTED value, not only against the IR diff
-- [ ] #7 simp.nix's absent zerofield is addressed explicitly -- implemented or made to throw -- since this slice un-gates it
+- [x] #1 Type identity for aggregates is decided and written down BEFORE fields are built on it: two distinct structs with identical field lists must not compare equal, nor must a tag redeclared in an inner scope
+- [x] #2 struct, union and enum parse, reach the DAG, and diff byte-for-byte against rcc-rv32 including the listing spellings (type=struct P, type=array 2 of struct P, type=pointer to union U)
+- [x] #3 A C program using a struct through a pointer AND a local struct compiles from .c and runs on the emulator
+- [x] #4 The executed answer weights fields 1/2/4/8 so a dropped, misaligned or wrong-offset field changes the NUMBER, not just an address -- a struct whose fields all hold the same value discriminates nothing
+- [x] #5 A member forcing padding (char then int) and a union overlap are both in the corpus, so a layout ignoring alignment returns a different number
+- [x] #6 sizeof(struct) is checked against the EXECUTED value, not only against the IR diff
+- [x] #7 simp.nix's absent zerofield is addressed explicitly -- implemented or made to throw -- since this slice un-gates it
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -70,3 +70,152 @@ The field list, and lcc's cfields/vfields bits, live in STATE keyed by the tag s
 
 6. Full `nix develop --command just e2e' before every commit; one commit per logical unit.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+WHAT LANDED. struct, union and enum parse, reach the DAG, diff byte for byte
+against rcc-rv32, and RUN. 34 translation units and 73 functions diff clean --
+2195 numbered node lines, 1867 `#n' back-references and all 16 lines of lcc's
+stderr -- and eight C programs compile from .c and run on the emulator, up from
+seven. Frontend-only, as the task predicted: ZERO new backend rules were needed
+for anything that runs.
+
+TYPE IDENTITY, which was the thing to get wrong quietly.
+
+lcc's newstruct mints a fresh Symbol per declaration and the Type points at it;
+identity is that pointer. types.nix had replaced pointer identity with Nix
+STRUCTURAL equality, so two anonymous structs with the same members -- and a tag
+redeclared in an inner scope -- would have been ONE type.
+
+The resolution is to reproduce lcc rather than approximate it: newstruct
+installs a symbol into a new TAG NAMESPACE and the aggregate type carries
+`sym', that symbol's id. Ids come from a counter, so structural equality over
+{ op; name; sym; size; align; } IS lcc's pointer equality. The uid was not
+invented alongside lcc's symbol; it IS lcc's symbol.
+
+eqtype therefore gained NO struct arm, and that is the point rather than an
+omission -- lcc's has none either. Its first line is `ty1 == ty2' and its last
+is `return 0', and between them an aggregate matches nothing.
+
+WHAT PROVES IT. Three must-fail pairs, because no oracle diff can reach any of
+them: lcc REJECTS all three programs, so the differential never runs on them,
+and lcc prints the tag NAME, so two distinct anonymous structs look identical
+in a listing either way. Measured with the oracle: lcc's own diagnostic for the
+first is "operands of = have illegal types `struct defined at 1' and `struct
+defined at 1'".
+
+The one that would MISCOMPILE rather than misdiagnose is the third, and it is
+the one worth having. A struct-to-struct assignment between two wrong types is
+caught twice -- `cast' has no STRUCT arm and refuses it whatever assign() said.
+A POINTER assignment has no such second line: one four-byte pointer to another
+is a retype and nothing else. So `struct { int a; } x; struct { int b; } *p; p =
+&x;' COMPILES under a sym-blind comparison, and every `p->b' after it reads the
+wrong layout. That is the mutation "two aggregate types compare without their
+tag symbols", and must-fail catches it.
+
+A DEFECT THIS SLICE SHIPPED FOR AN HOUR, recorded because it is the shape of the
+next one. `requireComplete' first returned the TYPE, and Nix never forced it:
+`dclr' builds `pointer to <t>' without looking at `t', a field's type is never
+printed, and nothing downstream forces the thunk. `struct N { struct N *next; }'
+compiled, with an unevaluated throw sitting inside the member. It returns the
+STATE now, because the next token read forces the state and the condition with
+it. A guard whose result nothing consumes is not a guard.
+
+WHAT IS REFUSED, each naming a task:
+  * bit fields (task-059)
+  * an incomplete aggregate in a declarator, which costs the self-referential
+    struct and so the linked list (task-066)
+  * a typedef of an ANONYMOUS aggregate, whose spelling lcc looks up in the
+    symbol table at print time (task-067)
+  * defining or calling a function that RETURNS an aggregate by value, which
+    needs decl.c's hidden retv parameter and a CALLB no rule table has
+    (task-068)
+  * a braced initialiser (task-029, which already owned initialisers)
+
+ZEROFIELD. simp.nix recorded its absence as sound because parse.nix refused
+`struct' before a field could be declared -- and this slice lifted exactly that
+gate. It THROWS now, naming task-059, in all four of simp.c's EQ/NE cases and at
+the position simp.c's macro sits. It is unreachable, because the bit-field
+refusal in `fields' comes first, and it has NO mutation for that reason:
+corrupting an unreachable guard changes nothing that runs, and a mutation of it
+would report "not detected" for the right reason. What IS tested is the
+reachable gate -- a must-fail pair with a control and its text in messages.sh.
+The point of the throw is that the next slice to lift a refusal cannot un-gate
+the rewrite without opening the file it lives in.
+
+DECISION-009, applied in its own commit first. It was recorded and never
+applied; the wrapper now passes -wants_argb=0. Measured inert on the corpus as
+it stood -- 62 files byte-identical -- and it is what keeps task-019 off this
+slice's critical path: a by-value struct parameter becomes `pointer to struct P
+flags=structarg' and passes emit.nix's `pointer to .*' arm. c/structs.c's
+`byvalue' and `pass' are what exercise it, and two mutations aim at it.
+
+THE ORACLE'S LAYOUT IS NOT RV32's, and this is reproduced rather than corrected.
+symbolicIR's structmetric is { size = 0, align = 4 }, so EVERY aggregate here is
+four-byte aligned: `struct { char a; char b; }' is four bytes and `union { char
+c; }' is four. Correcting it would make every listing differ from lcc's. It joins
+decision-009's by-reference argument passing on the list of divergences that
+bite the day this links against anything else.
+
+WHAT RUNS AND HOW IT DISCRIMINATES. run/records.c writes four members of a
+padded struct and reads the same storage back TWICE: once weighted 1/2/4/8
+through the members, and once byte by byte through a union, weighted by
+position. The second is the one that catches a WRONG OFFSET, because a member
+written and read through the same wrong offset agrees with itself. Measured, the
+layout mutations move it: no member alignment prints `8 16 4 113 127' where the
+correct answer is `12 16 4 113 190'; a union laid out like a struct prints
+`12 28 4 113 0'; every member at offset zero prints `12 16 4 135 9'; and no size
+round-up prints `11 16 4 113 190', which is criterion #6 -- sizeof checked
+against what EXECUTED. cases.nix lays the struct out a second time in Nix, from
+decl.c's rule rather than from the C, and three mutations say that second
+implementation is doing the work.
+
+COUNTS. 26 corpus files (from 23) and 64 opcodes (from 58). must-fail 37 (from
+25). Mutations 75 (from 57): 18 new, of which three are aimed at type identity,
+five at the layout, seven at the rest of the frontend and three at this
+harness's own second implementation. One PRE-EXISTING mutation had to be
+repaired -- "a volatile load is common-subexpression-eliminated" aimed at a
+condition that grew a second clause here, and its sed stopped matching; it now
+blinds the scalar half and the struct half has a mutation of its own.
+
+THREE OPCODES ARE EMITTED AND CANNOT BE LOWERED, and cases.nix says so: ASGNB
+and INDIRB wait for task-060's block copy, and CNSTI2 for task-069. CNSTI2 is
+NOT a compound-type gap -- `short h; h = 9;' has emitted it since task-027 and
+nothing in c/ happened to write it until c/unions.c did, which is how task-051
+and task-054 each found their missing rules too.
+
+THE GATE, measured, not adjectival:
+  nix develop --command just e2e   ->  exit 0
+  7 PoCs passed
+  34 translation units and 73 functions diffed byte for byte against rcc-rv32:
+    2211 numbered node lines, 1879 `#n' back-references, 16 lines of stderr
+  26 corpus files, 49 functions, 64 opcodes
+  must-fail 37 refusals, each with a control and its own diagnostic
+  40 random programs and 803 boundary forms, byte for byte
+  8 programs compiled from .c and RUN:
+    bits 3 21 15, gcd 21 55, pointers deabcd419d, primes 22 57,
+    records 12 16 4 113 190, strings ab-cd10, sumto 55,
+    unsigned 1431655683 3 242
+  75 mutations, each detected with its own distinct failure
+  359 kB peak RSS per source line, unchanged
+
+THREE MUTATION FRAGMENTS HAD TO BE REPAIRED and none of them was new work
+going wrong -- all three are the harness noticing that the slice moved what it
+was looking at, which is what it is for:
+  * "a volatile load is common-subexpression-eliminated" aimed at a condition
+    that grew a second clause here; its sed stopped matching. It now blinds the
+    scalar half, and the struct half has a mutation of its own.
+  * "a conversion node loses its source width" and "one of the running programs
+    goes missing" both had their fragments moved by the new corpus files --
+    oracle.py prints the first two differing files, and c/enums.c took a
+    position ahead of the one that used to supply the fragment.
+  * A fourth was a genuine COLLISION rather than a move: the enum mutation's
+    obvious fragment, `we  ' 2. CNSTI4 0'', also appears in the generated
+    corpus under the shift-overflow mutation. run.sh's distinctness loop
+    caught it, on the gate, after the per-mutation check had passed -- a
+    fragment being PRESENT in its own output says nothing about whether it is
+    absent from the other 74. The replacement is the local's node number,
+    because an enumerator that stopped counting renumbers the forest as well as
+    changing the constant.
+<!-- SECTION:NOTES:END -->
