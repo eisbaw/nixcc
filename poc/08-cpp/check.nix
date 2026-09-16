@@ -29,7 +29,7 @@ let
   # argument about mutation counts, poc/06-constants demonstrated it on a case
   # table by deleting ten rows and watching the suite stay green.
   declaredExpansions = 33;
-  declaredConditions = 49;
+  declaredConditions = 52;
   declaredRelocations = 8;
   declaredTables = 4;
 

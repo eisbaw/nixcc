@@ -127,6 +127,33 @@ let
   # `int' as kind INT, so a name is tested by its TEXT rather than its kind.
   isIdent = s: b.match "[A-Za-z_][A-Za-z0-9_]*" s != null;
 
+  # DO TWO LEXEMES WRITTEN SIDE BY SIDE STILL LEX AS THOSE TWO LEXEMES?
+  #
+  # Two callers need that answer and they must not answer it differently.
+  # `checkGlue' asks it of a backslash-newline: ISO C splices in phase 2 and
+  # this lexer splices between tokens (task-008), and the two disagree exactly
+  # when the characters on either side would have lexed as ONE token had the
+  # splice happened first. `render' asks it of every boundary it writes with
+  # nothing between: in the SOURCE that is safe by construction, because the
+  # lexer cut the two apart there, but an expansion puts a token next to a
+  # neighbour it was never adjacent to.
+  #
+  # It is decided by asking the lexer rather than by a character-class rule,
+  # which would have to be kept in step with the punctuator table -- and
+  # `tryEval' is here because the joined text can fail to lex at all (`/' and
+  # `*' become an unclosed comment), which is the strongest possible evidence
+  # that the two do not stay separate.
+  staysApart = p: t:
+    let
+      r = b.tryEval (
+        let toks = b.filter (x: x.kind != "EOI") (lexer.lex (p.text + t.text)); in
+        b.deepSeq toks toks);
+    in
+    r.success
+    && b.length r.value == 2
+    && (b.head r.value).text == p.text
+    && (b.elemAt r.value 1).text == t.text;
+
   # Whether a token could be a macro invocation. `macros ? ${t.text}' alone
   # would be enough -- every macro name is an identifier, and no punctuator,
   # number or literal lexeme spells one -- but this states the reason rather
@@ -300,10 +327,15 @@ let
         else prim i;
 
       # One left-associative binary level. `ops' maps a token kind to the
-      # function that combines two values. The loop is recursion whose depth
-      # tracks the number of OPERATORS in one `#if' expression -- bounded by
-      # one logical line of source, not by the file -- which is the
-      # recursive-descent exemption decision-001 grants.
+      # function that combines two values.
+      #
+      # `go' is a loop written as a tail call, and Nix does not eliminate it,
+      # so the depth here tracks the number of OPERATORS rather than the
+      # nesting -- which is NOT the exemption decision-001 grants recursive
+      # descent, whatever an earlier version of this comment claimed. A `#if'
+      # of 3000 flat `+' terms dies with "stack overflow; max-call-depth
+      # exceeded". task-074 carries it, and the same shape is in `logand',
+      # `logor' and `conditional'.
       level = ops: below: i:
         let
           go = acc:
@@ -432,34 +464,13 @@ let
         in
         b.genList (i: code (from + i)) (to - from);
 
-      # ISO C splices in phase 2 and this lexer splices between tokens
-      # (task-008). The two agree on almost everything: `1\<nl>+2' is `1 + 2'
-      # either way. They disagree exactly when the characters on the two
-      # sides of the continuation would have lexed as ONE token had the
-      # splice happened first -- `ab\<nl>cd', or `<\<nl><'. So the test is
-      # not "was there a splice" but "does re-lexing the two lexemes joined
-      # give the same two lexemes back", which is decided by asking the
-      # lexer rather than by a character-class rule that would have to be
-      # kept in step with the punctuator table.
-      #
-      # `tryEval' is here because the joined text can fail to lex at all --
-      # `/' and `*' become an unclosed comment -- and that is the strongest
-      # possible evidence that the two do not stay separate.
-      staysApart = p: t:
-        let
-          r = b.tryEval (
-            let toks = b.filter (x: x.kind != "EOI") (lexer.lex (p.text + t.text)); in
-            b.deepSeq toks toks);
-        in
-        r.success
-        && b.length r.value == 2
-        && (b.head r.value).text == p.text
-        && (b.elemAt r.value 1).text == t.text;
-
-      # A `glue' token always has a predecessor inside its own group: trivia
-      # made only of continuations contains no line-ending newline, so such a
-      # token is never the first on a logical line, and the file's very first
-      # token has no trivia at all.
+      # A `glue' token has a predecessor inside its own group, with ONE
+      # exception this does not handle: trivia made only of continuations
+      # contains no line-ending newline, so such a token is never the first
+      # on a logical line -- except the file's FIRST token, whose `bol' does
+      # not come from its trivia at all. A file opening with a
+      # backslash-newline therefore reaches `elemAt ts (i - 1)' with i = 0
+      # and dies with an index error instead of a diagnostic. task-073.
       checkGlue = ts:
         if !(b.any (t: t.glue) ts) then true else
         let
@@ -521,7 +532,13 @@ let
         # silently never used.
         else if name == "defined" then
           throw "cpp: line ${toString dline}: `defined' cannot be a macro name; it is the operator a `#if' expression uses to ask whether a name is defined"
-        else if body != [ ] && first.kind == "(" && first.ws == "" then
+        # `first.glue' as well as an empty `ws': `#define F\<newline>(x) x'
+        # is function-like after ISO C's phase 2, and its `(' has the splice
+        # as its trivia rather than nothing at all. Without that clause an
+        # explicitly out-of-scope feature is ACCEPTED as an object-like macro
+        # instead of refused. `glue' is exactly "the trivia is a continuation
+        # and nothing else", which is adjacency after phase 2.
+        else if body != [ ] && first.kind == "(" && (first.ws == "" || first.glue) then
           throw "cpp: line ${toString dline}: `${name}(' is a function-like macro, which slice 1 does not do; parameters, `#' and `##' are task-013.02"
         else if pastes != [ ] then
           throw "cpp: line ${toString dline}: `##' in the replacement list of `${name}': token paste is task-013.02"
@@ -582,6 +599,10 @@ let
           numTok = if expanded == [ ] then throw "cpp: line ${toString dline}: `${what}' with no line number" else b.head expanded;
           rest = b.tail expanded;
           nameTok = b.head rest;
+          # task-075: evalICON reads the C SPELLING, so `#line 010' is octal
+          # 8 here and decimal 10 to gcc and to lcc's resynch(). The standard
+          # takes a digit sequence, which is decimal whatever it starts with.
+          # The overflow check below is what this call is still wanted for.
           num = (const.evalICON numTok.text).value;
           numWarnings = (const.evalICON numTok.text).warnings;
         in
@@ -617,6 +638,10 @@ let
           args = if rest == [ ] then [ ] else b.tail rest;
           frame = condOf st "#${what}" dline;
           skipping = !(live st);
+          # task-076: the last TOKEN's line, which is not the directive's
+          # last physical line when trivia after the operands spans one -- a
+          # block comment opened on the directive's line and closed on the
+          # next puts everything after it one line early.
           endLine = (b.elemAt ts (b.length ts - 1)).line;
         in
         # A `#' alone on a line is the null directive and does nothing.
@@ -762,8 +787,24 @@ let
   render = r:
     let
       ls = r.lines;
-      textOf = l: b.concatStringsSep ""
-        (map (t: (if t.ws == "" then "" else " ") + t.text) l.toks);
+      # A token that had whitespace before it in the source gets one space;
+      # a token that had none gets none -- unless writing it there would
+      # change what the text lexes as. That last clause is not cosmetic:
+      # `#define P +' used as `a P+ +2' puts the expansion's `+' next to an
+      # original `+' whose `ws' is empty, and `a ++ +2' is a program that
+      # compiles and increments `a', where `a + + +2' does not. Measured
+      # against gcc, which renders the second.
+      textOf = l:
+        let
+          ts = l.toks;
+          piece = j:
+            let t = b.elemAt ts j; in
+            if t.ws != "" then " " + t.text
+            else if j == 0 then t.text
+            else if staysApart (b.elemAt ts (j - 1)) t then t.text
+            else " " + t.text;
+        in
+        b.concatStringsSep "" (b.genList piece (b.length ts));
       lineAt = i:
         let
           l = b.elemAt ls i;

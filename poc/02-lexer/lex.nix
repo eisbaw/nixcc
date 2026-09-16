@@ -286,7 +286,24 @@ let
           (if nl then s // { inherit line; skip = false; }
           else s // { inherit line; skip = false; solid = true; })
         else if s.mode == "block" then
-          s // { inherit line; solid = true; mode = if closes then "code" else "block"; skip = closes; }
+          # ISO C splices in phase 2, BEFORE a comment is recognised, so a
+          # backslash-newline sitting inside a `*/' ends the comment there:
+          # `/* *\<newline>/ + 1 /* */' is `/* */ + 1 /* */' and the `+ 1' is
+          # CODE. This scanner would run the comment on to the second
+          # terminator and swallow it -- measured against gcc on exactly that
+          # input, which returns 2 where we returned 1, with no diagnostic.
+          # `checkGlue' cannot see it either, because a comment sets `solid'.
+          #
+          # The test is the character AFTER the newline rather than the one
+          # before the backslash, so that no state has to be carried and so
+          # that a run of continuations is caught by its last one. It
+          # therefore also refuses `/* x\<newline>/ */', where phase 2 and
+          # this scanner agree -- an over-refusal, which is the safe
+          # direction for a rule whose other side is a silent miscompile.
+          (if c == "\\" && nx == "\n" && ch (i + 2) == "/" then
+            throw "a backslash-newline inside the comment opened on line ${toString s.openLine} is followed by `/': ISO C splices that away in translation phase 2, so the `/' closes the comment and what follows it is code. This lexer splices between tokens only (task-008), and would run the comment on to the next `*/' instead"
+          else
+            s // { inherit line; solid = true; mode = if closes then "code" else "block"; skip = closes; })
         else if s.mode == "line" then
           # ISO C splices in phase 2, BEFORE comments are recognised, so a
           # backslash-newline at the end of a `//' comment carries the comment

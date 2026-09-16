@@ -246,8 +246,29 @@ mutate "cpp: the linemarker names its own line instead of the next one" \
 # it is the exact rendered text in cases.nix's relocation table.
 mutate "cpp: render loses the adjacency that keeps \`<<=' one operator" \
        "the rendered output is" \
-       "sed -i 's@(if t.ws == \"\" then \"\" else \" \")@\" \"@' cpp.nix" \
+       "sed -i 's@            if t.ws != \"\" then \" \" + t.text@            if true then \" \" + t.text@' cpp.nix" \
        "$table_check"
+
+# THE OTHER HALF OF THE SAME PROPERTY, and the one that was missing: a token
+# that had NO whitespace before it keeps none, unless the token now in front
+# of it arrived from an expansion and would paste. `#define P +' in `a P+ +2'
+# renders `a ++ +2' without this -- a program that compiles and increments
+# `a', where `a + + +2' does not. The token streams are identical either way,
+# so only the render round-trip can see it.
+mutate "cpp: render lets an expansion paste onto the token after it" \
+       "our own render, re-lexed, against our token stream" \
+       "sed -i 's@            else if staysApart (b.elemAt ts (j - 1)) t then t.text@            else if true then t.text@' cpp.nix" \
+       "$oracle_check"
+
+mutate "cpp: an unsigned divide stops converting its operands" \
+       "an unsigned divide converts without needing the wrap" \
+       "sed -i 's@let d = divisor \"/\" y; in if u then x.v / d.v else@let d = divisor \"/\" y; in if false then x.v / d.v else@' cpp.nix" \
+       "$table_check"
+
+mutate "cpp: a function-like #define hidden behind a continuation is accepted" \
+       "'a function-like macro across a continuation' did not throw" \
+       "sed -i 's@(first.ws == \"\" || first.glue)@(first.ws == \"\")@' cpp.nix" \
+       "$message_check"
 
 mutate "cpp: a directive line is emitted as ordinary tokens" \
        "our token stream against gcc -E" \
@@ -266,7 +287,7 @@ mutate "cpp: #include is quietly ignored instead of naming the slice that will d
 
 mutate "cpp: a function-like #define is accepted as an object-like one" \
        "'a function-like macro' did not throw" \
-       "sed -i 's@else if body != \[ \] \&\& first.kind == \"(\" \&\& first.ws == \"\" then@else if false then@' cpp.nix" \
+       "sed -i 's@else if body != \[ \] \&\& first.kind == \"(\" \&\& (first.ws == \"\" || first.glue) then@else if false then@' cpp.nix" \
        "$message_check"
 
 mutate "cpp: the refusal of an unimplemented directive stops naming task-014" \
@@ -386,7 +407,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=36
+declared=39
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

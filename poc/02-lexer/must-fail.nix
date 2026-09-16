@@ -21,8 +21,8 @@ let
   b = builtins;
   l = import ./lex.nix;
 
-  minRejects = 22;
-  minAccepts = 16;
+  minRejects = 23;
+  minAccepts = 17;
 
   rejects = [
     { what = "unterminated string at end of input"; src = "\"abc"; expect = "unterminated string literal"; }
@@ -52,6 +52,10 @@ let
     # without the continuation.
     { what = "a backslash-newline continuing a // comment"; src = "a // x \\\ny\nz"; expect = "so the NEXT line is part of the comment too"; }
     { what = "a backslash-newline inside a string literal"; src = "\"ab\\\ncd\""; expect = "joins the two lines into one literal"; }
+    # The third, and the one that hides best: phase 2 splices `*\<nl>/' into
+    # `*/', which ENDS the comment, so what follows it is code. This scanner
+    # would run on to the next terminator and swallow it.
+    { what = "a backslash-newline before a comment terminator"; src = "a /* *\\\n/ + 1 /* */ b"; expect = "is followed by `/'"; }
   ];
 
   accepts = [
@@ -71,6 +75,7 @@ let
     { what = "backslash before a newline"; src = "a \\\nb"; }
     { what = "a // comment with no continuation on it"; src = "a // x\ny\nz"; }
     { what = "a string literal with an escaped quote rather than a newline"; src = "\"ab\\\"cd\""; }
+    { what = "a continuation inside a comment that does not land before a slash"; src = "a /* *\\\n x */ b"; }
   ];
 
   # deepSeq, because lex is lazy: `tryEval (lex src)` alone reports success for

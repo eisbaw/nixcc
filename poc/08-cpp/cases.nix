@@ -233,6 +233,21 @@ rec {
     (c "one unsigned operand makes the comparison unsigned" "-1 < 0u" false)
     (c "and the same comparison the other way round" "-1 > 0u" true)
     (c "unsigned division" "(7u / 2u) == 3" true)
+    # The pair above is blind and the corpus's was the same pair: both
+    # operands are positive, so signed and unsigned division give the same
+    # answer and the conversion is never exercised. Demonstrated by review --
+    # replacing the unsigned branch with the signed one passed every check
+    # here and all 43 differential units. A NEGATIVE left operand is what
+    # separates them: as unsigned, -1 is 4294967295 and the quotient is huge;
+    # as signed, -1 / 2 truncates to 0. ir/unsig.c's divisor of 7, again.
+    (c "an unsigned divide converts a negative left operand first" "(-1 / 2u) > 1" true)
+    (c "and so does an unsigned remainder" "(-1 % 2u) == 1" true)
+    # The two above are also broken by a mutation that stops the arithmetic
+    # WRAPPING, because `-1' reaches its bit pattern through `wrap'. This one
+    # does not: plain char is signed on this target, so `'\377'' arrives from
+    # poc/06-constants already negative and is converted without wrapping --
+    # which leaves the conversion as the only thing that can be wrong.
+    (c "an unsigned divide converts without needing the wrap" "('\\377' / 2u) > 1" true)
     (c "a large unsigned value compares above a small one" "4294967295u > 1" true)
     # Both operands matter, and this is the pair that says so: the left one is
     # SIGNED and above INT_MAX, the right one unsigned, so the conversion has

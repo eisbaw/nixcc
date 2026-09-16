@@ -463,8 +463,20 @@ mutate "lexer: a continuation that glues two tokens is not flagged" \
        "sed -i 's@          glue = tv.spliced \&\& !tv.solid;@          glue = false;@' lex.nix" \
        "$lexer_check"
 
+# The splice that changes where a block comment ENDS, which is the one of the
+# three phase-2 cases that hides best: the comment sets `solid', so nothing
+# downstream can see it, and the symptom is a swallowed expression rather
+# than a lexical error.
+mutate "lexer: a continuation before a comment terminator is not refused" \
+       "a backslash-newline before a comment terminator" \
+       "sed -i 's@ch (i + 2) == \"/\" then@false then@' lex.nix" \
+       "$must_fail"
+
+# Named by CASE rather than by the sentence must-fail prints: another
+# mutation makes a different reject lex fine, and the two cannot be told
+# apart by a fragment they both produce.
 mutate "lexer: numeric constants never validated" \
-       "should have been rejected but lexed fine" \
+       "hexadecimal prefix with no digits" \
        "sed -i 's|^      numberKind = text: line:|      numberKind = text: line: \"ICON\"; unusedNumberKind = text: line:|' lex.nix" \
        "$must_fail"
 
@@ -520,7 +532,7 @@ for i in "${!names[@]}"; do
 done
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=12
+declared=13
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

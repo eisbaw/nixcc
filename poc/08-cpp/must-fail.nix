@@ -42,7 +42,7 @@ let
 
   # Declared and checked for EQUALITY. poc/lib/mutant.sh's argument about
   # mutation counts applies to tables too.
-  declaredCases = 35;
+  declaredCases = 36;
 
   # A chain of n macros each naming the next. Built rather than written out:
   # the cap is 200 deep and nobody is typing that.
@@ -73,7 +73,19 @@ let
       # which is C89's rule and the only thing that tells the two apart.
       src = "#define F(x) x + 1\nint y = F(2);\n";
       control = "#define F (x) x + 1\nint y = 2;\n";
-      expect = "is a function-like macro, which slice 1 does not do";
+      expect = "`F(' is a function-like macro";
+    }
+    {
+      # The same feature, hidden: after ISO C's phase 2 this is `G(x) x' and
+      # so function-like, but the `(' carries the continuation as its trivia
+      # rather than nothing at all. Without the `glue' clause it is ACCEPTED
+      # as an object-like macro -- an out-of-scope feature let through
+      # instead of refused. The control puts a space before the backslash,
+      # which makes it object-like under phase 2 as well.
+      what = "a function-like macro across a continuation";
+      src = "#define G\\\n(x) x + 1\nint y;\n";
+      control = "#define G \\\n(x) x + 1\nint y;\n";
+      expect = "`G(' is a function-like macro";
     }
     {
       what = "the # stringify operator in a replacement list";
