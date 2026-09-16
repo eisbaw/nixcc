@@ -1854,7 +1854,7 @@ rec {
           then loop (decl s "global") (n + 1)
           else if k == ";" then loop (advance (sy.warn s "empty declaration\n")) (n + 1)
           else if tk s == "#"
-          then sy.refuse s "parse: `#' -- this frontend is fed raw C and has no preprocessor yet; decision-005 chose to write one in Nix and task-013 is where it lives"
+          then sy.refuse s "parse: `#' -- this frontend consumes PREPROCESSED tokens. poc/08-cpp is the preprocessor decision-005 called for (task-013.01) and compile.nix's `runToks' is the door its output comes in through. Either the source was handed straight to the parser, or this `#' was not the first token on its line and so was never a directive to preprocess"
           else sy.refuse s "parse: unrecognised declaration at ${found s}";
       r = loop s0 0;
     in

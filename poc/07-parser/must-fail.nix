@@ -39,9 +39,21 @@ let
   # Declared and checked for EQUALITY. poc/lib/mutant.sh's argument about
   # mutation counts applies to tables too: a floor can be spent downward in
   # silence, and equality forces the edit that was wanted anyway.
-  declaredCases = 37;
+  declaredCases = 38;
 
   cases = [
+    # --- input that was never preprocessed ---------------------------------
+    {
+      # task-013.01 put a preprocessor in front of this parser, and the
+      # forward-carried note from task-028 claimed this refusal was already
+      # covered here. It was not. It is now, because the refusal's whole job
+      # is to tell a user who fed raw C to the wrong door which door to use.
+      what = "a directive, which means the source never went through poc/08-cpp";
+      src = "#define N 1\nint f(void){ return N; }";
+      control = "int f(void){ return 1; }";
+      expect = "poc/08-cpp is the preprocessor";
+    }
+
     # --- float, which decision-006 says must be REFUSED, not miscompiled ---
     {
       what = "a floating constant";

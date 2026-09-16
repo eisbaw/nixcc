@@ -81,7 +81,7 @@ python3 "$poc/measure.py" "$poc"
 # land on the real tree. Nothing here does, and nothing here may.
 mut=$work/poc/05-loop
 mkdir -p "$work/poc"
-for sib in 01-encoder 02-lexer 03-matcher 04-assembler 06-constants 07-parser lib; do
+for sib in 01-encoder 02-lexer 03-matcher 04-assembler 06-constants 07-parser 08-cpp lib; do
   ln -s "$root/$sib" "$work/poc/$sib"
 done
 

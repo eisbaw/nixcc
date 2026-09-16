@@ -39,9 +39,17 @@ in
 rec {
   inherit self;
 
-  start = src:
+  # The token stream is the real entry point, and `start'/`run'/`listingOf'
+  # are the convenience that lexes a string into one. poc/08-cpp produces a
+  # token stream too -- its whole reason for working on tokens rather than on
+  # text is that this seam already existed -- so anything that has been
+  # preprocessed comes in through the `*Toks' doors. They lex NOTHING, which
+  # is the point: a `#' reaching `program' below now means the caller skipped
+  # the preprocessor, and it says so.
+  start = src: startToks (lexer.lex src);
+
+  startToks = toks:
     let
-      toks = lexer.lex src;
       first = b.head toks;
     in
     self.sym.initial // {
@@ -55,9 +63,11 @@ rec {
   # The whole translation unit. `deepSeq' is not decoration: the state is a
   # chain of attrset updates as long as the token stream, and decision-001
   # measured that forcing such a chain late is "stack overflow", not slowness.
-  run = src:
+  run = src: runToks (lexer.lex src);
+
+  runToks = toks:
     let
-      s0 = start src;
+      s0 = startToks toks;
       s1 = self.parse.program s0;
       s2 = self.listing.finalize s1;
     in
@@ -66,6 +76,7 @@ rec {
   # The listing, exactly as rcc-rv32 would print it: one line per entry, one
   # trailing newline.
   listingOf = src: linesOf (run src);
+  listingOfToks = toks: linesOf (runToks toks);
 
   # `buf' must be empty here: listing.nix flushes it at the end of every
   # function and once more in finalize. Appending it anyway would have hidden a

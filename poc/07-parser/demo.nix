@@ -19,8 +19,16 @@
 # and no pointer there was nothing to point a write(2) at except a one-byte
 # buffer the driver owns. wr() writes a BUFFER, which a program with a char
 # array has something to fill.
+#
+# THE FIRST ARROW IS NOW THE PREPROCESSOR. task-013.01 put poc/08-cpp in
+# front of the lexer's output: `source' is raw C, directives and all, and what
+# reaches the parser is the preprocessed TOKEN stream rather than a re-lexed
+# string. On a file with no directives in it the preprocessor is the identity
+# and nothing here changes, which is what poc/08-cpp/oracle.nix asserts over
+# 26 of this directory's own translation units.
 { cpu
 , source
+, cpp ? ../08-cpp
 , matcher ? ../03-matcher
 , assembler ? ../04-assembler
 , entry ? "run"
@@ -40,7 +48,11 @@ let
   it = import ../05-loop/items.nix;
   data = import ./data.nix { inherit (emit) litLabel; };
 
-  listing = cc.listingOf (b.readFile source);
+  pp = import (cpp + "/cpp.nix");
+  listing = cc.listingOfToks (pp.tokensOf {
+    src = b.readFile source;
+    file = b.baseNameOf source;
+  });
   functions = irParse.parseAll listing;
   compiled = map emit.compile functions;
 

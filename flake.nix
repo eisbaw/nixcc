@@ -227,6 +227,27 @@
             printf '%s%s' "$report" "$mustFail" | tee $out
           '';
 
+        # The preprocessor is pure as well: its expansion, `#if' and
+        # line-number tables, its refusals, and the two programs it
+        # preprocesses, compiles and RUNS on the Nix RV32I machine are all
+        # forced during flake evaluation. What stays in run.sh is everything
+        # that needs a subprocess -- the token-stream differential against
+        # `gcc -E', lcc's own frontend reading our linemarkers, the check on
+        # the text of each refusal, and the mutation test. `just poc-cpp' is
+        # the stronger gate; this one fails at eval time, which is worth
+        # having on its own.
+        cpp = pkgs.runCommand "cpp-check"
+          {
+            report = import ./poc/08-cpp/check.nix;
+            ran = import ./poc/08-cpp/execute.nix {
+              cpu = import (nix-riscv + "/rv32.nix");
+            };
+            mustFail = (import ./poc/08-cpp/must-fail.nix).summary;
+          }
+          ''
+            printf '%s%s%s' "$report" "$ran" "$mustFail" | tee $out
+          '';
+
         lexer = pkgs.runCommand "lexer-check"
           {
             report = import ./poc/02-lexer/check.nix {

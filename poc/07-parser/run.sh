@@ -90,13 +90,14 @@ python3 "$poc/memory.py" "$poc"
 #
 # The mutated copy needs its sibling PoCs beside it: compile.nix reaches
 # ../02-lexer for the token stream, ../06-constants for the constant evaluator
-# and ../03-matcher for the listing parser; demo.nix reaches ../03-matcher,
-# ../04-assembler and ../05-loop; and the assembler in turn reaches
-# ../01-encoder. They are symlinked rather than copied --
-# they are not what is being mutated, and a copy is a copy that could go stale.
+# and ../03-matcher for the listing parser; demo.nix reaches ../08-cpp for the
+# preprocessing pass in front of the lexer, ../03-matcher, ../04-assembler and
+# ../05-loop; and the assembler in turn reaches ../01-encoder. They are
+# symlinked rather than copied -- they are not what is being mutated, and a
+# copy is a copy that could go stale.
 mut=$work/poc/07-parser
 mkdir -p "$work/poc"
-for d in 01-encoder 02-lexer 03-matcher 04-assembler 05-loop 06-constants lib; do
+for d in 01-encoder 02-lexer 03-matcher 04-assembler 05-loop 06-constants 08-cpp lib; do
   ln -s "$root/$d" "$work/poc/$d"
 done
 
