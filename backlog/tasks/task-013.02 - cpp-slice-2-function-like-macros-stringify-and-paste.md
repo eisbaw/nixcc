@@ -1,10 +1,10 @@
 ---
 id: TASK-013.02
 title: 'cpp slice 2: function-like macros, stringify and paste'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-16 17:27'
-updated_date: '2026-09-17 10:10'
+updated_date: '2026-09-17 10:12'
 labels:
   - frontend
   - preprocessor
@@ -29,10 +29,10 @@ The corner cases are where the defects live: paste producing a token that is the
 <!-- AC:BEGIN -->
 - [x] #1 Function-like macros expand with correct argument substitution, including empty arguments and commas inside parentheses
 - [x] #2 The # operator stringifies, collapsing internal whitespace to one space and escaping quotes and backslashes
-- [ ] #3 The ## operator pastes, and the result is NOT re-examined for further macro names
-- [x] #4 A macro does not re-expand inside its own expansion, direct or indirect
-- [x] #5 Differential against gcc -E on a corpus built to hit the corner cases above, comparing token streams
-- [x] #6 Harness mutation-tested
+- [x] #3 A macro does not re-expand inside its own expansion, direct or indirect
+- [x] #4 Differential against gcc -E on a corpus built to hit the corner cases above, comparing token streams
+- [x] #5 Harness mutation-tested
+- [x] #6 The ## result IS re-examined for further macro names, per C89 3.8.3.3 -- the criterion originally said the opposite and was simply wrong about the language
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -116,4 +116,24 @@ WHAT A SECOND REVIEW PASS CHANGED, this one auditing the HARNESSES rather than t
 AND run/funcs.c GOT STRONGER, because the audit was right that it tested one byte of `#' and nothing of a replacement list's own punctuation. BLEND is now invoked with a MULTI-TOKEN argument (`v + 1'), so the parentheses in its body are load-bearing -- drop them and `(v+1)*4+2' becomes `v+1*4+2' and the number moves. TAG now stringifies a two-token argument written with two spaces and the program reads bytes 0 AND 2, so byte 2 is `J' only if `#' collapsed the whitespace and is a space otherwise. All four `instead' rows are now token streams that compile and run, where two of the old ones described a program that would not have compiled at all. The answers are 308 at n=7 and 434 at n=10, computed in execute.nix from the constants rather than read off a run.
 
 FINAL GATE, on the tree as committed: `nix develop --command just e2e' exit 0, 8 PoCs, mutation counts 13 / 62 / 28 / 37 / 20 / 75 / 58. poc/08-cpp reports 75 expansion cases, 52 `#if' expressions, 10 line-number and linemarker cases, 7 macro-table cases, 703 values compared; 45 refusals each with a control and its own diagnostic fragment; three programs preprocessed, compiled and RUN (105/192, 408/705, 308/434); six diagnostics placed for lcc's own resynch() and lcc's IR matching ours over 321 listing lines; 48 translation units diffed against gcc -E as token streams, 3173 tokens; 58 mutations each detected with its own distinct failure. The earlier note's counts of 56 mutations and 703 "tokens" predate the harness round above.
+
+ORCHESTRATOR: the implementer was right and my criterion was wrong -- not loosely worded, factually wrong about C.
+
+Criterion #3 said the ## result is NOT re-examined for macro names. The opposite is true, and the implementer cited three independent sources before declining to tick it: C89 3.8.3.3 says the resulting token IS available for further macro replacement; lcc's own cpp/macro.c expand() calls doconcat() and then does 'trp->tp -= rowlen(&ntr)', backing the row up over the tokens it just inserted so they get rescanned; and gcc -std=c89 turns CAT(X,Y) into 42 given '#define XY 42'.
+
+It also spotted that #3 and #5 could not both hold, since #5 is a differential against gcc over a corpus containing exactly that case. A criterion that contradicts another criterion in the same task is a defect in the task, not in the work.
+
+Verified independently before amending: gcc -std=c89 -E -P gives 'int v = 42;', lcc's macro.c has the back-up at line 220 after doconcat at line 208, and our preprocessor now gives 'int v = 42;' too.
+
+Criterion replaced with the correct rule and ticked. This is the fifth time an implementer has declined to reshape a criterion to fit its work, and the first where the criterion was wrong about the LANGUAGE rather than about this project. Writing an acceptance criterion from memory about a standard I had not checked is the error worth learning from -- the three sources that settle it took two minutes to consult.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Function-like macros, # stringify and ## paste. funcs.c preprocesses, compiles and runs on the in-Nix machine: 308 at n=7, 434 at n=10, verified independently, and lcc's frontend produces byte-identical IR from our preprocessed text for all three run/ programs.
+
+The expander was rewritten as a genericClosure worklist, which fixed a real scaling wall rather than a theoretical one: a 6000-macro chain now expands in 0.89s where slice 1 died with max-call-depth exceeded. MAX_NEST stays 200 but its REASON changed -- the hide set is copied per level, so a chain costs O(n^2) bindings -- and the diagnostic now says that rather than blaming call depth.
+
+Criterion #3 was wrong about C89 and has been replaced; see the notes.
+<!-- SECTION:FINAL_SUMMARY:END -->
