@@ -8,16 +8,19 @@
 # this project's rule -- refuse loudly, naming the task that will do the thing
 # -- is half untested without it.
 #
-# FIVE FRAGMENTS ARE LOAD-BEARING BEYOND THEIR OWN CASE, because they are the
+# SIX FRAGMENTS ARE LOAD-BEARING BEYOND THEIR OWN CASE, because they are the
 # only thing that stops a deferral from going unfiled:
 #
-#   * `task-013.02' on the function-like, stringify and paste refusals.
-#   * `task-013.03' and `task-070' on #include, which is blocked rather than
-#     merely unwritten -- where a header resolves from is undecided.
+#   * `task-013.03' and `decision-010' on #include, which is written but not
+#     yet wired -- decision-010 settled where a header comes from.
 #   * `task-014' on a directive the minimal preprocessor does not implement,
 #     which is the task that records what it deliberately leaves out.
 #   * `task-008' on a phase-2 splice, which is a KNOWN divergence from ISO C
 #     and not a bug: the reader has to be able to tell those apart.
+#   * `task-077' on a function-like macro invocation that does not fit on one
+#     logical line -- gcc accepts it and this stage does not.
+#   * `task-078' on a bare `#' in an object-like replacement list, which is
+#     the other place gcc is happy and this stage refuses.
 #   * `decision-006' on a float in a `#if', for the same reason
 #     poc/06-constants pins it -- a deferred CHOICE reads as a gap otherwise.
 #

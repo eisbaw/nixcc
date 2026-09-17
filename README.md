@@ -68,24 +68,27 @@ runs the differential tests in a sandbox.
 `enum`, `typedef`, function pointers, the full integer and bitwise operator set,
 `if`/`while`/`for`/`do`, calls and recursion, string literals, `sizeof`.
 
-The preprocessor does object-like `#define` and `#undef`, the whole conditional
-family — `#ifdef`, `#ifndef`, `#if` with constant-expression evaluation
-including `defined()`, `#elif`, `#else`, `#endif` — `#line`, and
-backslash-newline continuation. `#if` arithmetic is C89's, evaluated in `long`,
-which is 32 bits on this target; gcc's is 64-bit, so the two differ on
-expressions that overflow.
+The preprocessor does `#define` and `#undef` — object-like and function-like,
+with the `#` stringify and `##` paste operators — the whole conditional family
+— `#ifdef`, `#ifndef`, `#if` with constant-expression evaluation including
+`defined()`, `#elif`, `#else`, `#endif` — `#line`, and backslash-newline
+continuation. `#if` arithmetic is C89's, evaluated in `long`, which is 32 bits
+on this target; gcc's is 64-bit, so the two differ on expressions that
+overflow. A macro invocation has to fit on one logical line: an argument list
+that opens on one line and closes on the next is refused, and so is a
+function-like macro name at the end of a line whose successor begins with `(`.
 
-**Not yet**: `#include`, and function-like macros with `#` and `##`. Also
-absent: floating point, `switch`, `goto`, varargs, bitfields, file-scope
-initialisers. Every one of these is *refused with a diagnostic naming the
-reason and the task that will implement it*, never silently miscompiled.
+**Not yet**: `#include`. Also absent: floating point, `switch`, `goto`,
+varargs, bitfields, file-scope initialisers. Every one of these is *refused
+with a diagnostic naming the reason and the task that will implement it*,
+never silently miscompiled.
 
 ## How it is verified
 
 The frontend's IR is diffed byte-for-byte against lcc's own — 34 translation
 units, 73 functions, 2211 node lines — and the compiled programs are executed
 and their answers checked. The preprocessor's output is diffed against `gcc -E`
-as token streams over 43 translation units, and its linemarkers are checked by
+as token streams over 48 translation units, and its linemarkers are checked by
 feeding them to lcc's own frontend and reading back where it says its
 diagnostics came from. Every test harness is mutation-tested: breaking the
 compiler *and* breaking the harness must each fail.

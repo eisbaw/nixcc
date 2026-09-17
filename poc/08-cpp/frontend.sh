@@ -148,7 +148,7 @@ done
 # isolates the question to whether lcc read our text the way we meant it.
 mkdir "$work/ir"
 programs=("$poc"/run/*.c)
-declared_programs=2
+declared_programs=3
 [ "${#programs[@]}" -eq "$declared_programs" ] || {
   echo "${#programs[@]} programs under $poc/run, against the $declared_programs" >&2
   echo "this stage declares" >&2; exit 1; }

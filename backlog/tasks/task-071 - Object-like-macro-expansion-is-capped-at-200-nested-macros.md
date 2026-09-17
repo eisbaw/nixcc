@@ -4,6 +4,7 @@ title: Object-like macro expansion is capped at 200 nested macros
 status: To Do
 assignee: []
 created_date: '2026-09-16 18:11'
+updated_date: '2026-09-17 09:15'
 labels:
   - frontend
   - preprocessor
@@ -26,3 +27,21 @@ What would remove it: an expansion loop driven by genericClosure over a worklist
 - [ ] #2 If the cap is removed, a chain of 5000 macros is shown to expand at constant stack depth
 - [ ] #3 The must-fail case in poc/08-cpp that pins the cap is updated or removed with it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+MEASURED AGAIN IN task-013.02, after the expander became a genericClosure worklist.
+
+WHAT CHANGED: the failure mode. With MAX_NEST lifted, a chain of 6000 object-like macros now EXPANDS in 0.89 s. Slice 1's recursion died on the same input with "stack overflow; max-call-depth exceeded", which is what this task was opened about. Criterion #2 is therefore demonstrated -- a chain well past 5000 expands, at frame depth one, because the cursor pops a frame before it pushes the next.
+
+WHAT DID NOT CHANGE: the cap. `nest' counts how many macros a token has been expanded THROUGH, not how deep the frame stack is, so a chain still trips MAX_NEST at 200 exactly as before. The reason to keep a cap is now MEMORY rather than stack: each level's hide set is the level before it plus one name and is copied per level, so a chain of n costs O(n^2) bindings. Measured with the cap lifted, on the same machine as the rest of poc/08-cpp/memory.py:
+
+    chain of 1000   0.12 s    88 MB peak RSS
+    chain of 3000   0.35 s   286 MB
+    chain of 6000   0.89 s   782 MB
+
+The diagnostic in cpp.nix now says that rather than blaming max-call-depth, and the header paragraph says plainly that a linear chain runs at frame depth one AND is still capped at 200.
+
+SO WHAT IS LEFT HERE is a real choice rather than a rewrite: raise the cap to whatever peak RSS the project will spend, remove it and let memory decide, or make the hide set something that is not copied per level. The last is the only one that changes the curve.
+<!-- SECTION:NOTES:END -->

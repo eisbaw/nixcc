@@ -1,6 +1,6 @@
 # Hand-written expectations for the preprocessor.
 #
-# WHAT LIVES HERE RATHER THAN IN THE DIFFERENTIAL. oracle.nix compares 43
+# WHAT LIVES HERE RATHER THAN IN THE DIFFERENTIAL. oracle.nix compares 48
 # translation units against gcc -E and is the stronger test of the two, so
 # this file is deliberately NOT a second copy of it. It holds the three kinds
 # of case a differential cannot carry:
@@ -192,6 +192,268 @@ rec {
     (e "a #if on a macro that expands to a non-zero constant"
       "#define SET 1\n#if SET\nint yes;\n#else\nint no;\n#endif\n"
       [ "INT:int" "ID:yes" ";:;" ])
+
+    # ---- function-like macros: parameters and arguments ----------------
+    (e "a function-like macro substitutes its argument"
+      "#define F(x) x + 1\nint y = F(2);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:2" "+:+" "ICON:1" ";:;" ])
+
+    (e "a parameter used twice is substituted twice"
+      "#define TWICE(x) x + x\nint y = TWICE(3);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:3" "+:+" "ICON:3" ";:;" ])
+
+    (e "two parameters are substituted in their own places"
+      "#define SUB(a,b) a - b\nint y = SUB(9,4);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:9" "-:-" "ICON:4" ";:;" ])
+
+    # As with an object-like body, an argument is substituted as TOKENS and
+    # is not re-parenthesised: `SUB(1 + 1,1)' is 1 + 1 - 1, which is C's
+    # answer too and the reason every macro in real code is full of brackets.
+    (e "an argument is substituted without parentheses round it"
+      "#define SUB(a,b) a - b\nint y = SUB(1 + 1,1);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:1" "+:+" "ICON:1" "-:-" "ICON:1" ";:;" ])
+
+    (e "an empty argument substitutes nothing at all"
+      "#define BOTH(a,b) [a|b]\nint y[] = BOTH(,2);\n"
+      [ "INT:int" "ID:y" "[:[" "]:]" "=:=" "[:[" "|:|" "ICON:2" "]:]" ";:;" ])
+
+    # The pair that says the PARENTHESIS DEPTH is what splits arguments and
+    # not the comma alone: `SECOND((1,2),3)' has two commas and two
+    # arguments, and a splitter that ignored the depth would make three and
+    # fail the count check.
+    (e "a comma inside parentheses belongs to the argument it sits in"
+      "#define SECOND(a,b) b\nint y = SECOND((1,2),3);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:3" ";:;" ])
+
+    (e "and that argument keeps its own parentheses when it is substituted"
+      "#define FIRST(a,b) a\nint y = FIRST((1,2),3);\n"
+      [ "INT:int" "ID:y" "=:=" "(:(" "ICON:1" ",:," "ICON:2" "):)" ";:;" ])
+
+    (e "a macro with no parameters takes an empty argument list"
+      "#define Z() 9\nint y = Z();\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:9" ";:;" ])
+
+    (e "a function-like macro name not followed by `(' is an ordinary identifier"
+      "#define F(x) x + 1\nint F = 2;\n"
+      [ "INT:int" "ID:F" "=:=" "ICON:2" ";:;" ])
+
+    # WHAT MAKES A MACRO FUNCTION-LIKE is the `(' being ADJACENT to the name.
+    # These two differ by one space and are two different macros: the second
+    # is object-like and its body BEGINS with a parenthesis. C89 6.8.3.
+    (e "a space before the `(' makes an object-like macro instead"
+      "#define F (x) x + 1\nint y = F;\n"
+      [ "INT:int" "ID:y" "=:=" "(:(" "ID:x" "):)" "ID:x" "+:+" "ICON:1" ";:;" ])
+
+    # And adjacency is adjacency AFTER ISO C's phase 2: the `(' here carries
+    # a line continuation as its trivia rather than nothing at all, which is
+    # what poc/02-lexer's `glue' flag says. Without that clause this is
+    # quietly an object-like macro and `G(2)' is a token stream nobody wrote.
+    (e "a `(' behind a continuation is still adjacent, so this is function-like"
+      "#define G\\\n(x) x + 1\nint y = G(2);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:2" "+:+" "ICON:1" ";:;" ])
+
+    (e "and a space before the backslash makes it object-like again"
+      "#define G \\\n(x) x + 1\nint y = G;\n"
+      [ "INT:int" "ID:y" "=:=" "(:(" "ID:x" "):)" "ID:x" "+:+" "ICON:1" ";:;" ])
+
+    # ...and a name at the very end of a line is an ordinary identifier when
+    # the line after it cannot be opening an argument list. The case where it
+    # COULD -- the next line beginning with `(' -- is refused naming task-077,
+    # and must-fail.nix holds that half.
+    (e "a function-like macro name ending a line is an identifier if no `(' follows"
+      "#define F(a) a\nint y = F\n;\n"
+      [ "INT:int" "ID:y" "=:=" "ID:F" ";:;" ])
+
+    # The `(' may come from a frame the expander is still rescanning...
+    (e "the name may come from an expansion and the `(' from the source"
+      "#define G F\n#define F(x) (x)\nint y = G (9);\n"
+      [ "INT:int" "ID:y" "=:=" "(:(" "ICON:9" "):)" ";:;" ])
+
+    # ...but it may not be MADE by one. The test is on the raw next token,
+    # which is what gcc does: `F LP 3 )' comes out as `F ( 3 )'.
+    (e "a `(' that a macro would expand to does not open an argument list"
+      "#define LP (\n#define F(x) (x)\nint y = F LP 3 );\n"
+      [ "INT:int" "ID:y" "=:=" "ID:F" "(:(" "ICON:3" "):)" ";:;" ])
+
+    # WHAT THIS DOES AND DOES NOT SAY, because the name it wanted to have
+    # would have been a lie. It says an argument that names a macro comes out
+    # expanded; it does NOT say the argument was expanded BEFORE it was
+    # substituted, because the raw `V' would be rescanned inside the frame and
+    # expand there anyway. The case that separates pre-expansion from
+    # rescanning is the two-level stringify idiom below -- `#' takes its
+    # operand raw, so `XSTR(V)' is "7" only if the argument was expanded on
+    # the way in. Found by mutating rather than by reading.
+    (e "an argument that names a macro comes out expanded"
+      "#define V 7\n#define ID(x) x\nint y = ID(V);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:7" ";:;" ])
+
+    (e "a nested invocation inside an argument is expanded too"
+      "#define ID(x) x\nint y = ID(ID(ID(5)));\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:5" ";:;" ])
+
+    # The body is `a * 10 + b' and not `max(a,b)', which is what it was until
+    # review pointed out that max is COMMUTATIVE: with the two parameters
+    # substituted into each other's places the case came out byte-identical,
+    # which is ir/unsig.c's divisor of 7 wearing a `#if' hat, in the file
+    # whose own header warns about it.
+    (e "a function-like macro is expanded inside a #if expression"
+      "#define BLEND(a,b) ((a) * 10 + (b))\n#if BLEND(3,5) == 35\nint yes;\n#else\nint no;\n#endif\n"
+      [ "INT:int" "ID:yes" ";:;" ])
+
+    # ---- the # operator --------------------------------------------------
+    (e "the # operator stringifies its argument as it was written"
+      "#define STR(x) #x\nchar *s = STR(a + b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a + b\"" ";:;" ])
+
+    (e "# collapses internal whitespace to exactly one space"
+      "#define STR(x) #x\nchar *s = STR(a     +      b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a + b\"" ";:;" ])
+
+    (e "# keeps adjacency where the argument was written with none"
+      "#define STR(x) #x\nchar *s = STR(a+b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a+b\"" ";:;" ])
+
+    # A comment is whitespace, so it is ONE space -- and it is one space even
+    # when it spans a newline, because a newline inside a block comment does
+    # not end the logical line the invocation is on (poc/02-lexer's `nlAt').
+    (e "a comment inside the argument is whitespace, and so is one space"
+      "#define STR(x) #x\nchar *s = STR(a/* two\n   words */b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a b\"" ";:;" ])
+
+    # C89 6.8.3.2 inserts a `\' before every `"' and `\' inside a literal.
+    # The string-literal case is in the differential corpus, where gcc checks
+    # it rather than a hand-spelled expectation; this is the character
+    # constant, where the escaping is still visible and still readable.
+    (e "# escapes the backslash inside a character constant"
+      "#define STR(x) #x\nchar *s = STR('\\n');\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"'\\\\n'\"" ";:;" ])
+
+    (e "the argument of # is NOT macro-expanded first"
+      "#define V 7\n#define STR(x) #x\nchar *s = STR(V);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"V\"" ";:;" ])
+
+    (e "and the two-level idiom is what expands it"
+      "#define V 7\n#define STR(x) #x\n#define XSTR(x) STR(x)\nchar *s = XSTR(V);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"7\"" ";:;" ])
+
+    # THE CASE THAT CAUGHT A SILENT MISCOMPILE, found by cross-model review.
+    # `#' reproduces the spelling its argument was WRITTEN with, and an
+    # argument can come out of another macro's replacement list -- so the
+    # tokens a replacement list hands on have to carry their own trivia. An
+    # expansion that gave every body token one space instead produced
+    # "file . c : 12", which is a wrong string literal in the compiled
+    # program with no diagnostic anywhere. Every other stringify case here
+    # passes an argument written at the USE site, where the trivia is the
+    # source's own, so none of them could see it.
+    (e "# reproduces the spelling of an argument that came out of a macro body"
+      "#define Q(x) #x\n#define WHERE Q(file.c:12)\nchar *s = WHERE;\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"file.c:12\"" ";:;" ])
+
+    (e "and the same for an argument whose tokens are punctuators"
+      "#define Q(x) #x\n#define P Q(a->b)\nchar *s = P;\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a->b\"" ";:;" ])
+
+    (e "an empty argument stringifies to an empty literal"
+      "#define STR(x) #x\nchar *s = STR();\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"\"" ";:;" ])
+
+    # ---- the ## operator -------------------------------------------------
+    (e "the ## operator pastes two tokens into one"
+      "#define CAT(a,b) a##b\nint y = CAT(1,2);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:12" ";:;" ])
+
+    # THIS IS THE RULE task-013.02's criterion #3 STATES THE OTHER WAY ROUND,
+    # and the criterion is the half that is wrong. C89 3.8.3.3 says "the
+    # resulting token is available for further macro replacement";
+    # lcc/cpp/macro.c's expand() runs doconcat() and then backs its row up
+    # over everything it inserted, so the pasted token is rescanned; and
+    # `gcc -std=c89 -E -P' turns this very source into `int y = 42;'. Since
+    # criterion #5 is a differential against gcc, the two criteria cannot
+    # both hold, so the standard's rule is what is implemented and the
+    # criterion is left for the author to settle.
+    (e "the token a paste produces IS re-examined for macro names"
+      "#define CAT(a,b) a##b\n#define XY 42\nint y = CAT(X,Y);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:42" ";:;" ])
+
+    # WHAT THIS CAN AND CANNOT SEE. Concatenation is associative, so `123'
+    # comes out whether the chain folds left or right; what the case does
+    # discriminate is the ORDER OF THE OPERANDS, because concatenation is not
+    # commutative. A fold that pasted each new operand in front of the
+    # accumulator gives `321'. The name says operands rather than
+    # associativity so the next reader does not trust a claim it cannot make.
+    (e "a chain of pastes joins its operands in the order they were written"
+      "#define THREE(a,b,c) a##b##c\nint y = THREE(1,2,3);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:123" ";:;" ])
+
+    # The standard's placemarker, without a token to stand for it: an empty
+    # operand leaves the other side alone. `A' is then rescanned, which is
+    # what makes this 1 rather than `A'.
+    (e "a paste with an empty operand keeps the other side"
+      "#define CAT(a,b) a##b\n#define A 1\nint y = CAT(A,);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:1" ";:;" ])
+
+    (e "and with both operands empty it produces nothing"
+      "#define CAT(a,b) a##b\nint y[] = { CAT(,) 5 };\n"
+      [ "INT:int" "ID:y" "[:[" "]:]" "=:=" "{:{" "ICON:5" "}:}" ";:;" ])
+
+    # The other half of "except where it is an operand of # or ##": if the
+    # operand were expanded first this would be `7x'.
+    (e "the operand of ## is not macro-expanded first either"
+      "#define V 7\n#define CAT(a,b) a##b\nint y = CAT(V,x);\n"
+      [ "INT:int" "ID:y" "=:=" "ID:Vx" ";:;" ])
+
+    # `##' is two `#' tokens to poc/02-lexer, so what makes them ONE operator
+    # is that nothing stands between them -- and a line continuation is
+    # nothing, after ISO C's phase 2. gcc reads this as `a##b' and so does
+    # this preprocessor; the `glue' flag is what carries the difference.
+    (e "a ## split by a line continuation is still one ## operator"
+      "#define CAT(a,b) a#\\\n#b\nint y = CAT(1,2);\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:12" ";:;" ])
+
+    (e "an object-like macro may paste as well"
+      "#define OBJCAT a##b\n#define ab 9\nint y = OBJCAT;\n"
+      [ "INT:int" "ID:y" "=:=" "ICON:9" ";:;" ])
+
+    (e "a paste may make a punctuator out of two"
+      "#define CAT(a,b) a##b\nint y;\ny CAT(+,+);\n"
+      [ "INT:int" "ID:y" ";:;" "ID:y" "INCR:++" ";:;" ])
+
+    # ---- the blue paint, now that a macro can take arguments -------------
+    (e "a function-like macro does not re-expand inside its own expansion"
+      "#define REC(x) REC(x) + 1\nint y = REC(2);\n"
+      [ "INT:int" "ID:y" "=:=" "ID:REC" "(:(" "ICON:2" "):)" "+:+" "ICON:1" ";:;" ])
+
+    (e "two function-like macros that name each other stop on the second"
+      "#define PING(x) PONG(x)\n#define PONG(x) PING(x)\nint y = PING(2);\n"
+      [ "INT:int" "ID:y" "=:=" "ID:PING" "(:(" "ICON:2" "):)" ";:;" ])
+
+    # The paint has to be on the token `##' MANUFACTURED, not merely on the
+    # tokens the body was written with, or this expands for ever.
+    (e "a name that a paste rebuilds is painted too"
+      "#define CAT(a,b) a##b\n#define SELF CAT(SE,LF)\nint y = SELF;\n"
+      [ "INT:int" "ID:y" "=:=" "ID:SELF" ";:;" ])
+
+    (e "a painted name followed by `(' is not an invocation"
+      "#define ID(x) x\nint y = ID(ID)(7);\n"
+      [ "INT:int" "ID:y" "=:=" "ID:ID" "(:(" "ICON:7" "):)" ";:;" ])
+
+    # A KNOWN DIVERGENCE, PINNED HERE SO IT IS NOT SILENT (task-080). C89
+    # 6.8.3.4 gives the replacement of a FUNCTION-LIKE macro the hide set
+    # `(HS(name) INTERSECT HS(rparen)) UNION {name}'. The intersection is the
+    # only thing that lets a name stop being hidden when an invocation reaches
+    # out of the frame it was born in and into the source, and this expander
+    # does not compute it -- the closing parenthesis's hide set is thrown away
+    # by `gather'. So we hide MORE than the standard does and stop a level
+    # early. gcc gives `2*9*g' for this; we give `2*f(9)'.
+    #
+    # It is under-expansion rather than a wrong value -- the name is left
+    # standing, and the frontend then refuses it as undeclared -- but it is a
+    # real divergence and the differential corpus deliberately does not carry
+    # it, because the corpus is meant to be green. This case has to CHANGE
+    # when task-080 lands rather than quietly start failing.
+    (e "task-080: a macro is hidden where the standard would have unhidden it"
+      "#define f(a) a*g\n#define g(a) f(a)\nint z = f(2)(9);\n"
+      [ "INT:int" "ID:z" "=:=" "ICON:2" "*:*" "ID:f" "(:(" "ICON:9" "):)" ";:;" ])
   ];
 
   # ---- #if constant expressions ----------------------------------------
@@ -335,11 +597,41 @@ rec {
       lines = [ "1:int" "1:a" "1:;" "2:a" "2:<<" "2:=" "2:2" "2:;" "3:a" "3:<<" "3:=" "3:2" "3:;" ];
       render = "# 1 \"t.c\"\nint a;\n a <<= 2;\n a << = 2;\n";
     }
+    {
+      # AN ARGUMENT ARRIVES WITH THE SPACING IT WAS WRITTEN WITH, which is
+      # the half of `render' that slice 2 puts under new pressure: a body
+      # token always has one space in front of it, but the token substituted
+      # after it came off the invocation and may have had none. `AFTER(b)'
+      # puts `b' straight after `a' with an empty `ws', and `ab' is one
+      # identifier -- so the renderer has to put a space back. `MINUS(1)'
+      # is the control: `-' and `1' written together still lex as two, so no
+      # space is added and `-1' comes out as it was meant to.
+      #
+      # The token streams are identical either way, so the differential
+      # cannot see this; only the exact text can.
+      what = "an argument keeps its own spacing, and gains a space only where it would paste";
+      src = "#define AFTER(x) a x\n#define MINUS(x) - x\nAFTER(b);\nMINUS(1);\n";
+      lines = [ "3:a" "3:b" "3:;" "4:-" "4:1" "4:;" ];
+      render = "# 3 \"t.c\"\n a b;\n -1;\n";
+    }
+    {
+      # And the same question asked of `##', which is the operator that
+      # deliberately CREATES a token across a boundary. `1 CAT(+,+)+ 2'
+      # pastes `++' and then meets a `+' that was written with no space:
+      # `+++' re-lexes to `++' and `+', so it may be written closed up, and
+      # gcc renders it closed up too.
+      what = "a pasted token is rendered against its neighbour only where the two still lex apart";
+      src = "#define CAT(a,b) a##b\nint i;\ni = 1 CAT(+,+)+ 2;\n";
+      lines = [ "2:int" "2:i" "2:;" "3:i" "3:=" "3:1" "3:++" "3:+" "3:2" "3:;" ];
+      render = "# 2 \"t.c\"\n int i;\n i = 1 +++ 2;\n";
+    }
   ];
 
   # ---- the input the memory ladder measures -----------------------------
-  # n functions, each one using macros and sitting inside a conditional, on
-  # top of a macro table whose entries name each other. Memory, not speed, is
+  # n functions, each one using object-like AND function-like macros -- the
+  # second so the ladder measures what slice 2 added rather than what slice 1
+  # cost -- and each sitting inside a conditional, on top of a macro table
+  # whose entries name each other. Memory, not speed, is
   # what this project spends (decision-001, decision-007), and the figure that
   # matters is what the preprocessor adds to the token list the lexer already
   # built -- so memory.py measures the same source twice, once lexed and once
@@ -355,6 +647,8 @@ rec {
         #define ONE 1
         #define STEP (ONE + ONE)
         #define LIMIT 100
+        #define SCALED(v) ((v) * SCALE + LIMIT)
+        #define TAG(n) tmp ## n
         #if LIMIT > 10
         #define SCALE STEP
         #else
@@ -365,13 +659,15 @@ rec {
         int f${toString i}(int a)
         {
             int b;
-            b = a * SCALE + LIMIT;
+            int TAG(${toString i});
+            b = SCALED(a);
+            TAG(${toString i}) = b + ZERO;
         #if LIMIT > 50
             b = b + ONE;
         #else
             b = b - ONE * ZERO;
         #endif
-            return b + ZERO;
+            return b + TAG(${toString i});
         }
       '';
     in
@@ -395,26 +691,59 @@ rec {
   # The token stream cannot see a macro that is defined and never used, so a
   # `#define' inside a group that should have been skipped would be invisible
   # until something happened to use it.
+  #
+  # `params' is null for an object-like macro and a LIST for a function-like
+  # one, and the empty list is a third thing again: `#define Z() 1' takes no
+  # arguments and `#define Z 1' takes no argument list at all. Nothing in a
+  # token stream distinguishes a macro whose parameters were dropped from one
+  # that never had any until something invokes it, which is why the table
+  # carries them.
   tables = [
     {
       what = "a #define inside a skipped group does not reach the table";
       src = "#if 0\n#define SKIPPED 1\n#endif\n#define KEPT 2\n";
-      macros = { KEPT = [ "2" ]; };
+      macros = { KEPT = { params = null; body = [ "2" ]; }; };
     }
     {
       what = "#undef removes the entry rather than emptying it";
       src = "#define A 1\n#define B 2\n#undef A\n";
-      macros = { B = [ "2" ]; };
+      macros = { B = { params = null; body = [ "2" ]; }; };
     }
     {
       what = "the body is stored as tokens, in order";
       src = "#define E 1 + 2 * 3\n";
-      macros = { E = [ "1" "+" "2" "*" "3" ]; };
+      macros = { E = { params = null; body = [ "1" "+" "2" "*" "3" ]; }; };
     }
     {
       what = "an empty body is an empty token list, not an absent entry";
       src = "#define E\n";
-      macros = { E = [ ]; };
+      macros = { E = { params = null; body = [ ]; }; };
+    }
+    {
+      what = "a function-like macro's parameters are stored, in order, beside its body";
+      src = "#define F(a, b) b - a\n";
+      macros = { F = { params = [ "a" "b" ]; body = [ "b" "-" "a" ]; }; };
+    }
+    {
+      # The three shapes, side by side, because they differ only in the
+      # parameter list: `#define Z 1' is object-like, `#define Z() 1' takes
+      # an empty argument list, and `#define Z (1)' is object-like again with
+      # a parenthesis in its body. C89 6.8.3 turns on one space.
+      what = "an empty parameter list is not the same thing as no parameter list";
+      src = "#define P 1\n#define Q() 1\n#define R (1)\n";
+      macros = {
+        P = { params = null; body = [ "1" ]; };
+        Q = { params = [ ]; body = [ "1" ]; };
+        R = { params = null; body = [ "(" "1" ")" ]; };
+      };
+    }
+    {
+      # `#' and `##' stay in the stored body as the tokens they were written
+      # with; what is compiled once is the PLAN beside them, and the body is
+      # what a redefinition is compared against.
+      what = "the # and ## operators stay in the body as written";
+      src = "#define S(x) # x ## y\n";
+      macros = { S = { params = [ "x" ]; body = [ "#" "x" "#" "#" "y" ]; }; };
     }
   ];
 }

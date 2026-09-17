@@ -118,9 +118,9 @@ poc-parser:
     nix develop --command bash poc/07-parser/run.sh
 
 # Exercise the minimal C preprocessor: expansion, `#if' and line-number
-# tables, the refusals and their messages, two programs preprocessed, compiled
-# and run on the Nix emulator, lcc's own frontend reading our linemarkers, a
-# token-stream differential against gcc -E, mutation test
+# tables, the refusals and their messages, three programs preprocessed,
+# compiled and run on the Nix emulator, lcc's own frontend reading our
+# linemarkers, a token-stream differential against gcc -E, mutation test
 poc-cpp:
     nix develop --command bash poc/08-cpp/run.sh
 

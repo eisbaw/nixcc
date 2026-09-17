@@ -57,9 +57,49 @@ let
       want = digits (11 * triangle 10 + 100);
       instead = [ (1000 * triangle 10 + 100) (11 * triangle 10 + 4) ];
     }
+    # Slice 2: the answer depends on a function-like macro's arguments, on the
+    # parentheses in its body, on a name `##' built, and on TWO bytes of a
+    # literal `#' produced. step2(i) is BLEND(i + 1, 2) = 4(i+1) + 2, BIAS
+    # adds 5, and the stringified `K  J' contributes 'K' + 'J' = 149 -- the
+    # second of those only if `#' collapsed the two spaces to one.
+    #
+    #   sum over 1..n of (4i + 6), plus 5, plus 149.
+    #
+    # THE ALTERNATIVES ARE ALL REACHABLE, which the previous version's were
+    # not: two of its four `instead' rows described a stringify or a BIAS that
+    # "never fired", and neither of those is a wrong ANSWER -- a program
+    # missing either does not compile. Every row below is a different token
+    # stream that compiles and runs.
+    {
+      name = "funcs";
+      arg = 7;
+      want = digits (4 * triangle 7 + 6 * 7 + 5 + 149);
+      # The paste naming step1 rather than step2; the two arguments of BLEND
+      # substituted into each other's places; BLEND's body without its inner
+      # parentheses, so `(v + 1) * 4 + 2' becomes `v + 1 * 4 + 2'; and a `#'
+      # that did not collapse the two spaces, which leaves a space where `J'
+      # should be.
+      instead = [
+        (4 * triangle 7 + 4 * 7 + 5 + 149)
+        (triangle 7 + 9 * 7 + 5 + 149)
+        (triangle 7 + 6 * 7 + 5 + 149)
+        (4 * triangle 7 + 6 * 7 + 5 + 75 + 32)
+      ];
+    }
+    {
+      name = "funcs";
+      arg = 10;
+      want = digits (4 * triangle 10 + 6 * 10 + 5 + 149);
+      instead = [
+        (4 * triangle 10 + 4 * 10 + 5 + 149)
+        (triangle 10 + 9 * 10 + 5 + 149)
+        (triangle 10 + 6 * 10 + 5 + 149)
+        (4 * triangle 10 + 6 * 10 + 5 + 75 + 32)
+      ];
+    }
   ];
 
-  declaredPrograms = 4;
+  declaredPrograms = 6;
 
   ran = map
     (p:

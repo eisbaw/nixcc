@@ -1,12 +1,12 @@
-# A minimal C preprocessor in Nix: slice 1 of decision-005.
+# A minimal C preprocessor in Nix: slices 1 and 2 of decision-005.
 #
-# Scope, and the reason it stops where it does (task-013.01): line splicing,
-# object-like `#define', `#undef', the whole conditional family with
+# Scope, and the reason it stops where it does (task-013.01, task-013.02):
+# line splicing, object-like and function-like `#define' with the `#' and
+# `##' operators, `#undef', the whole conditional family with
 # constant-expression evaluation, `#line', and the `# n "file"' linemarkers
-# lcc's input.c resynch() parses. Function-like macros, `#' and `##' are
-# task-013.02; `#include' is task-013.03 and waits on task-070, which has to
-# decide where a header comes from and how that survives a pure eval. Every
-# refusal below for something a later slice will do NAMES the slice's task.
+# lcc's input.c resynch() parses. `#include' is task-013.03 and waits on
+# decision-010's header set. Every refusal below for something a later slice
+# will do NAMES the slice's task.
 #
 # A note on which refusals carry a task id and which do not, because the rule
 # is easy to over-read: a refusal that DEFERS A FEATURE names the task that
@@ -70,16 +70,50 @@
 # evaluator for free and is the reason there is no separate "evaluate or just
 # skip" mode in the parser.
 #
-# EXPANSION IS RECURSIVE, AND THE CAP IS WHAT MAKES THAT LEGAL. decision-001
-# bans traversals whose DEPTH tracks input length. `expandTok' recurses once
-# per nested macro and carries a hide set that grows by one name each time, so
-# it always terminates -- but the number of DISTINCT macros in a chain is
-# itself bounded by the size of the file and by nothing else, so the depth
-# does track input length. Measured: with the cap lifted, a chain of 3000
-# expands and one of 6000 dies with "stack overflow; max-call-depth
-# exceeded". So MAX_NEST is load-bearing rather than defensive, and task-071
-# carries what would remove it -- a genericClosure worklist, which task-013.02
-# has to build anyway for function-like macros.
+# EXPANSION IS A WORKLIST, WHICH IS WHAT THE STANDARD'S RESCANNING WANTS.
+# Slice 1 recursed once per nested macro, so its DEPTH tracked the length of
+# the macro chain, which is bounded by the size of the file and by nothing
+# else -- exactly what decision-001 bans (measured then: a chain of 3000
+# expanded and one of 6000 died with "stack overflow; max-call-depth
+# exceeded"). Slice 2 replaces it with the shape task-071 asked for: a cursor
+# over the logical line plus a STACK OF FRAMES holding replacement lists still
+# being rescanned, driven by one genericClosure step per token produced.
+#
+# The cursor advances PAST the invocation before it pushes the replacement,
+# and a frame is popped the moment it is exhausted, so a chain `A -> B -> C'
+# never stacks: the frame for B is pushed only after the frame for A has been
+# emptied and dropped. A linear chain therefore runs at frame depth ONE
+# however long it is, and the only thing that stacks is genuine nesting -- a
+# replacement list that still has tokens left when one of its own tokens
+# expands.
+#
+# THE BLUE PAINT IS PER TOKEN, NOT PER FRAME (C89 6.8.3.4: a macro is not
+# re-expanded inside its own expansion). It has to be: a function-like
+# macro's arguments come from the input, its body comes from the definition,
+# and the two arrive carrying different hide sets. Measured against gcc:
+# `#define F F' yields `F', `#define G H' with `#define H G' yields `G', and
+# `#define SELF CAT(SE,LF)' yields `SELF' -- the last one only because the
+# token `##' MANUFACTURES inherits the hide set of the expansion it was made
+# in.
+#
+# AND `nest' IS A SECOND, UNCONDITIONAL COUNTER beside the hide set, which is
+# not redundancy. The hide set is what makes expansion terminate; `nest' is
+# what makes a BROKEN hide set terminate. With the hide set removed, `#define
+# SELF SELF' has nothing left to stop it and the evaluator would spin forever
+# -- a harness cannot mutation-test a hang. `nest' counts how many macros a
+# token has been expanded THROUGH, so the symptom of a hide set that stopped
+# hiding is MAX_NEST's diagnostic, which is a failure a test can see.
+#
+# THAT IS NOT THE SAME AS FRAME DEPTH, and the cap is on the counter and not
+# on the stack. A chain `M0 -> M1 -> ... -> Mn' runs at frame depth one and
+# still reaches `nest' = n, so MAX_NEST caps a chain at 200 exactly as slice
+# 1's recursion did. What CHANGED is the failure mode behind it: measured
+# with the cap lifted, slice 1 died at a chain of 6000 with "stack overflow;
+# max-call-depth exceeded", and this expands it in 0.89 s. The cost is memory
+# instead -- each level's hide set is the level before it plus one name, and
+# copying it per level is O(n^2) bindings: 88 MB of peak RSS at 1000, 286 MB
+# at 3000, 782 MB at 6000. So the cap is a MEMORY guard now, not a stack one,
+# and task-071 is where removing it belongs.
 let
   b = builtins;
   lexer = import ../02-lexer/lex.nix;
@@ -127,32 +161,102 @@ let
   # `int' as kind INT, so a name is tested by its TEXT rather than its kind.
   isIdent = s: b.match "[A-Za-z_][A-Za-z0-9_]*" s != null;
 
-  # DO TWO LEXEMES WRITTEN SIDE BY SIDE STILL LEX AS THOSE TWO LEXEMES?
+  # WHAT DO TWO LEXEMES WRITTEN SIDE BY SIDE LEX AS?
   #
-  # Two callers need that answer and they must not answer it differently.
-  # `checkGlue' asks it of a backslash-newline: ISO C splices in phase 2 and
-  # this lexer splices between tokens (task-008), and the two disagree exactly
-  # when the characters on either side would have lexed as ONE token had the
-  # splice happened first. `render' asks it of every boundary it writes with
-  # nothing between: in the SOURCE that is safe by construction, because the
-  # lexer cut the two apart there, but an expansion puts a token next to a
-  # neighbour it was never adjacent to.
+  # ONE primitive asks the lexer and THREE callers read its answer. That is
+  # deliberate and it is load-bearing: slice 1 shipped a silent miscompile
+  # here because two callers each had their own rule, and a character-class
+  # rule would in any case have to be kept in step with the punctuator table.
   #
-  # It is decided by asking the lexer rather than by a character-class rule,
-  # which would have to be kept in step with the punctuator table -- and
-  # `tryEval' is here because the joined text can fail to lex at all (`/' and
-  # `*' become an unclosed comment), which is the strongest possible evidence
-  # that the two do not stay separate.
-  staysApart = p: t:
+  #   `checkGlue' asks whether they STAY APART across a backslash-newline.
+  #     ISO C splices in phase 2 and this lexer splices between tokens
+  #     (task-008); the two disagree exactly when the characters on either
+  #     side would have lexed as ONE token had the splice happened first.
+  #   `render' asks the same of every boundary it writes with nothing between.
+  #     In the SOURCE that is safe by construction, because the lexer cut the
+  #     two apart there, but an expansion puts a token next to a neighbour it
+  #     was never adjacent to -- `#define P +' used as `a P+ +2' is `a + + +2'
+  #     and not `a ++ +2', which is a different program that also compiles.
+  #   `pasteTok' asks the OPPOSITE question of the same lexing, because `##'
+  #     exists precisely to make ONE token out of two. C89 6.8.3.3 leaves the
+  #     result undefined when they do not join, so a paste that yields two
+  #     tokens -- or none at all, because `/' and `*' open a comment -- is
+  #     refused rather than emitted as a token stream nobody wrote.
+  #
+  # So `##' and `render' are the same question asked for opposite answers, and
+  # having them share one lexing is what stops a paste that succeeds from
+  # being re-split by the renderer, or one that failed from being silently
+  # written out as two.
+  #
+  # `tryEval' is here because the joined text can fail to lex at all, which is
+  # the strongest possible evidence that the two did not become one. Null, not
+  # an empty list: a lexing that produced no tokens and a lexing that threw
+  # are different answers and only one of them is a legal paste.
+  # WHAT DOES THIS TEXT LEX AS? Null when it does not lex at all, and EOI is
+  # dropped, so a caller counts the tokens it meant rather than the tokens
+  # plus one. Every question below goes through this one call: two of them
+  # ask about a joined pair and the third about a literal `#' built, and
+  # having them answer with different conventions is how two rules that were
+  # meant to be one drift apart.
+  lexAll = text:
     let
       r = b.tryEval (
-        let toks = b.filter (x: x.kind != "EOI") (lexer.lex (p.text + t.text)); in
+        let toks = b.filter (x: x.kind != "EOI") (lexer.lex text); in
         b.deepSeq toks toks);
     in
-    r.success
-    && b.length r.value == 2
-    && (b.head r.value).text == p.text
-    && (b.elemAt r.value 1).text == t.text;
+    if r.success then r.value else null;
+
+  lexJoined = p: t: lexAll (p.text + t.text);
+
+  staysApart = p: t:
+    let r = lexJoined p t; in
+    r != null
+    && b.length r == 2
+    && (b.head r).text == p.text
+    && (b.elemAt r 1).text == t.text;
+
+  # The `##' operator. `use' is the invocation site, so the manufactured token
+  # points at the code the reader wrote rather than at the `#define'.
+  pasteTok = use: p: t:
+    let r = lexJoined p t; in
+    if r != null && b.length r == 1 then mkTok use { inherit ((b.head r)) kind text; }
+    else throw "cpp: line ${toString use.line}: `##' in the expansion of `${
+      use.text}' pastes `${p.text}' and `${t.text}', and `${p.text}${t.text}' is ${
+      if r == null then "not a preprocessing token at all"
+      else "${toString (b.length r)} preprocessing tokens"}, not one. C89 6.8.3.3 leaves that undefined, so it is refused rather than emitted as a token stream nobody wrote";
+
+  # The `#' operator. C89 6.8.3.2: the argument's tokens in the spelling they
+  # were WRITTEN in -- not the spelling they expand to -- separated by one
+  # space wherever there was any whitespace between them and by nothing where
+  # there was none, with no space at either end, and with a `\' inserted
+  # before every `"' and `\' that occurs inside a string or character literal.
+  #
+  # A comment counts as whitespace and therefore as one space, which falls out
+  # of `ws' rather than needing a rule: poc/02-lexer puts the comment in the
+  # token's trivia, so `ws != ""'.
+  isCharConst = t: t.kind == "ICON" && (b.substring 0 1 t.text == "'" || b.substring 0 2 t.text == "L'");
+  spell = t:
+    if t.kind == "SCON" || isCharConst t
+    then b.replaceStrings [ "\\" "\"" ] [ "\\\\" "\\\"" ] t.text
+    else t.text;
+
+  stringifyToks = use: ts:
+    let
+      piece = j:
+        let t = b.elemAt ts j; in
+        (if j != 0 && t.ws != "" then " " else "") + spell t;
+      text = "\"" + b.concatStringsSep "" (b.genList piece (b.length ts)) + "\"";
+      # The result has to BE a string literal, not merely look like one. This
+      # is the same argument `pasteTok' makes, asked of the same `lexAll' --
+      # a manufactured token that the lexer would read as something else is a
+      # miscompile that nothing downstream can attribute. Cheap, because `#'
+      # is rare.
+      r = lexAll text;
+    in
+    if r != null && b.length r == 1 && (b.head r).kind == "SCON"
+    then mkTok use { kind = "SCON"; inherit text; }
+    else throw "cpp: line ${toString use.line}: `#' in the expansion of `${
+      use.text}' would stringify its argument to ${text}, which is not a string literal";
 
   # Whether a token could be a macro invocation. `macros ? ${t.text}' alone
   # would be enough -- every macro name is an identifier, and no punctuator,
@@ -161,9 +265,6 @@ let
   invokes = macros: t: macros ? ${t.text};
 
   # ---- macro expansion ---------------------------------------------------
-  # The hide set is the blue paint of the standard's 6.8.3.4: a macro is not
-  # re-expanded inside its own expansion. Measured against gcc: `#define F F'
-  # yields `F', and `#define G H' with `#define H G' yields `G'.
   MAX_NEST = 200;
 
   # THE ONE PLACE A TOKEN IS MANUFACTURED rather than lexed, and it exists
@@ -178,12 +279,19 @@ let
   #
   #   `line'  is the USE site, never the definition: a diagnostic has to
   #           point at the code the reader wrote.
-  #   `ws'    is one space unconditionally, which is what stops an expansion
-  #           pasting against its neighbour -- `#define P +' used as `a+P b'
-  #           must not render as `a++ b'. The cost is that a macro can never
-  #           reconstruct a compound assignment through poc/02-lexer's
-  #           `ws == ""' peek (`a <<P' with `#define P =' is LSHIFT then
-  #           `='), which no real program asks for.
+  #   `ws'    is one space, and CALLERS OVERRIDE IT. `fromBody' passes the
+  #           body token's own trivia through, because `#' has to reproduce
+  #           the spelling its argument was WRITTEN with and an argument can
+  #           come out of another macro's replacement list: with `#define Q(x)
+  #           #x' and `#define WHERE Q(file.c:12)', a `ws' of one space
+  #           everywhere makes that "file . c : 12" rather than "file.c:12",
+  #           which is a wrong string literal in the compiled program and no
+  #           diagnostic anywhere. What the unconditional space used to defend
+  #           -- an expansion pasting against its neighbour, `#define P +' in
+  #           `a+P b' rendering as `a++ b' -- `render' now defends properly
+  #           at every boundary it writes, through `staysApart'. A token this
+  #           file MANUFACTURES rather than copies (`##' and `#' both do) has
+  #           no trivia of its own and keeps the space.
   #   `bol'   is false: in cpp OUTPUT it is the line record, not the token,
   #           that says where a line begins.
   mkTok = use: fields:
@@ -195,26 +303,369 @@ let
       glue = false;
     } // fields;
 
-  fromBody = use: bt: mkTok use { inherit (bt) kind text; };
+  fromBody = use: bt: mkTok use { inherit (bt) kind text ws; };
 
-  expandTok = macros: hidden: depth: t:
-    if !(invokes macros t) || hidden ? ${t.text} then [ t ]
-    else if depth >= MAX_NEST then
-      throw "cpp: macro `${t.text}' on line ${toString t.line} is nested more than ${
-        toString MAX_NEST} macros deep. Expansion recurses once per nesting level and Nix's max-call-depth is a setting this project will not ask a `nix eval' user to raise (decision-001); see task-071"
+  # ---- the replacement list, compiled once at `#define' time ---------------
+  #
+  # A replacement list stops being a flat token list the moment `#' and `##'
+  # are in it, and working that out at every INVOCATION would be work
+  # proportional to USES rather than to definitions. So it is compiled once
+  # into two pieces:
+  #
+  #   elems   a flat list of elements, each one of
+  #             { what = "tok"; tok; }   a literal token of the replacement
+  #             { what = "arg"; idx; }   a parameter
+  #             { what = "str"; idx; }   `#' applied to a parameter
+  #   starts  the index in `elems' where each PASTE CHAIN begins. `a##b##c' is
+  #           one chain of three and pastes left to right, as C89 6.8.3.3
+  #           says; an element with no `##' beside it is a chain of one.
+  #
+  # Chains rather than a flag per element, because whether a parameter is
+  # macro-expanded before it is substituted depends on the whole chain: C89
+  # 6.8.3.1 expands an argument first EXCEPT where it is an operand of `#' or
+  # `##', and "operand of ##" means "in a chain of more than one".
+  #
+  # `##' arrives as two `#' tokens with nothing between them, because
+  # poc/02-lexer has no `##' punctuator -- `#' is the preprocessor's operator
+  # and the lexer leaves it alone.
+  planOf = name: paramIx: objectLike: body: dline:
+    let
+      n = b.length body;
+      at = i: b.elemAt body i;
+      bad = msg: throw "cpp: line ${toString dline}: ${msg}";
+      isHash = i: i < n && (at i).kind == "#";
+      # `glue' as well as an empty `ws', for the same reason `funcLike' below
+      # tests both: adjacency is adjacency AFTER ISO C's phase 2, and
+      # `a#\<newline>#b' is `a##b' once the splice is gone. Without the
+      # second clause that is not a paste at all, and the diagnostic it earns
+      # -- "`#' is followed by `#', which is not one of its parameters" --
+      # calls a valid replacement list malformed, which is worse than doing
+      # nothing. `glue' is exactly "the trivia is a continuation and nothing
+      # else" (task-008).
+      isPaste = i: isHash i && isHash (i + 1)
+        && ((at (i + 1)).ws == "" || (at (i + 1)).glue);
+
+      # One element, starting at i. `entryAt' calls it past a `##', so it CAN
+      # land on a second one -- and that is malformed input rather than the
+      # deliberate divergence task-078 records, so it says so itself instead
+      # of falling into the object-like arm below and pointing the reader at
+      # a backlog item about a case gcc accepts.
+      elemFrom = i:
+        let t = at i; in
+        if isPaste i then
+          bad "two `##' in a row in the replacement list of `${name}'; C89 6.8.3.3 wants an operand between them"
+        else if t.kind == "#" && objectLike then
+          bad "`#' in the replacement list of `${name}': stringify takes a PARAMETER and an object-like macro has none. gcc passes the `#' through as an ordinary token; this preprocessor refuses it, because a `#' that reached the parser is reported there as unpreprocessed input and points the reader at the wrong stage entirely (task-078)"
+        else if t.kind == "#" then
+          (if i + 1 < n && paramIx ? ${(at (i + 1)).text} then
+            { elem = { what = "str"; idx = paramIx.${(at (i + 1)).text}; }; next = i + 2; }
+          else
+            bad "`#' in the replacement list of `${name}' is followed by `${
+              if i + 1 < n then (at (i + 1)).text else "the end of the line"
+            }', which is not one of its parameters; C89 6.8.3.2 gives `#' a meaning only in front of a parameter name")
+        else if paramIx ? ${t.text} then
+          { elem = { what = "arg"; idx = paramIx.${t.text}; }; next = i + 1; }
+        else { elem = { what = "tok"; tok = t; }; next = i + 1; };
+
+      # One plan entry: the `##' in front of it, if there is one, and the
+      # element after it. genericClosure rather than a walk because the stride
+      # is one token or three, and the depth of a recursive walk would track
+      # the length of the replacement list (decision-001).
+      entryAt = i:
+        if isPaste i then
+          (if i == 0 then
+            bad "the replacement list of `${name}' begins with `##', which C89 6.8.3.3 wants an operand on each side of"
+          else if i + 2 >= n then
+            bad "the replacement list of `${name}' ends with `##', which C89 6.8.3.3 wants an operand on each side of"
+          else let e = elemFrom (i + 2); in { key = i; inherit (e) next elem; pasted = true; })
+        else let e = elemFrom i; in { key = i; inherit (e) next elem; pasted = false; };
+
+      entries =
+        if n == 0 then [ ]
+        else b.genericClosure {
+          startSet = [ (entryAt 0) ];
+          operator = it: if it.next >= n then [ ] else let x = entryAt it.next; in b.deepSeq x [ x ];
+        };
+    in
+    {
+      elems = map (e: e.elem) entries;
+      starts = b.filter (j: !(b.elemAt entries j).pasted)
+        (b.genList (i: i) (b.length entries));
+    };
+
+  # ---- expansion, as a worklist -------------------------------------------
+  #
+  # An ITEM is a token plus the two things carried beside it: `hide', the set
+  # of macro names it must not be re-expanded as, and `nest', how many frames
+  # deep it was manufactured. `more' says whether there is input after this
+  # list that a function-like macro's argument list could have opened into;
+  # `depth' counts nested ARGUMENT expansions, which is the one place this
+  # still recurses.
+  expandItems = macros: depth: more: src:
+    let
+      nSrc = b.length src;
+
+      # THE CURSOR: a position in `src' plus a stack of frames, each frame a
+      # replacement list still being rescanned. The head of the stack is the
+      # innermost, and the invariant `settle' keeps is that no frame on it is
+      # exhausted -- which is what makes a linear chain run at depth one,
+      # because the frame a macro came from is dropped before the frame its
+      # expansion pushes.
+      #
+      # `settle' is the one recursion left in the cursor, and its depth is the
+      # number of frames that ran out AT ONCE -- which is the nesting the
+      # `nest' counter caps at MAX_NEST, not the length of anything.
+      settle = stack:
+        if stack == [ ] then [ ]
+        else let f = b.head stack; in if f.j < f.n then stack else settle (b.tail stack);
+
+      peek = st:
+        if st.stack != [ ] then let f = b.head st.stack; in b.elemAt f.items f.j
+        else if st.i < nSrc then b.elemAt src st.i
+        else null;
+
+      bump = st:
+        if st.stack == [ ] then st // { i = st.i + 1; }
+        else
+          let f = b.head st.stack; in
+          st // { stack = settle ([ (f // { j = f.j + 1; }) ] ++ b.tail st.stack); };
+
+      pushFrame = st: items:
+        if items == [ ] then st
+        else st // { stack = [{ inherit items; j = 0; n = b.length items; }] ++ st.stack; };
+
+      # Force the numbers that CHAIN from one step to the next, and nothing
+      # else. A `deepSeq' of the cursor would walk every token of every live
+      # frame once per step, which is decision-001's quadratic trap wearing a
+      # different hat; leaving them unforced is its other one, a thunk chain
+      # as deep as the loop.
+      forceCur = st: b.seq st.i (b.foldl' (a: f: b.seq f.j a) true st.stack);
+
+      # And the three fields every worklist item has, NAMED rather than taken
+      # by subtraction. `deepSeq (removeAttrs x [ "st" ])' is the usual
+      # spelling in this tree and it allocates a copy of the item once per
+      # token of every line that names a macro. The enumeration is safe here
+      # in a way it is not elsewhere because there are exactly two builders,
+      # `mk' and `gstep', both within a screen of this -- and `gstep' adds
+      # `depth' and `arg', which CHAIN and which its own operator forces
+      # beside this call rather than leaving to it.
+      forceStep = x: k: b.seq x.key (b.seq x.done (b.deepSeq x.out k));
+
+      # --- one invocation's argument list ---------------------------------
+      # Called with the cursor ON the `('. Counts parentheses and splits on
+      # commas at depth one, so a comma INSIDE parentheses belongs to the
+      # argument it is in -- which is what makes `M((1,2),3)' two arguments
+      # rather than three.
+      gather = use: st0:
+        let
+          gstep = s:
+            let cur = peek s.st; in
+            if cur == null then
+              throw "cpp: line ${toString use.line}: the invocation of `${use.text}' opens an argument list that is not closed on this logical line. poc/08-cpp expands one logical line at a time, so an invocation whose `)' is on the next line is refused rather than mis-split; task-077"
+            else
+              let
+                k = cur.tok.kind;
+                nx = bump s.st;
+              in
+              if k == ")" && s.depth == 1 then
+                { key = s.key + 1; st = nx; inherit (s) depth arg; out = [ ]; done = true; }
+              else if k == "," && s.depth == 1 then
+                { key = s.key + 1; st = nx; inherit (s) depth; arg = s.arg + 1; out = [ ]; done = false; }
+              else {
+                key = s.key + 1;
+                st = nx;
+                depth = if k == "(" then s.depth + 1 else if k == ")" then s.depth - 1 else s.depth;
+                inherit (s) arg;
+                out = [ (cur // { inherit (s) arg; }) ];
+                done = false;
+              };
+
+          steps = b.genericClosure {
+            startSet = [{ key = 0; st = bump st0; depth = 1; arg = 0; out = [ ]; done = false; }];
+            operator = it:
+              if it.done then [ ]
+              else
+                let x = gstep it; in
+                # `depth' and `arg' as well, because both CHAIN from one
+                # gather step to the next and an unforced chain as deep as
+                # the argument list is decision-001's other trap.
+                b.seq (forceCur x.st)
+                  (b.seq x.depth (b.seq x.arg (forceStep x [ x ])));
+          };
+          last = b.elemAt steps (b.length steps - 1);
+          collected = b.concatLists (map (it: it.out) steps);
+          sections = last.arg + 1;
+        in
+        {
+          inherit (last) st;
+          # `F()' is ONE empty argument to a one-parameter macro and NO
+          # arguments to a parameterless one. Nothing in the token stream
+          # tells those apart, so the caller decides with the parameter list
+          # in hand.
+          empty = sections == 1 && collected == [ ];
+          args = b.genList (g: b.filter (x: x.arg == g) collected) sections;
+        };
+
+      # --- substitution ---------------------------------------------------
+      # `h' is the hide set every token of the replacement carries: the
+      # invocation token's own, plus this macro's name. It applies to the
+      # ARGUMENT tokens too, unioned with whatever paint they already had,
+      # because an argument can arrive from inside another expansion.
+      substituted = use: h: lvl: m: args:
+        let
+          nCh = b.length m.plan.starts;
+          nEl = b.length m.plan.elems;
+          paint = x: {
+            inherit (x) tok;
+            hide = x.hide // h;
+            nest = if x.nest > lvl then x.nest else lvl;
+          };
+          born = t: { tok = t; hide = h; nest = lvl; };
+          rawArg = g: map paint (b.elemAt args g);
+          expArg = g: map paint (expandItems macros (depth + 1) false (b.elemAt args g));
+
+          # C89 6.8.3.1: an argument is macro-expanded before it is
+          # substituted, EXCEPT where it is an operand of `#' or `##'. `#'
+          # takes the raw tokens by construction -- it stringifies what was
+          # WRITTEN -- and a parameter in a chain of more than one element is
+          # a `##' operand. Both forms are computed here and Nix's laziness
+          # means the one that is not used costs nothing.
+          seqOf = solo: e:
+            if e.what == "tok" then [ (born (fromBody use e.tok)) ]
+            else if e.what == "str" then
+              [ (born (stringifyToks use (map (x: x.tok) (b.elemAt args e.idx)))) ]
+            else if solo then expArg e.idx
+            else rawArg e.idx;
+
+          # An operand that is an empty argument keeps the other side and
+          # pastes nothing -- the standard's placemarker, which `CAT(A,)'
+          # needs and which falls out of the empty list rather than needing a
+          # token to stand for it.
+          joinTo = left: right:
+            if left == [ ] then right
+            else if right == [ ] then left
+            else
+              let
+                lp = b.elemAt left (b.length left - 1);
+                rp = b.head right;
+              in
+              b.genList (j: b.elemAt left j) (b.length left - 1)
+              ++ [{
+                tok = pasteTok use lp.tok rp.tok;
+                # The pasted token is PAINTED, and that is what makes
+                # `#define SELF CAT(SE,LF)' come out as `SELF' rather than
+                # expanding forever. It is otherwise an ordinary token and IS
+                # rescanned for macro names -- C89 6.8.3.3, "the resulting
+                # token is available for further macro replacement", which
+                # lcc/cpp/macro.c implements by backing its row up over the
+                # tokens it just inserted, and which gcc -E demonstrates by
+                # turning `CAT(X,Y)' into 42 given `#define XY 42'.
+                hide = lp.hide // rp.hide // h;
+                nest = lvl;
+              }]
+              ++ b.tail right;
+
+          # A DECLARED RULE-BREAK: this is `foldl'' accumulating a list with
+          # `++', which decision-001 bans and which `render' below boasts of
+          # having removed. It is bounded by the length of ONE PASTE CHAIN in
+          # ONE DEFINITION -- `a##b##c' is three -- and never by the size of
+          # the input, so the quadratic term is over a constant the author of
+          # the `#define' chose. Written as a fold because a paste has to see
+          # the sequence to its left, which is the accumulator.
+          chain = c:
+            let
+              from = b.elemAt m.plan.starts c;
+              to = if c + 1 < nCh then b.elemAt m.plan.starts (c + 1) else nEl;
+              solo = to - from == 1;
+              one = j: seqOf solo (b.elemAt m.plan.elems j);
+            in
+            if solo then one from
+            else b.foldl' (acc: j: joinTo acc (one j)) (one from)
+              (b.genList (j: from + 1 + j) (to - from - 1));
+        in
+        b.concatLists (b.genList chain nCh);
+
+      # --- one step: one token consumed, zero or one emitted ---------------
+      advance = cur: st:
+        let t = cur.tok; in
+        if !(invokes macros t) || cur.hide ? ${t.text} then { st = bump st; out = [ cur ]; }
+        else if cur.nest >= MAX_NEST then
+          throw "cpp: macro `${t.text}' on line ${toString t.line} is nested more than ${
+            toString MAX_NEST} macros deep. The cap is memory rather than stack: each level's hide set is the level before it plus one name, so copying it per level costs O(n^2) bindings -- measured with the cap lifted, a chain of 1000 peaks at 88 MB, 3000 at 286 MB and 6000 at 782 MB. It does EXPAND, which slice 1's recursion did not; see task-071"
+        else
+          let
+            m = macros.${t.text};
+            h = cur.hide // { ${t.text} = true; };
+            lvl = cur.nest + 1;
+            adv = bump st;
+          in
+          if m.params == null then
+            { st = pushFrame adv (substituted t h lvl m [ ]); out = [ ]; }
+          else
+            # THE `(' IS TESTED ON THE RAW NEXT TOKEN, never on what that
+            # token would expand to. Measured against gcc: with `#define LP
+            # (', `F LP 3 )' is NOT an invocation and comes out as `F ( 3 )'.
+            # It may still come from a FRAME rather than from the source --
+            # with `#define G F', `G (9)' IS an invocation, and gcc agrees --
+            # which is why the cursor spans both and this peek is not a
+            # lookahead into `src'.
+            let nxt = peek adv; in
+            if nxt == null then
+              (if more then
+                throw "cpp: line ${toString t.line}: the function-like macro `${t.text}' is the last token on its logical line, so whether the line after it opens an argument list cannot be decided here. poc/08-cpp expands one logical line at a time; task-077"
+              else { st = adv; out = [ cur ]; })
+            else if nxt.tok.kind != "(" then { st = adv; out = [ cur ]; }
+            else
+              let
+                g = gather t adv;
+                want = b.length m.params;
+                args = if g.empty && want == 0 then [ ] else g.args;
+              in
+              if b.length args != want then
+                throw "cpp: line ${toString t.line}: `${t.text}' was defined on line ${
+                  toString m.line} with ${toString want} parameter(s) and is invoked with ${
+                  toString (b.length args)} argument(s)"
+              else { st = pushFrame g.st (substituted t h lvl m args); out = [ ]; };
+
+      mk = k: st:
+        let cur = peek st; in
+        if cur == null then { key = k; inherit st; out = [ ]; done = true; }
+        else let r = advance cur st; in { key = k; inherit (r) st out; done = false; };
+
+      steps = b.genericClosure {
+        startSet = [ (mk 0 { stack = [ ]; i = 0; }) ];
+        operator = it:
+          if it.done then [ ]
+          else
+            let x = mk (it.key + 1) it.st; in
+            b.seq (forceCur x.st) (forceStep x [ x ]);
+      };
+    in
+    if depth > MAX_NEST then
+      throw "cpp: a macro argument is expanded more than ${toString MAX_NEST} levels deep. Expanding an argument before it is substituted is the one place expansion still recurses, one evaluator frame per level (decision-001); see task-071"
+    else if nSrc == 0 then [ ]
+    # A LIST WITH NO MACRO NAME IN IT IS ITS OWN ANSWER. The worklist
+    # allocates a cursor, a step item and an output list per token, and most
+    # lines of C name no macro at all, so this is worth having -- measured on
+    # memory.py's ladder input at 800 functions it is 312868 kB of peak RSS
+    # against 324544 kB, about 4%. It is not worth more than that, and
+    # task-079 carries what would be: batching a macro-free RUN inside a line
+    # that does name one. `invokes' rather than a second membership rule, so
+    # the fast path and the slow one cannot come to different conclusions
+    # about what a macro name is.
+    # The same test `expandList' makes before it wraps anything, and both are
+    # wanted: the outer one saves the WRAPPING for a line that names no macro,
+    # and this one is what `expArg' reaches, since an argument arrives
+    # already wrapped. The cost of having both is one attrset-membership test
+    # per token of a line that does name one.
+    else if !(b.any (x: invokes macros x.tok) src) then src
+    else b.concatLists (map (it: it.out) steps);
+
+  expandList = macros: more: ts:
+    if !(b.any (invokes macros) ts) then ts
     else
-      let
-        m = macros.${t.text};
-        hidden' = hidden // { ${t.text} = true; };
-      in
-      # `map (fromBody t)' runs once per ENCLOSING level, so a token nested d
-      # deep is rewritten d times: the cost of one invocation is
-      # O(depth x expansion) rather than O(expansion). Bounded by MAX_NEST and
-      # by expansions that are a handful of tokens; worth knowing before
-      # task-013.02 makes an expansion large.
-      map (fromBody t) (b.concatMap (expandTok macros hidden' (depth + 1)) m.body);
-
-  expandList = macros: ts: b.concatMap (expandTok macros { } 0) ts;
+      map (x: x.tok)
+        (expandItems macros 0 more (map (t: { tok = t; hide = { }; nest = 0; }) ts));
 
   # ---- #if expressions ---------------------------------------------------
   # `defined X' and `defined ( X )' are resolved BEFORE expansion, because
@@ -335,7 +786,8 @@ let
       # descent, whatever an earlier version of this comment claimed. A `#if'
       # of 3000 flat `+' terms dies with "stack overflow; max-call-depth
       # exceeded". task-074 carries it, and the same shape is in `logand',
-      # `logor' and `conditional'.
+      # `logor', `conditional' and in `unary', which recurses once per PREFIX
+      # operator so that `#if ---...-0' tracks input length just as `+' does.
       level = ops: below: i:
         let
           go = acc:
@@ -498,32 +950,72 @@ let
       # numbers and a ceiling on the top one so it cannot get quietly worse;
       # task-072 carries what it would take to make it linear, and why the
       # obvious remedies (bucket by first character, hash the name) are each
-      # wrong for a different reason. It is left as it is here because slice 1
-      # has no `#include' and nobody writes four thousand defines by hand.
+      # wrong for a different reason. It is left as it is here because nobody
+      # writes four thousand defines by hand -- and slice 2 made each entry
+      # BIGGER, with a parameter list and a compiled replacement plan, which
+      # moved the 2000-macro point from 37 MB to 40. task-013.03 is
+      # `#include', and one real header chain is a four-figure macro count.
       defineIn = st: ts: dline:
         let
           nameTok = if ts == [ ] then throw "cpp: line ${toString dline}: `#define' with no macro name" else b.head ts;
           name = nameTok.text;
-          body = b.tail ts;
-          first = b.head body;
+          all = b.tail ts;
+          first = b.head all;
           sameSpelling = xs: ys:
             b.length xs == b.length ys
             && b.all (i:
               let x = b.elemAt xs i; y = b.elemAt ys i; in
               x.text == y.text && (x.ws == "") == (y.ws == ""))
               (b.genList (i: i) (b.length xs));
-          hashes = b.filter (t: t.kind == "#") body;
-          # `##' reaches here as two `#' tokens with nothing between them --
-          # poc/02-lexer has no `##' punctuator, deliberately, because `#' is
-          # the preprocessor's and the lexer leaves it alone. Telling the two
-          # apart matters: they are different operators, and must-fail.nix
-          # cannot distinguish two cases that throw the same sentence.
-          pastes = b.filter
-            (i: (b.elemAt body i).kind == "#" && (b.elemAt body (i + 1)).kind == "#"
-              && (b.elemAt body (i + 1)).ws == "")
-            (b.genList (i: i) (if body == [ ] then 0 else b.length body - 1));
+
+          # WHAT MAKES A MACRO FUNCTION-LIKE is the `(' being ADJACENT to the
+          # name, C89 6.8.3: `#define F(x) x' takes a parameter and
+          # `#define F (x) x' is an object-like macro whose body starts with a
+          # parenthesis. `first.glue' as well as an empty `ws', because
+          # `#define F\<newline>(x) x' is adjacent after ISO C's phase 2 and
+          # its `(' carries the splice as its trivia rather than nothing at
+          # all -- `glue' is exactly "the trivia is a continuation and nothing
+          # else" (task-008).
+          funcLike = all != [ ] && first.kind == "(" && (first.ws == "" || first.glue);
+
+          # A parameter list holds identifiers and commas and nothing else, so
+          # the FIRST `)' ends it: there is nothing that could nest inside
+          # one. A malformed list is caught by the shape check below rather
+          # than by the search, which is why the search can be this simple.
+          closes = b.filter (j: (b.elemAt all j).kind == ")")
+            (b.genList (i: i) (b.length all));
+          pClose = if closes == [ ] then 0 else b.head closes;
+          pToks = b.genList (j: b.elemAt all (j + 1)) (if pClose > 0 then pClose - 1 else 0);
+          nP = b.length pToks;
+          # Identifiers at the even positions, commas at the odd ones, and an
+          # odd number of tokens -- which rejects `(a,)' and `(a b)' together.
+          # A parameter may be spelled like a keyword: to the preprocessor
+          # `int' is an identifier, so this tests TEXT and not `kind'.
+          shapeOk =
+            (nP == 0 || b.bitAnd nP 1 == 1)
+            && b.all
+              (j: let t = b.elemAt pToks j; in
+                if b.bitAnd j 1 == 0 then isIdent t.text else t.kind == ",")
+              (b.genList (i: i) nP);
+          params = b.genList (j: (b.elemAt pToks (2 * j)).text) ((nP + 1) / 2);
+          dupes = b.filter
+            (j: b.elem (b.elemAt params j) (b.genList (k: b.elemAt params k) j))
+            (b.genList (i: i) (b.length params));
+          paramIx = b.listToAttrs
+            (b.genList (j: { name = b.elemAt params j; value = j; }) (b.length params));
+
+          body =
+            if funcLike
+            then b.genList (j: b.elemAt all (pClose + 1 + j)) (b.length all - pClose - 1)
+            else all;
+          myParams = if funcLike then params else null;
           prev = st.macros.${name} or null;
-          m = { inherit name body; line = dline; };
+          m = {
+            inherit name body;
+            params = myParams;
+            line = dline;
+            plan = planOf name (if funcLike then paramIx else { }) (!funcLike) body dline;
+          };
         in
         if !(isIdent name) then
           throw "cpp: line ${toString dline}: `${name}' is not a macro name; `#define' takes an identifier"
@@ -532,25 +1024,41 @@ let
         # silently never used.
         else if name == "defined" then
           throw "cpp: line ${toString dline}: `defined' cannot be a macro name; it is the operator a `#if' expression uses to ask whether a name is defined"
-        # `first.glue' as well as an empty `ws': `#define F\<newline>(x) x'
-        # is function-like after ISO C's phase 2, and its `(' has the splice
-        # as its trivia rather than nothing at all. Without that clause an
-        # explicitly out-of-scope feature is ACCEPTED as an object-like macro
-        # instead of refused. `glue' is exactly "the trivia is a continuation
-        # and nothing else", which is adjacency after phase 2.
-        else if body != [ ] && first.kind == "(" && (first.ws == "" || first.glue) then
-          throw "cpp: line ${toString dline}: `${name}(' is a function-like macro, which slice 1 does not do; parameters, `#' and `##' are task-013.02"
-        else if pastes != [ ] then
-          throw "cpp: line ${toString dline}: `##' in the replacement list of `${name}': token paste is task-013.02"
-        else if hashes != [ ] then
-          throw "cpp: line ${toString dline}: `#' in the replacement list of `${name}': stringify is task-013.02"
+        else if funcLike && closes == [ ] then
+          throw "cpp: line ${toString dline}: the parameter list of `${name}(' is never closed; `#define' wants a `)' before the replacement list"
+        else if funcLike && !shapeOk then
+          throw "cpp: line ${toString dline}: the parameter list of `${name}(' is not a list of identifiers separated by commas"
+        else if funcLike && dupes != [ ] then
+          throw "cpp: line ${toString dline}: `${name}(' names the parameter `${
+            b.elemAt params (b.head dupes)}' twice, and a substitution could not say which one it meant"
         # C89 6.8.3 says a redefinition SHALL be identical. gcc makes that a
         # warning and takes the new body; there is no warning channel here,
         # and a body that quietly changed under a second `#define' is the
         # kind of thing that is found three stages later, so it is refused.
+        #
+        # THE PARAMETER LIST IS HALF OF "IDENTICAL", and it gets its own
+        # sentence rather than being folded into the one below: `#define
+        # F(a,b) a' and `#define F(a,c) a' have the same replacement list
+        # spelled the same way and are still two different macros, and a
+        # diagnostic that said "a different replacement list" about a pair of
+        # identical replacement lists would send the reader looking at the
+        # wrong half of the line. It is also the only thing that TESTS the
+        # comparison: with one message for both, a check that stopped
+        # comparing parameters would be indistinguishable from one that
+        # stopped comparing bodies.
+        else if prev != null && prev.params != myParams then
+          throw "cpp: line ${toString dline}: `${name}' is redefined with a different parameter list; it was defined on line ${toString prev.line}, and C89 6.8.3 requires a redefinition to be identical. `#undef' it first"
         else if prev != null && !(sameSpelling prev.body body) then
           throw "cpp: line ${toString dline}: `${name}' is redefined with a different replacement list; it was defined on line ${toString prev.line}, and C89 6.8.3 requires a redefinition to be identical. `#undef' it first"
-        else st // { macros = st.macros // { ${name} = b.deepSeq m m; }; };
+        # THE PLAN IS FORCED HERE, not left for the first invocation. `##' at
+        # either end of a replacement list, and a `#' with no parameter after
+        # it, are constraint violations of the `#define' itself: gcc reports
+        # them at the definition whether or not the macro is ever used, and a
+        # macro that is defined wrongly and never invoked would otherwise go
+        # through in silence. The cost is one forcing per `#define', which is
+        # what the table's own `deepSeq' would have paid on first lookup.
+        else b.seq (b.deepSeq m.plan true)
+          (st // { macros = st.macros // { ${name} = b.deepSeq m m; }; });
 
       oneName = what: ts: dline:
         if b.length ts == 1 && isIdent (b.head ts).text then (b.head ts).text
@@ -595,7 +1103,7 @@ let
       # with no #line in it rewrites no token at all.
       relocate = st: ts: dline: endLine: what:
         let
-          expanded = expandList st.macros ts;
+          expanded = expandList st.macros false ts;
           numTok = if expanded == [ ] then throw "cpp: line ${toString dline}: `${what}' with no line number" else b.head expanded;
           rest = b.tail expanded;
           nameTok = b.head rest;
@@ -603,8 +1111,11 @@ let
           # 8 here and decimal 10 to gcc and to lcc's resynch(). The standard
           # takes a digit sequence, which is decimal whatever it starts with.
           # The overflow check below is what this call is still wanted for.
-          num = (const.evalICON numTok.text).value;
-          numWarnings = (const.evalICON numTok.text).warnings;
+          # Bound ONCE: this used to be two separate `const.evalICON' calls on
+          # the same text, one for the value and one for the warnings.
+          icon = const.evalICON numTok.text;
+          num = icon.value;
+          numWarnings = icon.warnings;
         in
         if numTok.kind != "ICON" || b.match "[0-9]+" numTok.text == null then
           throw "cpp: line ${toString dline}: `${what}' wants a decimal line number, not `${numTok.text}'"
@@ -654,13 +1165,13 @@ let
         # even evaluate. The nesting level is still pushed, or `#endif' would
         # close the wrong one.
         else if what == "if" then
-          push st (!skipping && evalExpr (zeroIdents (expandList st.macros (resolveDefined st.macros args))) dline)
+          push st (!skipping && evalExpr (zeroIdents (expandList st.macros false (resolveDefined st.macros args))) dline)
         else if what == "elif" then
           if frame.kind == "else" then throw "cpp: line ${toString dline}: `#elif' after `#else'"
           else
             let
               take = frame.parentActive && !frame.taken
-                && evalExpr (zeroIdents (expandList st.macros (resolveDefined st.macros args))) dline;
+                && evalExpr (zeroIdents (expandList st.macros false (resolveDefined st.macros args))) dline;
             in
             st // {
               cond = [ (frame // { active = take; taken = frame.taken || take; }) ] ++ b.tail st.cond;
@@ -686,13 +1197,22 @@ let
         else if what == "line" then relocate st args dline endLine "#line"
         else if (b.head rest).kind == "ICON" then relocate st rest dline endLine "#"
         else if what == "include" then
-          throw "cpp: line ${toString dline}: `#include' is task-013.03, which waits on task-070 -- where a header resolves from, and how that survives a `nix flake check' with no --impure, are not decided yet"
+          throw "cpp: line ${toString dline}: `#include' is task-013.03. decision-010 settled where a header comes from -- the C89 freestanding set, carried in this repository so the path is flake-relative and a `nix flake check' needs no --impure -- but the directive itself is not written yet"
         else
-          throw "cpp: line ${toString dline}: `#${what}' is not a directive slice 1 implements. Slice 1 is #define/#undef/#if/#ifdef/#ifndef/#elif/#else/#endif/#line; what the minimal preprocessor deliberately leaves out is tracked in task-014";
+          throw "cpp: line ${toString dline}: `#${what}' is not a directive this preprocessor implements. What it does is #define/#undef/#if/#ifdef/#ifndef/#elif/#else/#endif/#line; what the minimal preprocessor deliberately leaves out is tracked in task-014";
 
-      textLine = st: ts:
+      # `more' says whether the line after this one could open an argument
+      # list that this one left unclosed. A function-like macro name at the
+      # very end of a line is an ordinary identifier unless the next line
+      # begins with `(', and this stage expands one logical line at a time, so
+      # THAT case -- and only that case -- is refused naming task-077 rather
+      # than quietly taking the first answer and compiling `y = F (1)' as a
+      # call. Two things narrow it, and both are one `elemAt': a directive
+      # does not count, because a directive ends any invocation, and a next
+      # line that does not START with `(' cannot be opening one.
+      textLine = st: ts: more:
         let
-          out = expandList st.macros ts;
+          out = expandList st.macros more ts;
           shift = t: if st.delta == 0 then t else t // { line = t.line + st.delta; };
           moved = map shift out;
         in
@@ -703,6 +1223,8 @@ let
           toks = moved;
         }];
 
+      firstKindOf = k: (code (b.elemAt starts k)).kind;
+
       stepAt = k: st0:
         let
           ts = groupAt k;
@@ -711,7 +1233,7 @@ let
         in
         if isDirective then { key = k; st = directive st ts (here ts); out = [ ]; }
         else if !(live st) then { key = k; inherit st; out = [ ]; }
-        else { key = k; inherit st; out = textLine st ts; };
+        else { key = k; inherit st; out = textLine st ts (k + 1 < nLines && firstKindOf (k + 1) == "("); };
 
       initial = { macros = { }; cond = [ ]; delta = 0; inherit file; };
 
@@ -757,8 +1279,13 @@ let
       tokens = b.concatLists (map (l: l.toks) lines)
         ++ [ (if final.delta == 0 then eoi else eoi // { line = eoi.line + final.delta; }) ];
       # What the file ended up defining, so a harness can assert a `#undef'
-      # removed something rather than trusting that nothing used it.
-      macros = b.mapAttrs (_: m: map (t: t.text) m.body) final.macros;
+      # removed something rather than trusting that nothing used it. The
+      # PARAMETER LIST is part of that: a function-like macro whose parameters
+      # were dropped is still a macro with the right body, and the token
+      # stream only notices once something invokes it.
+      macros = b.mapAttrs
+        (_: m: { inherit (m) params; body = map (t: t.text) m.body; })
+        final.macros;
     };
 
   # ---- text out, for the consumers that need text ------------------------

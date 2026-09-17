@@ -39,7 +39,7 @@ let
   # DECLARED, and checked for EQUALITY rather than as floors. A floor can be
   # spent downward in silence; poc/lib/mutant.sh makes the argument about
   # mutation counts and it is just as true of a corpus.
-  declaredCases = 18;
+  declaredCases = 22;
   declaredIdentity = 26;
   # The smallest corpus file still has to produce real work. A file that
   # lexed to nothing would compare equal to another file that lexed to

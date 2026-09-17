@@ -2,7 +2,7 @@
 # The minimal-C-preprocessor PoC: hand-written expansion, `#if' and
 # line-number tables, reject paths and their messages, two programs
 # preprocessed, compiled and RUN, lcc's own frontend reading our linemarkers,
-# a token-stream differential against gcc -E over 43 translation units, and a
+# a token-stream differential against gcc -E over 48 translation units, and a
 # mutation test of this harness against itself.
 #
 # The mutation stage is not decoration. An earlier harness in this repo printed
@@ -134,16 +134,23 @@ memory_check="python3 $mut/memory.py $mut"
 # case that no OTHER mutation breaks -- and the distinctness loop at the end
 # is what proves that choice rather than this paragraph.
 
+# Against the PROGRAM rather than the table, and the reason is worth stating:
+# with nothing expanded at all, `#if BIG(3,5) == 5' in the case table leaves a
+# `(' where a value was wanted and check.nix dies on THAT -- a message the
+# `defined()' mutation below already owns. run/macros.c says the same thing
+# without ambiguity: a program whose constants are macros does not compile.
 mutate "cpp: a macro is not expanded at all" \
-       "a macro with a one-token body: expected" \
-       "sed -i 's@^  expandList = macros: ts:.*@  expandList = _: ts: ts;@' cpp.nix" \
-       "$table_check"
+       "undeclared identifier \`BIAS'" \
+       "sed -i 's@^  expandList = macros: more: ts:@  expandList = _: _: ts: ts; unusedExpandList = macros: more: ts:@' cpp.nix" \
+       "$execute_check"
 
-# NOT "loops forever": without the hide set the expansion of a self-referential
-# macro runs until the nesting cap, so the symptom is the CAP's diagnostic.
+# NOT "loops forever": `nest' counts frames whatever the hide set says, so a
+# self-referential macro with nothing hiding it runs until the CAP and the
+# symptom is the cap's diagnostic. That is the whole reason `nest' exists
+# beside the hide set -- a harness cannot mutation-test a hang.
 mutate "cpp: the hide set stops hiding, so a macro re-expands inside itself" \
        "nested more than 200 macros deep" \
-       "sed -i 's@if !(invokes macros t) || hidden ? \${t.text} then \[ t \]@if !(invokes macros t) then [ t ]@' cpp.nix" \
+       "sed -i 's@if !(invokes macros t) || cur.hide ? \${t.text} then@if !(invokes macros t) then@' cpp.nix" \
        "$table_check"
 
 # The symptom is not a wrong macro table but a THROW: with the entry still
@@ -265,10 +272,15 @@ mutate "cpp: an unsigned divide stops converting its operands" \
        "sed -i 's@let d = divisor \"/\" y; in if u then x.v / d.v else@let d = divisor \"/\" y; in if false then x.v / d.v else@' cpp.nix" \
        "$table_check"
 
-mutate "cpp: a function-like #define hidden behind a continuation is accepted" \
-       "'a function-like macro across a continuation' did not throw" \
+# The `glue' clause, which is adjacency AFTER ISO C's phase 2. Without it
+# `#define G\<newline>(x) x + 1' is quietly an OBJECT-LIKE macro and `G(2)'
+# expands to a token stream nobody wrote. In slice 1 that was a refusal and so
+# a must-fail case; now it is an expansion, so the case that holds it is a
+# token stream and the mutation lands in the table.
+mutate "cpp: a function-like #define hidden behind a continuation is object-like instead" \
+       "a \`(' behind a continuation is still adjacent, so this is function-like: expected" \
        "sed -i 's@(first.ws == \"\" || first.glue)@(first.ws == \"\")@' cpp.nix" \
-       "$message_check"
+       "$table_check"
 
 mutate "cpp: a directive line is emitted as ordinary tokens" \
        "our token stream against gcc -E" \
@@ -285,13 +297,16 @@ mutate "cpp: #include is quietly ignored instead of naming the slice that will d
        "sed -i 's@^        else if what == \"include\" then\$@        else if what == \"include\" then st else if false then@' cpp.nix" \
        "$message_check"
 
-mutate "cpp: a function-like #define is accepted as an object-like one" \
-       "'a function-like macro' did not throw" \
-       "sed -i 's@else if body != \[ \] \&\& first.kind == \"(\" \&\& (first.ws == \"\" || first.glue) then@else if false then@' cpp.nix" \
-       "$message_check"
+# And the other half of the same rule: an object-like macro whose body BEGINS
+# with a parenthesis is not a function-like macro. `#define F (x) x + 1' and
+# `#define F(x) x + 1' differ by one space and by nothing else.
+mutate "cpp: a \`(' with a space in front of it opens a parameter list anyway" \
+       "the parameter list of \`LP(' is never closed" \
+       "sed -i 's@      funcLike = all != \[ \] \&\& first.kind == \"(\" \&\& (first.ws == \"\" || first.glue);@      funcLike = all != [ ] \&\& first.kind == \"(\";@' cpp.nix" \
+       "$table_check"
 
 mutate "cpp: the refusal of an unimplemented directive stops naming task-014" \
-       "threw, but its diagnostic does not contain" \
+       "'an unimplemented directive still points at the task that records the omission' threw" \
        "sed -i 's@is tracked in task-014@is not implemented@' cpp.nix" \
        "$message_check"
 
@@ -311,6 +326,145 @@ mutate "cpp: no #elif arm can fire, so the program runs and prints the wrong num
        "sed -i 's@^                \&\& evalExpr@                \&\& false \&\& evalExpr@' cpp.nix" \
        "$execute_check"
 
+# --- mutations of slice 2: parameters, `#' and `##' ---------------------
+#
+# The fragments below are chosen with the same care the note above asks for.
+# Several of these mutations break MANY expansion cases at once, and
+# check.nix reports every one of them, so a fragment has to belong to a case
+# that no OTHER mutation in this list breaks. Where two mutations could not
+# be separated that way -- the paste ones, which nest -- one of them is run
+# against a DIFFERENT stage instead, and the program that has to run is the
+# strongest of those.
+
+# WHERE PRE-EXPANSION IS ACTUALLY VISIBLE, and it is not where it looks.
+# `ID(V)' with `#define V 7' gives 7 whether or not the argument was expanded
+# before substitution, because the raw `V' is rescanned in the frame and
+# expands there anyway. The two-level stringify idiom is the case that
+# separates them: `#' takes its operand RAW, so `XSTR(V)' is "7" only if the
+# argument was expanded on the way in, and "V" if it was not.
+mutate "cpp: an argument is not expanded before it is substituted" \
+       "and the two-level idiom is what expands it: expected" \
+       "sed -i 's@            else if solo then expArg e.idx@            else if solo then rawArg e.idx@' cpp.nix" \
+       "$table_check"
+
+# And the opposite error: expanding an operand of `##', which C89 6.8.3.1
+# exempts. `CAT(V,x)' is `Vx' and not `7x'.
+# The symptom is not a wrong token stream but a REFUSAL: with `V' expanded
+# first, the paste is `7' against `x' and `7x' is not a token at all.
+mutate "cpp: the operand of ## is expanded before it is pasted" \
+       "pastes \`7' and \`x'" \
+       "sed -i 's@            else if solo then expArg e.idx@            else if true then expArg e.idx@' cpp.nix" \
+       "$table_check"
+
+mutate "cpp: stringify stops collapsing the whitespace inside its argument" \
+       "# collapses internal whitespace to exactly one space: expected" \
+       "sed -i 's@        (if j != 0 \&\& t.ws != \"\" then \" \" else \"\") + spell t;@        spell t;@' cpp.nix" \
+       "$table_check"
+
+mutate "cpp: stringify stops escaping what is inside a literal" \
+       "# escapes the backslash inside a character constant: expected" \
+       "sed -i 's@^  spell = t:@  spell = t: t.text; unusedSpell = t:@' cpp.nix" \
+       "$table_check"
+
+# THE PASTE ITSELF, and it is run against the PROGRAM rather than the table
+# for a reason: every other paste mutation below breaks a subset of the cases
+# this one breaks, so no fragment of check.nix's output could tell them apart.
+# run/funcs.c builds the name of the function it calls with `##', so a paste
+# that joined nothing leaves `step' undeclared and the program does not
+# compile -- which is a stronger statement than a table row anyway.
+mutate "cpp: ## joins nothing, keeping only the token on its left" \
+       "takes the address of \`step'" \
+       "sed -i 's@                tok = pasteTok use lp.tok rp.tok;@                tok = lp.tok;@' cpp.nix" \
+       "$execute_check"
+
+mutate "cpp: a chain of pastes joins right to left" \
+       "a chain of pastes joins its operands in the order they were written: expected" \
+       "sed -i \"s@b.foldl' (acc: j: joinTo acc (one j)) (one from)@b.foldl' (acc: j: joinTo (one j) acc) (one from)@\" cpp.nix" \
+       "$table_check"
+
+mutate "cpp: a ## operand that is an empty argument swallows the other side" \
+       "a paste with an empty operand keeps the other side: expected" \
+       "sed -i 's@            else if right == \[ \] then left@            else if right == [ ] then [ ]@' cpp.nix" \
+       "$table_check"
+
+# Argument splitting. With the depth ignored, `SECOND((1,2),3)' is three
+# arguments to a two-parameter macro, so the symptom is the count check
+# rather than a wrong token stream.
+mutate "cpp: a comma inside parentheses splits the argument list" \
+       "with 2 parameter(s) and is invoked with 3 argument(s)" \
+       "sed -i 's@              else if k == \",\" \&\& s.depth == 1 then@              else if k == \",\" then@' cpp.nix" \
+       "$table_check"
+
+# `Z()' is NO arguments to a parameterless macro and ONE empty argument to a
+# one-parameter one; nothing in the token stream tells those apart.
+mutate "cpp: an empty argument list is one empty argument even with no parameters" \
+       "with 0 parameter(s) and is invoked with 1 argument(s)" \
+       "sed -i 's@                args = if g.empty \&\& want == 0 then \[ \] else g.args;@                args = g.args;@' cpp.nix" \
+       "$table_check"
+
+# Only the too-FEW direction checked, which is the half a reader would write
+# by accident. Too many arguments then expands quietly, using the ones it has
+# and dropping the rest, and must-fail is the only stage that looks.
+mutate "cpp: the argument count is checked in one direction only" \
+       "preprocessed fine: a function-like macro invoked with too many arguments" \
+       "sed -i 's@              if b.length args != want then@              if b.length args < want then@' cpp.nix" \
+       "$must_fail"
+
+# The paint has to reach the ARGUMENT tokens, not only the body: `ID(ID)(7)'
+# hands back a painted `ID' which must not then be invoked by the `(7)' that
+# follows it.
+mutate "cpp: the blue paint does not reach the tokens an argument was made of" \
+       "a painted name followed by \`(' is not an invocation: expected" \
+       "sed -i 's@            hide = x.hide // h;@            hide = x.hide;@' cpp.nix" \
+       "$table_check"
+
+# The two refusals that keep an invocation inside one logical line. Each is a
+# SILENT wrong answer without them: the first compiles `y = F (1)' as a call,
+# the second splits an argument list across a line boundary.
+# THE MUTATION FOR A SILENT MISCOMPILE A CROSS-MODEL REVIEW FOUND. `#'
+# reproduces the spelling its argument was WRITTEN with, and an argument can
+# come out of another macro's replacement list -- so a replacement list has to
+# hand its tokens on with their own trivia. Give them all one space and
+# `#define WHERE Q(file.c:12)' stringifies to "file . c : 12", which is a
+# wrong string literal in the compiled program and no diagnostic anywhere.
+mutate "cpp: an expansion gives every token one space, so # cannot reproduce a spelling" \
+       "# reproduces the spelling of an argument that came out of a macro body: expected" \
+       "sed -i 's@^  fromBody = use: bt: mkTok use { inherit (bt) kind text ws; };@  fromBody = use: bt: mkTok use { inherit (bt) kind text; };@' cpp.nix" \
+       "$table_check"
+
+# The OTHER side of task-077's refusal: it has to fire only when the next line
+# could actually be opening an argument list. Refusing whenever anything
+# follows turns `int y = F' + `;' -- an ordinary identifier to gcc -- into a
+# hard error.
+mutate "cpp: a macro name ending a line is refused whatever follows it" \
+       "is the last token on its logical line" \
+       "sed -i 's@firstKindOf (k + 1) == \"(\"@true@' cpp.nix" \
+       "$table_check"
+
+mutate "cpp: a function-like macro name ending a line is taken as an identifier" \
+       "'a function-like macro name at the end of a logical line' did not throw" \
+       "sed -i 's@              (if more then@              (if false then@' cpp.nix" \
+       "$message_check"
+
+# `##' is two `#' tokens with nothing between them -- and a continuation is
+# nothing, after ISO C's phase 2. Without that clause `a#\<newline>#b' is not
+# a paste, and the diagnostic it earns calls a valid replacement list
+# malformed, which is worse than doing nothing.
+mutate "cpp: a ## split by a continuation stops being one operator" \
+       "is followed by \`#', which is not one of its parameters" \
+       "sed -i 's@        \&\& ((at (i + 1)).ws == \"\" || (at (i + 1)).glue);@        \&\& (at (i + 1)).ws == \"\";@' cpp.nix" \
+       "$table_check"
+
+mutate "cpp: ## at the beginning of a replacement list is accepted" \
+       "'## at the beginning of a replacement list' did not throw" \
+       "sed -i 's@          (if i == 0 then@          (if false then@' cpp.nix" \
+       "$message_check"
+
+mutate "cpp: a redefinition may change the parameter list" \
+       "'a redefinition with a different parameter list' did not throw" \
+       "sed -i 's@        else if prev != null \&\& prev.params != myParams then@        else if false then@' cpp.nix" \
+       "$message_check"
+
 # --- mutations of the harness ---
 mutate "harness: the expansion table is emptied" \
        "0 expansion cases, against the" \
@@ -326,6 +480,27 @@ mutate "harness: the line-number table is emptied" \
        "0 relocation cases, against the" \
        "sed -i 's@^  relocations = \[@  relocations = [ ]; unusedRelocations = [@' cases.nix" \
        "$table_check"
+
+mutate "harness: the macro-table case list is emptied" \
+       "0 macro-table cases, against the" \
+       "sed -i 's@^  tables = \[@  tables = [ ]; unusedTables = [@' cases.nix" \
+       "$table_check"
+
+# THE CHECK WHOSE WHOLE JOB IS TO CATCH ir/unsig.c's DIVISOR OF 7, and until
+# now nothing had ever shown it firing. `blind' asserts that no program's
+# WRONG answers equal its right one; point one of them at the right answer and
+# it has to say so, because a case that prints the same number either way
+# proves nothing by running.
+# THE FRAGMENT IS THE INTERPOLATED FORM, `macros.c with 7 prints', and not the
+# sentence after it. `mutate' below matches against everything nix printed,
+# and nix echoes the SOURCE around each frame -- so the literal sentence in
+# execute.nix's throw appears in the output of every mutation that makes
+# execute.nix fail, whatever it failed on. Only the interpolated text exists
+# solely in the rendered message. task-083 is the general fix.
+mutate "harness: a program's wrong answer is the same as its right one" \
+       "macros.c with 7 prints the same answer" \
+       "sed -i 's@      instead = \[ (1000 + 3 \* triangle 7 + 2 \* 7)@      instead = [ (7 + 3 * triangle 7 + 2 * 7)@' execute.nix" \
+       "$execute_check"
 
 mutate "harness: the reject table is emptied" \
        "must-fail holds 0 cases" \
@@ -388,26 +563,35 @@ mutate "harness: lcc's listing is no longer diffed against ours" \
        "sed -i 's@  rcc-rv32 < \"\$work/ir/\$name.i\" > \"\$work/ir/\$name.lcc\"@  : < \"\$work/ir/\$name.i\" > \"\$work/ir/\$name.lcc\"@' frontend.sh" \
        "$frontend_check"
 
+# EVERY fragment is judged before anything exits, rather than the first one
+# that is wrong. With fifty-odd mutations a fragment that belongs to two of
+# them is common while the list is being written, and an `exit 1' on the first
+# collision hides the other five behind a seven-minute rerun each. task-028
+# found this on poc/06-constants and the loop below is that finding applied:
+# collect, report all, then fail once.
+bad=0
 for i in "${!names[@]}"; do
   case "${outputs[$i]}" in
     *"${fragments[$i]}"*) ;;
     *) echo "MUTATION '${names[$i]}' failed, but not with \"${fragments[$i]}\":" >&2
-       echo "${outputs[$i]}" >&2; exit 1 ;;
+       echo "${outputs[$i]}" >&2; bad=1; continue ;;
   esac
+  clash=0
   for j in "${!names[@]}"; do
     [ "$i" = "$j" ] && continue
     case "${outputs[$i]}" in
       *"${fragments[$j]}"*)
         echo "MUTATION '${names[$i]}' also reported \"${fragments[$j]}\"," >&2
         echo "which belongs to '${names[$j]}' -- the checks are not distinguishing" >&2
-        exit 1 ;;
+        bad=1; clash=1 ;;
     esac
   done
-  echo "  mutation detected: ${names[$i]}"
+  [ "$clash" = 0 ] && echo "  mutation detected: ${names[$i]}"
 done
+[ "$bad" = 0 ] || exit 1
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=39
+declared=58
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2

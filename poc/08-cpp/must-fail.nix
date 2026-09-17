@@ -19,11 +19,23 @@
 # kind; an ordinary English word is not, because messages.sh greps nix's
 # output.
 #
-# WHICH REFUSALS NAME A TASK. Everything this slice DEFERS names the slice
-# that will do it -- task-013.02 for function-like macros and for `#'/`##',
-# task-013.03 and task-070 for `#include', task-014 for a directive the
-# minimal preprocessor does not implement at all, task-008 for the phase-2
-# splice, task-071 for the nesting cap. Refusals of MALFORMED INPUT -- an
+# DISTINCT FRAGMENTS, NOT DISTINCT THROW SITES, and the difference is
+# deliberate. Five entries here grep two different fragments out of two shared
+# diagnostics: both `#include' cases reach one throw, and the three
+# unimplemented-directive cases reach another. That is on purpose -- one of
+# each pair pins the DIRECTIVE'S NAME and the other pins the TASK ID, and a
+# refusal that kept its name while losing the task id is exactly the
+# regression the second one exists to catch. So the summary below says
+# "diagnostic fragment" and not "diagnostic": it is 45 refusals over fewer
+# than 45 throw sites, and saying otherwise would be a claim about the code
+# rather than about what is checked.
+#
+# WHICH REFUSALS NAME A TASK. Everything this preprocessor DEFERS names the
+# task that will do it -- task-013.03 and decision-010 for `#include',
+# task-014 for a directive the minimal preprocessor does not implement at
+# all, task-008 for the phase-2 splice, task-071 for the nesting cap,
+# task-077 for an invocation that does not fit on one logical line, task-078
+# for the `#' an object-like body has no parameter for. Refusals of MALFORMED INPUT -- an
 # `#endif' with nothing open, a `#line' with no number -- defer nothing and
 # name only what is wrong, because pointing a user at a task that will never
 # be done is worse than pointing them at nothing.
@@ -42,7 +54,7 @@ let
 
   # Declared and checked for EQUALITY. poc/lib/mutant.sh's argument about
   # mutation counts applies to tables too.
-  declaredCases = 36;
+  declaredCases = 45;
 
   # A chain of n macros each naming the next. Built rather than written out:
   # the cap is 200 deep and nobody is typing that.
@@ -61,60 +73,114 @@ let
       expect = "`#include' is task-013.03";
     }
     {
-      what = "#include names the decision that blocks it";
+      what = "#include names the decision that settled where a header comes from";
       src = "#include \"local.h\"\nint x;\n";
       control = "#if 0\n#include \"local.h\"\n#endif\nint x;\n";
-      expect = "task-070";
+      expect = "decision-010";
     }
     {
-      what = "a function-like macro";
-      # The control differs by ONE character: a space before the `(' makes the
-      # same text an object-like macro whose body starts with a parenthesis,
-      # which is C89's rule and the only thing that tells the two apart.
-      src = "#define F(x) x + 1\nint y = F(2);\n";
-      control = "#define F (x) x + 1\nint y = 2;\n";
-      expect = "`F(' is a function-like macro";
-    }
-    {
-      # The same feature, hidden: after ISO C's phase 2 this is `G(x) x' and
-      # so function-like, but the `(' carries the continuation as its trivia
-      # rather than nothing at all. Without the `glue' clause it is ACCEPTED
-      # as an object-like macro -- an out-of-scope feature let through
-      # instead of refused. The control puts a space before the backslash,
-      # which makes it object-like under phase 2 as well.
-      what = "a function-like macro across a continuation";
-      src = "#define G\\\n(x) x + 1\nint y;\n";
-      control = "#define G \\\n(x) x + 1\nint y;\n";
-      expect = "`G(' is a function-like macro";
-    }
-    {
-      what = "the # stringify operator in a replacement list";
+      what = "a bare # in an OBJECT-LIKE replacement list";
       # Object-like on both sides, so the one difference is the `#'. gcc
       # allows a `#' in an object-like body, where it means nothing; we
       # refuse it, because a `#' that reached the parser would be reported
       # as unpreprocessed input rather than as the operator it was meant to
-      # be.
+      # be. task-078 records the divergence so it is not read as a gap.
       src = "#define S # x\nint y;\n";
       control = "#define S x\nint y;\n";
-      expect = "stringify is task-013.02";
+      expect = "task-078";
     }
     {
-      what = "the ## paste operator in a replacement list";
-      src = "#define J a ## b\nint y;\n";
-      control = "#define J a b\nint y;\n";
-      expect = "token paste is task-013.02";
+      # The function-like case, where `#' DOES have a meaning -- it just has
+      # to be in front of a parameter. The control differs in one character:
+      # `q' against `p'.
+      what = "a # that is not in front of a parameter";
+      src = "#define S(p) # q\nint y;\n";
+      control = "#define S(p) # p\nint y;\n";
+      expect = "which is not one of its parameters";
+    }
+    {
+      what = "## at the beginning of a replacement list";
+      src = "#define J ## a\nint y;\n";
+      control = "#define J b ## a\nint y;\n";
+      expect = "begins with `##'";
+    }
+    {
+      what = "## at the end of a replacement list";
+      src = "#define J a ##\nint y;\n";
+      control = "#define J a ## b\nint y;\n";
+      expect = "ends with `##'";
+    }
+    {
+      # C89 6.8.3.3 leaves the result undefined when the two lexemes do not
+      # join into one token, and `+x' is two. gcc reports it as an error too.
+      # The control pastes the same way with operands that DO join.
+      what = "a ## whose result is not a single token";
+      src = "#define CAT(a,b) a##b\nint y = CAT(+,x);\n";
+      control = "#define CAT(a,b) a##b\nint y = CAT(1,2);\n";
+      expect = "C89 6.8.3.3 leaves that undefined";
+    }
+    {
+      what = "a function-like macro invoked with too few arguments";
+      src = "#define F(a,b) a + b\nint y = F(1);\n";
+      control = "#define F(a,b) a + b\nint y = F(1,2);\n";
+      expect = "with 2 parameter(s) and is invoked with 1 argument(s)";
+    }
+    {
+      what = "a function-like macro invoked with too many arguments";
+      src = "#define F(a) a\nint y = F(1,2);\n";
+      control = "#define F(a) a\nint y = F(1);\n";
+      expect = "with 1 parameter(s) and is invoked with 2 argument(s)";
+    }
+    {
+      # This stage expands one LOGICAL LINE at a time, so an argument list
+      # that opens on one line and closes on the next runs out of input. gcc
+      # accepts it; task-077 is what it would take to. Refused rather than
+      # mis-split, because the alternative is a silently different program.
+      what = "an argument list that is not closed on the line it opened on";
+      src = "#define F(a) a\nint y = F(1\n);\n";
+      control = "#define F(a) a\nint y = F(1);\n";
+      expect = "is not closed on this logical line";
+    }
+    {
+      # The other half of the same limit, and the one that would be SILENT:
+      # a function-like macro name at the very end of a line is an ordinary
+      # identifier if nothing follows it and an invocation if the next line
+      # opens with `('. Taking the first answer would compile `y = F (1)' as
+      # a function call instead of expanding the macro.
+      what = "a function-like macro name at the end of a logical line";
+      src = "#define F(a) a\nint y = F\n(1);\n";
+      control = "#define F(a) a\nint y = F(1);\n";
+      expect = "task-077";
+    }
+    {
+      what = "a parameter list with no closing parenthesis";
+      src = "#define F(a b\nint y;\n";
+      control = "#define F(a) b\nint y;\n";
+      expect = "is never closed";
+    }
+    {
+      what = "a parameter list that is not identifiers separated by commas";
+      src = "#define F(1) x\nint y;\n";
+      control = "#define F(a) x\nint y;\n";
+      expect = "is not a list of identifiers separated by commas";
+    }
+    {
+      what = "a parameter named twice";
+      src = "#define F(a,a) a\nint y;\n";
+      control = "#define F(a,b) a\nint y;\n";
+      expect = "twice, and a substitution could not say";
     }
     {
       what = "a directive the minimal preprocessor does not implement";
       src = "#pragma once\nint x;\n";
       control = "#if 0\n#pragma once\n#endif\nint x;\n";
-      expect = "`#pragma' is not a directive slice 1 implements";
+      expect = "`#pragma' is not a directive this preprocessor implements";
     }
     {
       what = "#error, which is a directive and still not one of ours";
       src = "#error this build is not supported\nint x;\n";
       control = "#if 0\n#error this build is not supported\n#endif\nint x;\n";
-      expect = "`#error' is not a directive slice 1 implements";
+      expect = "`#error' is not a directive this preprocessor implements";
     }
     {
       # The fragment here is the TASK, not the directive's name: task-014 is
@@ -290,6 +356,16 @@ let
       expect = "is not a macro name";
     }
     {
+      # Same name, same replacement list, spelled the same way -- and still
+      # two different macros, because the parameters are not the same ones.
+      # The control renames the parameter in BOTH the list and the body,
+      # which is a redefinition C89 6.8.3 does allow.
+      what = "a redefinition with a different parameter list";
+      src = "#define F(a,b) a\n#define F(a,c) a\nint x = F(1,2);\n";
+      control = "#define F(a,b) a\n#define F(a,b) a\nint x = F(1,2);\n";
+      expect = "is redefined with a different parameter list";
+    }
+    {
       what = "a redefinition with a different replacement list";
       src = "#define N 1\n#define N 2\nint x = N;\n";
       control = "#define N 1\n#define N 1\nint x = N;\n";
@@ -340,5 +416,5 @@ in
     else if wronglyRejected != [ ] then
       throw "must-fail: these controls should have preprocessed but threw: ${names wronglyRejected}"
     else
-      "must-fail: ${toString (b.length cases)} refusals, each with its own control and its own diagnostic\n";
+      "must-fail: ${toString (b.length cases)} refusals, each with its own control and its own diagnostic fragment\n";
 }

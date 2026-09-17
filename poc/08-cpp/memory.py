@@ -63,21 +63,36 @@ MACRO_LADDER = [500, 2000]
 DECLARED_POINTS = 2
 
 # Per TOKEN of the preprocessed stream, net of the evaluator's own start-up.
-# Measured at 8.6-8.8 kB against 5.3 kB per token for the bare lexer on the
-# same source -- and most of that gap is not cost but ARITHMETIC: the
-# preprocessed stream has fewer tokens, because the directive lines are gone,
-# so the same bytes are divided by a smaller number. The ceiling has room for
-# the evaluator to change and not enough for a second live token list.
-MAX_KB_PER_TOKEN = 12.0
-# What this stage adds to lexing the same text. Measured at 1.18-1.19. A
-# preprocessor that copied the token list rather than passing the lexer's own
-# attrsets through would show up here and nowhere else -- every other check in
-# this PoC is about what the tokens ARE.
-MAX_OVERHEAD = 1.60
+# Measured at 10.8-11.3 kB over three sessions, against 5.0 kB per token for the
+# bare lexer on the same source -- and part of that gap is not cost but
+# ARITHMETIC: the preprocessed stream has fewer tokens, because the directive
+# lines are gone, so the same bytes are divided by a smaller number. The
+# ceiling has room for the evaluator to change and not enough for a second
+# live token list.
+MAX_KB_PER_TOKEN = 14.0
+# What this stage adds to lexing the same text. Measured at 1.59, 1.60 and
+# 1.65 over three sessions on the same machine, which is the spread the ceiling has to be
+# read against. A preprocessor that copied the token list rather than passing
+# the lexer's own attrsets through would show up here and nowhere else --
+# every other check in this PoC is about what the tokens ARE.
+#
+# IT WAS 1.18-1.19 IN SLICE 1 AND THAT IS NOT INPUT DRIFT. Slice 2 replaced a
+# recursive expander with a genericClosure worklist, which allocates four
+# values per token of a line that names a macro where the recursion allocated
+# one. Measured on the OLD ladder input at 800 functions, so that only the
+# expander differs: 232308 kB net for slice 1's expander against 275792 kB for
+# slice 2's, both against 195848 kB for lexing alone -- 1.19x against 1.41x.
+# The rest of the way to 1.59-1.65x is this ladder, which now uses
+# function-like macros and a paste as well, because a ladder over slice 1's
+# input would be measuring slice 1. task-079 carries the cost, what was tried
+# against it and what would actually work; both ceilings carried 35% headroom
+# over the measurement before and carry about 20% now, on purpose.
+MAX_OVERHEAD = 1.95
 # What the macro table costs above lexing the same file, at the top of
-# MACRO_LADDER. Measured at 4 MB for 500 macros and 37 MB for 2000, and
-# 138 MB for 4000 -- growing far faster than the table does, because an
-# attrset updated with `//' copies every binding it already holds, so n
+# MACRO_LADDER. Measured at 4 MB for 500 macros and 40 MB for 2000 -- it was
+# 37 MB before each entry grew a parameter list and a compiled replacement
+# plan -- and 138 MB for 4000, growing far faster than the table does, because
+# an attrset updated with `//' copies every binding it already holds, so n
 # defines copy n^2/2 of them. This is an absolute on ONE point rather than a
 # ratio, deliberately: a ratio here would have to accept the growth it is
 # supposed to be watching. task-072 is what would make it linear.
@@ -211,6 +226,22 @@ def main(argv):
                   f"being built, so this measures nothing")
         added[n] = pp - lexed
     lo, hi = MACRO_LADDER[0], MACRO_LADDER[-1]
+    # THE TWO POINTS HAVE TO BE TWO DIFFERENT FILES, and that is checked on
+    # the TOKEN COUNTS rather than on the memory, because token counts are
+    # deterministic and peak RSS is not. Without it a ladder of [500, 500]
+    # clears every floor above, `pp > lexed' holds at each point, the top
+    # point sits under the ceiling, and this stage prints "1.0x for 1x the
+    # table" -- a false sentence -- and exits green. The growth figure below
+    # is PRINTED and not asserted, deliberately (the implementation is not
+    # linear and a verdict would have to accept the growth it is watching),
+    # which is exactly why the thing it is computed from needs a guard.
+    lexed_lo = net[("macros", "lexed", lo)][1]
+    lexed_hi = net[("macros", "lexed", hi)][1]
+    if lexed_hi <= lexed_lo:
+        fault(f"the macro ladder's two points lexed to {lexed_hi} and "
+              f"{lexed_lo} tokens, so they are not two different files and "
+              f"the growth figure below would compare a measurement with "
+              f"itself")
     growth = added[hi] / added[lo]
     print(f"  the macro table costs {added[lo] / 1024:.0f} MB above lexing at "
           f"{lo} macros and {added[hi] / 1024:.0f} MB at {hi} -- {growth:.1f}x "

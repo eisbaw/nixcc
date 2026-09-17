@@ -4,7 +4,7 @@ title: 'cpp slice 3: #include'
 status: To Do
 assignee: []
 created_date: '2026-09-16 17:28'
-updated_date: '2026-09-16 19:16'
+updated_date: '2026-09-17 09:38'
 labels:
   - frontend
   - preprocessor
@@ -51,4 +51,31 @@ THE OTHER COST IS THE ONE THE FIRST AXIS MEASURES. Preprocessing costs 8.6 kB of
 WHAT THE LEXER DOES WITH A HEADER IT HAS NEVER SEEN. A skipped group is still LEXED here -- `#if 0' around text with an unterminated quote or a stray `@' in it throws, where a real cpp only needs valid pp-tokens. Nothing in the corpora does it because nothing in the corpora is a real header. That is the first thing to check against one, along with task-046's byte-above-127 refusal in a string literal, which is a poc/06-constants change and not yours.
 
 AND THE PURITY QUESTION IS STILL task-070's. Everything in poc/08-cpp is a pure expression: `preprocess { src, file }' takes a STRING, which is exactly the shape that survives an attrset-of-headers answer with no readFile anywhere. If task-070 chooses that, the change here is an extra argument and nothing else; if it chooses the filesystem, the flake's checks output is where it breaks.
+
+FORWARD-CARRIED from task-013.02 (slice 2).
+
+WHAT YOU INHERIT. poc/08-cpp does the whole of `#define' now -- object-like and function-like, `#', `##', the blue paint -- and `#include' is the only directive left refused. That refusal names you and decision-010, and it lives in `directive' in cpp.nix; must-fail.nix pins both halves of its text.
+
+THE EXPANDER IS NO LONGER RECURSIVE, and that changes the shape of your problem. `expandItems' is a genericClosure worklist over a cursor: a position in the input list plus a stack of frames holding replacement lists still being rescanned. The whole thing runs per LOGICAL LINE, and `preprocess' still runs one outer step per logical line off the lexer's `bol' flag.
+
+THE INVARIANT YOU WILL BREAK IS STILL THE ONE SLICE 1 NAMED. The outer loop only `seq's the macro table, not `deepSeq's it, and what makes that safe is that a macro body closes over `groupAt k' -- over the single shared token list `lexer.lex src' produced once -- and never over the previous step's state. The moment a macro body comes from an INCLUDED file's own token list, re-check it. Slice 2 added one thing here: `defineIn' now forces the compiled replacement plan eagerly, because `##' at either end and a `#' with no parameter after it are constraint violations of the `#define' itself and gcc reports them whether or not the macro is used.
+
+THREE THINGS THAT ARE NOW YOUR PROBLEM RATHER THAN A CURIOSITY.
+
+  * task-080, THE HIDE SET IS MISSING ITS INTERSECTION. Not include's problem
+    directly, but it is the one place this expander knowingly disagrees with
+    gcc, it is pinned in cases.nix, and a header full of macro machinery is
+    where it will first be noticed.
+
+  * task-072, THE MACRO TABLE. It is one attrset updated with `//', so n defines copy n^2/2 bindings: 4 MB above lexing at 500 macros, 40 MB at 2000, 138 MB at 4000 (memory.py's second ladder, with a 100 MB ceiling on the top point). Slice 2 made each entry BIGGER -- a parameter list and a compiled plan -- and moved the 2000-macro point from 37 to 40 MB. One real header chain is a four-figure macro count. This arrives as "the preprocessor got slow" with nothing to bisect against unless it is fixed first.
+
+  * task-077, AN INVOCATION MUST FIT ON ONE LOGICAL LINE. This is the limit most likely to bite a real header: `va_start(ap,\n v)' is ordinary C. The fix is described in task-077 and it is a change to the LINE MODEL, not to the expander -- the gather already knows how to read past its list, but the step must then report how far it consumed, the state must carry that, and a line record ends up holding tokens from more than one physical line. The eight-plus relocation cases and frontend.sh's check that lcc's resynch() agrees with our markers are all computed against one-record-per-logical-line.
+
+  * task-079, THE WORKLIST COSTS 19% MORE PEAK RSS than the recursion it replaced. Measured with the ladder input held fixed, so it is the expander and not the input. Include multiplies the token count, so it multiplies this too.
+
+WHAT THE DIFFERENTIAL LOOKS LIKE NOW. oracle.py runs `gcc -std=c89 -E -P -ffreestanding' over 22 corpus files under poc/08-cpp/cpp/ plus the 26 preprocessor-free units under poc/07-parser/c/, and compares token streams; 48 units, 3161 tokens. Four of those corpus files are slice 2's -- funclike.c, stringify.c, paste.c, bluepaint.c. For `#include' the corpus has to grow a MULTI-FILE case, and gcc has to be given the same -I as we give ourselves or the oracle is answering a different question. `-ffreestanding' is already there and is what stops gcc pulling in stdc-predef.h.
+
+AND THE ONE DECISION-010 ALREADY MADE FOR YOU: the header set is a PARAMETER, not a fixed location, so `nix flake check' passes the flake-relative path and `just run' passes the same path from its impure eval. cpp.nix's `preprocess' takes `{ src, file ? "<stdin>" }' today; the header set is the third field, and poc/07-parser/demo.nix and run.nix are the two callers that have to pass it.
+
+ONE MORE, SMALL BUT REAL: poc/02-lexer refuses a stray `\' outright ("unexpected character"), where a real preprocessor treats it as a preprocessing token of its own. No corpus file has one yet. A real header might.
 <!-- SECTION:NOTES:END -->

@@ -13,11 +13,13 @@
 # verdicts. poc/06-constants/check.nix says the same thing about itself and is
 # where the ordering came from.
 #
-# WHY THE CONDITIONAL TABLE IS CHECKED TWICE OVER. `conditions' carries both
-# the expression and the answer, and the case is run through the WHOLE
-# preprocessor -- `#if EXPR' with two arms that emit different identifiers --
-# rather than by calling the expression evaluator directly. A table that
-# called `evalExpr' would still pass if `#if' never consulted it.
+# WHY THE CONDITIONAL TABLE GOES THROUGH THE WHOLE PREPROCESSOR. Each case is
+# run as `#if EXPR' with two arms that emit DIFFERENT identifiers, rather than
+# by calling the expression evaluator directly: a table that called `evalExpr'
+# would still pass if `#if' never consulted it. There is one assertion per
+# case and not two -- the expected token stream is derived from the declared
+# answer by the `c' constructor -- and what earns its keep is that the two
+# arms cannot be made to agree.
 let
   b = builtins;
   cpp = import ./cpp.nix;
@@ -28,10 +30,10 @@ let
   # slack in it can be spent downward in silence: poc/lib/mutant.sh makes the
   # argument about mutation counts, poc/06-constants demonstrated it on a case
   # table by deleting ten rows and watching the suite stay green.
-  declaredExpansions = 33;
+  declaredExpansions = 75;
   declaredConditions = 52;
-  declaredRelocations = 8;
-  declaredTables = 4;
+  declaredRelocations = 10;
+  declaredTables = 7;
 
   preprocessed = src: cpp.preprocess { inherit src; file = "t.c"; };
   brief = src: lexer.brief (preprocessed src).tokens;
@@ -75,6 +77,14 @@ let
         else "${cs.what}: the rendered output is\n${text}and should be\n${cs.render}";
     };
 
+  # `NAME(a,b)=body' for a function-like macro, `NAME=body' for an object-like
+  # one, so a dropped parameter list reads as what it is rather than as a
+  # silently equal body.
+  showMacro = t: n:
+    let m = t.${n}; in
+    "${n}${if m.params == null then "" else "(${b.concatStringsSep "," m.params})"}=${
+      b.concatStringsSep " " m.body}";
+
   tableResult = cs:
     let have = (preprocessed cs.src).macros; in
     {
@@ -82,9 +92,9 @@ let
       tokens = b.length (b.attrNames have);
       bad = have != cs.macros;
       why = "${cs.what}: the macro table holds ${
-        show (map (n: "${n}=${b.concatStringsSep " " have.${n}}") (b.attrNames have))
+        show (map (showMacro have) (b.attrNames have))
       } and should hold ${
-        show (map (n: "${n}=${b.concatStringsSep " " cs.macros.${n}}") (b.attrNames cs.macros))}";
+        show (map (showMacro cs.macros) (b.attrNames cs.macros))}";
     };
 
   results =
@@ -94,8 +104,10 @@ let
     ++ map tableResult cases.tables;
 
   bad = b.filter (r: r.bad) results;
-  # Counted from the work, not from the tables: a case that produced no
-  # tokens at all compares equal to another that produced none.
+  # Counted from the work, not from the tables: a case that produced nothing
+  # at all compares equal to another that produced nothing. It is "values"
+  # rather than "tokens" because a macro-table case counts the entries it
+  # compared, which are not tokens.
   produced = b.foldl' (a: r: a + r.tokens) 0 results;
   empty = b.filter (r: r.tokens == 0) results;
 
@@ -124,4 +136,4 @@ else
     toString (b.length cases.conditions)} `#if' expressions, ${
     toString (b.length cases.relocations)} line-number and linemarker cases and ${
     toString (b.length cases.tables)} macro-table cases compared, ${
-    toString produced} tokens produced\n"
+    toString produced} values compared\n"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a real cpp over the corpus, then compare its token stream with ours.
 
-Criterion #4 of task-013.01: "differential against gcc -E on a corpus,
+Criterion #4 of task-013.01 and criterion #5 of task-013.02: "differential against gcc -E on a corpus,
 comparing TOKEN STREAMS rather than whitespace". The comparison itself is in
 oracle.nix, because it needs this project's own lexer to turn both sides into
 tokens; this script exists because running gcc is a subprocess and an
