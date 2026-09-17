@@ -4,7 +4,7 @@ title: 'cpp slice 2: function-like macros, stringify and paste'
 status: Done
 assignee: []
 created_date: '2026-09-16 17:27'
-updated_date: '2026-09-17 10:35'
+updated_date: '2026-09-17 11:35'
 labels:
   - frontend
   - preprocessor
@@ -152,6 +152,18 @@ A CROSS-MODEL REVIEW (codex) FOUND FIVE SILENT MISCOMPILES AFTER THE FIRST COMMI
   SO: ONE RULE COVERED FOUR OF THE SIX, a fifth fell out of it, and two needed their own fixes (the hide set, and what counts as whitespace). Saying "one rule subsumed them all" would have been tidier and false.
 
 WHAT THE REVIEW CONFIRMED, AND THE SHARP PART OF IT. The 48-unit differential does detect injected disagreements and the macro-chain scaling is the shape documented -- and neither covered these failures. Five silent miscompiles passed a gcc differential because the CORPUS lacked the shapes that distinguish trivia ownership: every stringify case in it passed its argument at the USE site, where the whitespace is written in the same place it is read. The corpus now carries all six shapes (poc/08-cpp/cpp/stringify.c and paste.c), so the differential sees them; the case table carries them with expectations validated against gcc; and run.sh carries five more mutations.
+
+ORCHESTRATOR, on a process defect of mine that the implementer flagged.
+
+I marked this Done in 5044a9c, and FIVE silent miscompiles landed afterwards in a2dbf45 -- including one that made a #if take the wrong branch. The implementer noticed, said so, and left the status as I had set it rather than quietly changing it.
+
+It is right. I ran the light gate, marked Done, and THEN ran the cross-model review. That is backwards. Done should mean reviewed and closed, and the review is precisely what a same-model gate cannot substitute for: codex has now found two silent miscompiles in slice 1 and five in slice 2, every one of them on work that had already passed its own reviewers and an honest differential.
+
+Standing correction for the rest of this project: a task gets a cross-model review BEFORE it is marked Done, not after. The gate says the code runs; the review says the code is right. On this project those have differed seven times.
+
+What the implementer got right that is worth keeping: asked whether one rule covered all five, it said 'neither, honestly: one rule covered four, a fifth fell out of it, and two needed their own fix. Claiming one rule subsumed them all would have been tidier and false.' The rule it found -- TRIVIA BELONGS TO THE POSITION, NOT THE TOKEN, grounded in C89 6.8.3 and 6.8.3.2 -- is the right abstraction, and it did not stretch it past where it reached.
+
+Verified both reproducers myself after the fix: the #if now takes gcc's branch, and F(b) stringifies to "a b".
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
