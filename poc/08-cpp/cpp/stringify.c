@@ -51,6 +51,31 @@ char *both    = PAIR(left, right);
 char *where   = WHERE;
 char *arrow   = ARROW;
 
+/* WHO OWNS A BOUNDARY.  Four wrong string literals shipped past this file
+   once, because every case above passes an argument written at the USE site
+   and spells its whitespace there.  The rule they break is that trivia
+   belongs to the POSITION and not to the token: an argument takes the
+   boundary its PARAMETER OCCURRENCE had, a replacement list's first token
+   takes the boundary of the INVOCATION it replaced, a token `##' built takes
+   the boundary of its LEFT operand, and an element that expanded to nothing
+   leaves its boundary behind for whatever follows.  gcc is the judge of all
+   four.  */
+#define SPACED(x)       STR(a x)
+#define GAPPED(x)       STR(a x+b)
+#define PASTED(p, q)    STR(z+p ## q)
+char *spaced  = SPACED(b);              /* "a b",  not "ab"    */
+char *gapped  = GAPPED();               /* "a +b", not "a+b"   */
+char *pasted  = PASTED(f, oo);          /* "z+foo", not "z+ foo" */
+char *inner   = XSTR(a+VERSION);        /* "a+4",  not "a+ 4"  */
+char *deep    = PASTED(a+b, c);         /* "z+a+bc", not "z+a+ bc" */
+
+/* And one that is not about ownership at all but about what whitespace IS:
+   ISO C's phase 2 removes a backslash-newline without putting a space in its
+   place, so neither of these has a space in it.  */
+#define SPLICED         a+b
+char *splice1 = STR(a+b);
+char *splice2 = XSTR(SPLICED);
+
 /* A stringified argument that itself contains a macro invocation: still not
    expanded, because it is an operand of `#'.  */
 char *call    = STR(STR(inner));

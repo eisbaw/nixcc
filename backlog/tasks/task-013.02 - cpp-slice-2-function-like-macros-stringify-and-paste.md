@@ -4,7 +4,7 @@ title: 'cpp slice 2: function-like macros, stringify and paste'
 status: Done
 assignee: []
 created_date: '2026-09-16 17:27'
-updated_date: '2026-09-17 10:12'
+updated_date: '2026-09-17 10:35'
 labels:
   - frontend
   - preprocessor
@@ -126,6 +126,32 @@ It also spotted that #3 and #5 could not both hold, since #5 is a differential a
 Verified independently before amending: gcc -std=c89 -E -P gives 'int v = 42;', lcc's macro.c has the back-up at line 220 after doconcat at line 208, and our preprocessor now gives 'int v = 42;' too.
 
 Criterion replaced with the correct rule and ticked. This is the fifth time an implementer has declined to reshape a criterion to fit its work, and the first where the criterion was wrong about the LANGUAGE rather than about this project. Writing an acceptance criterion from memory about a standard I had not checked is the error worth learning from -- the three sources that settle it took two minutes to consult.
+
+A CROSS-MODEL REVIEW (codex) FOUND FIVE SILENT MISCOMPILES AFTER THE FIRST COMMIT. All five reproduced against gcc before anything was changed; all five are fixed in the follow-up commit. Same-model review had passed this work, which is the second time that has happened on this file.
+
+  1. THE PASTED TOKEN'S HIDE SET WAS THE UNION OF ITS OPERANDS', NOT THE INTERSECTION. C89 6.8.3.4 (Prosser's `glue') gives the result HS(left) INTERSECT HS(right), because a name only ONE operand was forbidden to be is not a name the RESULT was forbidden to be. With `#define AB 1+A', `#define CAT(a,b) a##b', `#define EXP(a,b) CAT(a,b)' and `#if EXP(AB,B) == 2', `A' arrives from expanding AB carrying {AB} and `B' does not; unioning them hid the pasted `AB', we emitted `1+AB', the leftover identifier was worth zero and the `#if' was FALSE where gcc's was TRUE. A silently different arm. One line: `b.intersectAttrs' in place of `//'.
+
+     IT ALSO REFUTES A CLAIM THIS REPORT MADE. I wrote that hiding too much is always LOUD because the frontend refuses the leftover name. Inside a `#if' there is no frontend: C89 6.8.1 makes a leftover identifier zero and the arithmetic comes out different. task-080's description carried the same wrong sentence and has been corrected.
+
+  2-5. FOUR WRONG STRING LITERALS, AND THEY ARE ONE RULE ASKED IN FOUR PLACES:
+
+         TRIVIA BELONGS TO THE POSITION, NOT TO THE TOKEN.
+
+     A replacement list occupies the position its invocation had; an argument occupies the position its parameter had; a token `##' manufactures occupies the position of the token it replaced. Each takes the boundary of what it replaced, and its own leading boundary is discarded -- C89 6.8.3 says the whitespace before the first token of a replacement list is not part of the list, and 6.8.3.2 says the same of an argument in as many words. So the compiled plan now carries a `pre' per element, the tokens carry none, and a walk over the replacement list places each boundary -- a DELETED element handing its boundary to whatever follows rather than taking it away. That is one structural change, not four patches, and it is the same move `staysApart' made for the other boundary question.
+
+     Measured before and after, gcc on the left:
+       #define F(x) Q(a x)     F(b)        "a b"    was "ab"
+       #define G(x) Q(a x+b)   G()         "a +b"   was "a+b"
+       #define V 7             XQ(a+V)     "a+7"    was "a+ 7"
+       #define F(p,q) Q(z+p##q) F(f,oo)    "z+foo"  was "z+ foo"
+
+     A fifth place fell out of the same walk once it existed: a paste DEEP in a sequence, where the chain's own boundary does not reach it, takes the boundary of the token it replaced. `F(a+b,c)' is "z+a+bc". Its twin `F(a b,c)' is "z+a bc" and passes either way, which is why the pair is written both ways round.
+
+  AND ONE THAT IS NOT ABOUT OWNERSHIP AT ALL, so it did NOT fall out of the rule and needed its own fix: ISO C's phase 2 removes a backslash-newline WITHOUT putting a space in its place, so `Q(a\<newline>+b)' is "a+b" and not "a +b". poc/02-lexer already records that trivia with its `glue' flag; the stringify test now asks `separates' -- whitespace that is not only a splice -- instead of `ws != ""'. The ownership rule is what makes it work through a macro BODY as well, since `pre' carries `glue' with the boundary.
+
+  SO: ONE RULE COVERED FOUR OF THE SIX, a fifth fell out of it, and two needed their own fixes (the hide set, and what counts as whitespace). Saying "one rule subsumed them all" would have been tidier and false.
+
+WHAT THE REVIEW CONFIRMED, AND THE SHARP PART OF IT. The 48-unit differential does detect injected disagreements and the macro-chain scaling is the shape documented -- and neither covered these failures. Five silent miscompiles passed a gcc differential because the CORPUS lacked the shapes that distinguish trivia ownership: every stringify case in it passed its argument at the USE site, where the whitespace is written in the same place it is read. The corpus now carries all six shapes (poc/08-cpp/cpp/stringify.c and paste.c), so the differential sees them; the case table carries them with expectations validated against gcc; and run.sh carries five more mutations.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

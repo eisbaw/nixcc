@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-17 09:12'
+updated_date: '2026-09-17 10:35'
 labels:
   - frontend
   - preprocessor
@@ -44,3 +45,22 @@ WHAT THE FIX LOOKS LIKE. `gather' discards the closing parenthesis: its `)' bran
 - [ ] #2 f(2)(9) with '#define f(a) a*g' and '#define g(a) f(a)' gives what gcc gives
 - [ ] #3 cases.nix's pinned case for the divergence changes with the fix, and poc/08-cpp/cpp/bluepaint.c gains a case that discriminates over-hiding
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+CORRECTION, and it matters because the wrong half of it was used to justify FILING this rather than fixing it. The original text said:
+
+  "WHICH DIRECTION THIS IS. Under-expansion, not a wrong value: a name is left standing and the frontend then refuses it as an undeclared identifier, so it is loud rather than silent."
+
+That is false in general. A cross-model review found a sibling defect -- the pasted token's hide set, fixed in task-013.02 -- whose only symptom was a `#if' taking the other arm:
+
+  #define AB 1+A
+  #define CAT(a,b) a##b
+  #define EXP(a,b) CAT(a,b)
+  #if EXP(AB,B) == 2
+
+Over-hiding left `AB' standing, C89 6.8.1 makes a leftover identifier ZERO, and the arithmetic simply came out different. There is no frontend inside a `#if' to refuse anything. So hiding too much is silent wherever the leftover identifier lands somewhere an identifier is legal -- a `#if', or a place where the program happens to declare that name.
+
+This task's own divergence should therefore be treated as potentially silent rather than certainly loud, and the `#if' shape is the one to write the corpus case against when it is fixed.
+<!-- SECTION:NOTES:END -->

@@ -53,6 +53,21 @@ int LABEL(3) = 33;
 #define SELF            CAT(SE, LF)
 int painted = SELF;
 
+/* THE HIDE SET OF A PASTED TOKEN IS WHAT ITS TWO OPERANDS SHARE, not their
+   union (C89 6.8.3.4).  `A' arrives from expanding AB and carries that paint;
+   `B' comes from the source and does not, so AB is not hidden and the pasted
+   token is rescanned into `1+A'.  Union the two and the expansion stops at
+   `1+AB' -- which inside a `#if' is a silently different arm, and which is
+   why this shape is written twice, once as text and once as a condition.  */
+#define WXY             1+WX
+#define EXP(a, b)       CAT(a, b)
+int shared = EXP(WXY, Y);
+#if EXP(WXY, Y) == 2
+int intersected;
+#else
+int unioned;
+#endif
+
 /* `##' in an OBJECT-LIKE replacement list is legal too, and pastes the same
    way.  */
 #define OBJ3            a ## b ## c

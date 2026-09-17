@@ -30,7 +30,7 @@ let
   # slack in it can be spent downward in silence: poc/lib/mutant.sh makes the
   # argument about mutation counts, poc/06-constants demonstrated it on a case
   # table by deleting ten rows and watching the suite stay green.
-  declaredExpansions = 75;
+  declaredExpansions = 86;
   declaredConditions = 52;
   declaredRelocations = 10;
   declaredTables = 7;

@@ -219,7 +219,11 @@ let
   # points at the code the reader wrote rather than at the `#define'.
   pasteTok = use: p: t:
     let r = lexJoined p t; in
-    if r != null && b.length r == 1 then mkTok use { inherit ((b.head r)) kind text; }
+    # The result occupies the LEFT operand's position, so it takes the left
+    # operand's boundary rather than `mkTok's default space. Without that,
+    # `#define F(p,q) Q(z+p##q)' stringifies `F(f,oo)' to "z+ foo".
+    if r != null && b.length r == 1
+    then mkTok use ({ inherit ((b.head r)) kind text; } // preOf p)
     else throw "cpp: line ${toString use.line}: `##' in the expansion of `${
       use.text}' pastes `${p.text}' and `${t.text}', and `${p.text}${t.text}' is ${
       if r == null then "not a preprocessing token at all"
@@ -244,7 +248,7 @@ let
     let
       piece = j:
         let t = b.elemAt ts j; in
-        (if j != 0 && t.ws != "" then " " else "") + spell t;
+        (if j != 0 && separates t then " " else "") + spell t;
       text = "\"" + b.concatStringsSep "" (b.genList piece (b.length ts)) + "\"";
       # The result has to BE a string literal, not merely look like one. This
       # is the same argument `pasteTok' makes, asked of the same `lexAll' --
@@ -257,6 +261,56 @@ let
     then mkTok use { kind = "SCON"; inherit text; }
     else throw "cpp: line ${toString use.line}: `#' in the expansion of `${
       use.text}' would stringify its argument to ${text}, which is not a string literal";
+
+  # ---- WHO OWNS A BOUNDARY -------------------------------------------------
+  #
+  # A cross-model review found FOUR wrong string literals in one family, and
+  # they were four answers to one question asked in four places: when a token
+  # is substituted for something else, whose whitespace does the result carry?
+  # The rule that covers all four is
+  #
+  #     TRIVIA BELONGS TO THE POSITION, NOT TO THE TOKEN.
+  #
+  # A replacement list occupies the position its invocation had; an argument
+  # occupies the position its parameter had; a token `##' or `#' manufactures
+  # occupies the position of the first token it replaced. In every one of
+  # those the SEQUENCE that arrives takes the boundary of what it replaced,
+  # and its own first token's boundary is discarded -- C89 6.8.3 says the
+  # whitespace before the first token of a replacement list is not part of the
+  # list, and 6.8.3.2 says the same of an argument in as many words ("white
+  # space before the first preprocessing token ... composing the argument is
+  # deleted"). So the plan carries a `pre' per element and the tokens carry
+  # none, which is the same move `staysApart' made for the other boundary
+  # question: one answer, one place.
+  #
+  # A DELETED ELEMENT DOES NOT DELETE ITS BOUNDARY. `#define G(x) Q(a x+b)'
+  # invoked as `G()' stringifies to "a +b" and not "a+b": `x' went away and
+  # the space in front of it did not, because the space is the boundary
+  # between `a' and whatever comes next. That is what `mergePre' carries
+  # forward and why the walk over a replacement list is a scan rather than a
+  # map.
+  #
+  # `glue' RIDES ALONG BECAUSE IT IS NOT WHITESPACE. ISO C's phase 2 removes a
+  # backslash-newline WITHOUT putting a space in its place, so `Q(a\<newline>+b)'
+  # is "a+b". poc/02-lexer already distinguishes that trivia with its `glue'
+  # flag -- "a continuation and nothing else" -- and the flag has to survive
+  # substitution for `#' to be able to read it. That one is a separate fact
+  # from the ownership rule above: it is about what whitespace IS, not about
+  # whose it is.
+  noPre = { ws = ""; glue = false; };
+  preOf = t: { inherit (t) ws glue; };
+  setPre = pre: t: t // { inherit (pre) ws glue; };
+
+  # The boundary a deleted element leaves behind, joined to the next one.
+  # Whitespace if either side had any; a splice only if BOTH were, since one
+  # real space makes the whole boundary real.
+  mergePre = a: c:
+    if a.ws == "" then c
+    else if c.ws == "" then a
+    else { ws = a.ws + c.ws; glue = a.glue && c.glue; };
+
+  # Whether a boundary separates two tokens for the purposes of `#'.
+  separates = t: t.ws != "" && !t.glue;
 
   # Whether a token could be a macro invocation. `macros ? ${t.text}' alone
   # would be enough -- every macro name is an identifier, and no punctuator,
@@ -279,19 +333,15 @@ let
   #
   #   `line'  is the USE site, never the definition: a diagnostic has to
   #           point at the code the reader wrote.
-  #   `ws'    is one space, and CALLERS OVERRIDE IT. `fromBody' passes the
-  #           body token's own trivia through, because `#' has to reproduce
-  #           the spelling its argument was WRITTEN with and an argument can
-  #           come out of another macro's replacement list: with `#define Q(x)
-  #           #x' and `#define WHERE Q(file.c:12)', a `ws' of one space
-  #           everywhere makes that "file . c : 12" rather than "file.c:12",
-  #           which is a wrong string literal in the compiled program and no
-  #           diagnostic anywhere. What the unconditional space used to defend
-  #           -- an expansion pasting against its neighbour, `#define P +' in
-  #           `a+P b' rendering as `a++ b' -- `render' now defends properly
-  #           at every boundary it writes, through `staysApart'. A token this
-  #           file MANUFACTURES rather than copies (`##' and `#' both do) has
-  #           no trivia of its own and keeps the space.
+  #   `ws'    is one space, and it is a PLACEHOLDER: every token that leaves
+  #           a replacement list has its boundary written by `substituted'
+  #           from the plan's `pre', because trivia belongs to the position
+  #           and not to the token (see "who owns a boundary" above). The
+  #           default survives only where nothing replaced anything, and what
+  #           it used to defend -- an expansion pasting against its
+  #           neighbour, `#define P +' in `a+P b' rendering as `a++ b' --
+  #           `render' now defends at every boundary it writes, through
+  #           `staysApart'.
   #   `bol'   is false: in cpp OUTPUT it is the line record, not the token,
   #           that says where a line begins.
   mkTok = use: fields:
@@ -303,7 +353,12 @@ let
       glue = false;
     } // fields;
 
-  fromBody = use: bt: mkTok use { inherit (bt) kind text ws; };
+  # NO `ws' HERE ON PURPOSE. A body token's boundary is carried by its plan
+  # element's `pre', which is the same value -- except for the FIRST token of
+  # a replacement list, whose leading whitespace is not part of the list at
+  # all. Copying it here as well would be a second answer to the ownership
+  # question, and `#define V 7' used in `a+V' would render as `a+ 7'.
+  fromBody = use: bt: mkTok use { inherit (bt) kind text; };
 
   # ---- the replacement list, compiled once at `#define' time ---------------
   #
@@ -371,14 +426,24 @@ let
       # element after it. genericClosure rather than a walk because the stride
       # is one token or three, and the depth of a recursive walk would track
       # the length of the replacement list (decision-001).
+      #
+      # `pre' is the boundary written in FRONT of the element, and it is the
+      # element's own rather than its token's because a parameter's token is
+      # replaced by an argument and a `#' by a literal. The FIRST element has
+      # none: C89 6.8.3 says the whitespace before the first token of a
+      # replacement list is not part of the list, so what goes there is the
+      # boundary of the invocation the list replaced.
       entryAt = i:
         if isPaste i then
           (if i == 0 then
             bad "the replacement list of `${name}' begins with `##', which C89 6.8.3.3 wants an operand on each side of"
           else if i + 2 >= n then
             bad "the replacement list of `${name}' ends with `##', which C89 6.8.3.3 wants an operand on each side of"
-          else let e = elemFrom (i + 2); in { key = i; inherit (e) next elem; pasted = true; })
-        else let e = elemFrom i; in { key = i; inherit (e) next elem; pasted = false; };
+          else let e = elemFrom (i + 2); in
+            { key = i; inherit (e) next elem; pasted = true; pre = preOf (at (i + 2)); })
+        else let e = elemFrom i; in
+          { key = i; inherit (e) next elem; pasted = false;
+            pre = if i == 0 then noPre else preOf (at i); };
 
       entries =
         if n == 0 then [ ]
@@ -388,7 +453,7 @@ let
         };
     in
     {
-      elems = map (e: e.elem) entries;
+      elems = map (e: e.elem // { inherit (e) pre; }) entries;
       starts = b.filter (j: !(b.elemAt entries j).pasted)
         (b.genList (i: i) (b.length entries));
     };
@@ -552,15 +617,40 @@ let
               b.genList (j: b.elemAt left j) (b.length left - 1)
               ++ [{
                 tok = pasteTok use lp.tok rp.tok;
-                # The pasted token is PAINTED, and that is what makes
-                # `#define SELF CAT(SE,LF)' come out as `SELF' rather than
-                # expanding forever. It is otherwise an ordinary token and IS
-                # rescanned for macro names -- C89 6.8.3.3, "the resulting
-                # token is available for further macro replacement", which
-                # lcc/cpp/macro.c implements by backing its row up over the
-                # tokens it just inserted, and which gcc -E demonstrates by
-                # turning `CAT(X,Y)' into 42 given `#define XY 42'.
-                hide = lp.hide // rp.hide // h;
+                # THE INTERSECTION OF THE TWO OPERANDS' PAINT, not the
+                # union, and the difference decides which arm a `#if' takes.
+                # C89 6.8.3.4's rule -- Prosser's `glue', which gives the
+                # pasted token HS(left) INTERSECT HS(right) -- exists because
+                # a name that only ONE operand was forbidden to be is not a
+                # name the RESULT was forbidden to be. Measured, with the
+                # union:
+                #
+                #   #define AB 1+A
+                #   #define CAT(a,b) a##b
+                #   #define EXP(a,b) CAT(a,b)
+                #   #if EXP(AB,B) == 2
+                #
+                # `A' arrives from expanding AB and carries {AB}; `B' comes
+                # from the source and does not. Union the two and the pasted
+                # `AB' is hidden, we emit `1+AB', the leftover identifier is
+                # 0, and the `#if' is FALSE where gcc's is TRUE. That is a
+                # silent choice of the other arm, not a loud refusal.
+                #
+                # `h' is unioned in afterwards, as `hsadd' does, and is a
+                # no-op here only because `paint' already put it on both
+                # operands -- writing it is what keeps the composition
+                # readable rather than incidental.
+                #
+                # What the intersection does NOT weaken: `#define SELF
+                # CAT(SE,LF)' still comes out as `SELF', because both
+                # operands came out of SELF's own expansion and so both carry
+                # it. The paint is otherwise ordinary and the token IS
+                # rescanned -- C89 6.8.3.3, "the resulting token is available
+                # for further macro replacement", which lcc/cpp/macro.c
+                # implements by backing its row up over what doconcat()
+                # inserted, and which gcc demonstrates by turning `CAT(X,Y)'
+                # into 42 given `#define XY 42'.
+                hide = (b.intersectAttrs lp.hide rp.hide) // h;
                 nest = lvl;
               }]
               ++ b.tail right;
@@ -582,8 +672,39 @@ let
             if solo then one from
             else b.foldl' (acc: j: joinTo acc (one j)) (one from)
               (b.genList (j: from + 1 + j) (to - from - 1));
+
+          # THE BOUNDARY WALK. One step per paste chain, carrying the
+          # boundary that has yet to be placed: a chain that produced nothing
+          # -- an empty argument, or a paste of two empty ones -- hands its
+          # boundary to the next rather than taking it out of the output with
+          # it. The walk starts from the INVOCATION's own boundary, which is
+          # what the first token of the replacement inherits.
+          #
+          # genericClosure rather than a fold, for the reason every other loop
+          # in this file is one: it emits per step, and a `foldl'' would have
+          # to accumulate the output with `++'.
+          chainAt = c: pending:
+            let
+              seq = chain c;
+              eff = mergePre pending (b.elemAt m.plan.elems (b.elemAt m.plan.starts c)).pre;
+            in
+            if seq == [ ]
+            then { key = c; pending = eff; out = [ ]; }
+            else {
+              key = c;
+              pending = noPre;
+              out = [ (let x = b.head seq; in x // { tok = setPre eff x.tok; }) ]
+                ++ b.tail seq;
+            };
+
+          steps = b.genericClosure {
+            startSet = [ (chainAt 0 (preOf use)) ];
+            operator = it:
+              if it.key + 1 >= nCh then [ ]
+              else let x = chainAt (it.key + 1) it.pending; in b.deepSeq x [ x ];
+          };
         in
-        b.concatLists (b.genList chain nCh);
+        if nCh == 0 then [ ] else b.concatLists (map (it: it.out) steps);
 
       # --- one step: one token consumed, zero or one emitted ---------------
       advance = cur: st:

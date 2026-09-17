@@ -437,6 +437,109 @@ rec {
       "#define ID(x) x\nint y = ID(ID)(7);\n"
       [ "INT:int" "ID:y" "=:=" "ID:ID" "(:(" "ICON:7" "):)" ";:;" ])
 
+    # ---- FIVE SILENT MISCOMPILES A CROSS-MODEL REVIEW FOUND --------------
+    #
+    # Every one of these passed the 48-unit gcc differential, which says the
+    # corpus lacked the shapes that distinguish them and not that the
+    # differential is broken. They are here AND in the corpus now.
+    #
+    # THE FIRST IS NOT A WHITESPACE QUESTION AND IS THE WORST OF THEM: it
+    # changes which code is compiled. `A' arrives from expanding AB and
+    # carries the paint {AB}; `B' comes from the source and does not. The
+    # pasted token's hide set is C89 6.8.3.4's INTERSECTION of the two, so AB
+    # is not hidden and is rescanned; union them instead and the expansion is
+    # `1+AB', the leftover identifier evaluates to 0, and this `#if' is FALSE
+    # where gcc's is TRUE. A wrong arm, silently.
+    #
+    # It also refutes a claim made in this project's own notes -- that hiding
+    # too much is always LOUD because the frontend refuses the leftover name.
+    # In a `#if' there is no frontend: an identifier that is left standing is
+    # worth zero and the arithmetic simply comes out different.
+    (e "a paste inherits only the paint its two operands share"
+      "#define AB 1+A\n#define CAT(a,b) a##b\n#define EXP(a,b) CAT(a,b)\n#if EXP(AB,B) == 2\nint taken;\n#else\nint untaken;\n#endif\n"
+      [ "INT:int" "ID:taken" ";:;" ])
+
+    # THE SAME SHAPE AS TEXT, and it is here because the `#if' above cannot
+    # tell three different defects apart: a paste that inherits the union, an
+    # argument that was not expanded before substitution, and a chain that
+    # folds the wrong way all leave a leftover identifier, all of which are
+    # zero, so all three take the `#else' and produce the same three tokens.
+    # As text the three come out as `1 + AB', `ABB' and `B1 + A', which is
+    # what lets the mutation for each name its own symptom.
+    (e "and the same paste written where its expansion is visible"
+      "#define AB 1+A\n#define CAT(a,b) a##b\n#define EXP(a,b) CAT(a,b)\nint z = EXP(AB,B);\n"
+      [ "INT:int" "ID:z" "=:=" "ICON:1" "+:+" "ICON:1" "+:+" "ID:A" ";:;" ])
+
+    # THE OTHER FOUR ARE ONE RULE ASKED IN FOUR PLACES: trivia belongs to the
+    # POSITION and not to the token. Each of these was a wrong string literal
+    # in the compiled program with no diagnostic behind it.
+    #
+    # The argument takes the boundary its PARAMETER OCCURRENCE had, not the
+    # one it was written with at the invocation: `b' follows `(' with nothing
+    # in front of it, and `x' in `Q(a x)' has a space.
+    (e "a stringified argument takes the spacing of the parameter it replaced"
+      "#define Q(x) #x\n#define F(x) Q(a x)\nchar *s = F(b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a b\"" ";:;" ])
+
+    # THE TWO SOURCES OF A SEPARATOR, SIDE BY SIDE IN ONE ARGUMENT. `p' takes
+    # the boundary the PARAMETER OCCURRENCE had and `q' keeps the one it was
+    # written with at the INVOCATION, so "a p q" has one of each in it. That
+    # is also what tells a preprocessor that lost the parameter's boundary
+    # ("ap q") from one that stopped collapsing whitespace at all ("apq") --
+    # a case that used only the first kind gives "ab" under both.
+    (e "an argument's separators come from two places at once"
+      "#define Q(x) #x\n#define F(x) Q(a x)\nchar *s = F(p q);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a p q\"" ";:;" ])
+
+    # And a deleted element does not delete its boundary: `x' went away and
+    # the space in front of it is still the boundary between `a' and `+'.
+    (e "an empty argument leaves its boundary behind"
+      "#define Q(x) #x\n#define G(x) Q(a x+b)\nchar *s = G();\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a +b\"" ";:;" ])
+
+    # The first token of a replacement list takes the INVOCATION's boundary:
+    # the space in `#define V 7' is written before the list, so it is not in
+    # it, and `V' in `a+V' has none.
+    (e "the first token of a replacement list takes the invocation's spacing"
+      "#define Q(x) #x\n#define XQ(x) Q(x)\n#define V 7\nchar *s = XQ(a+V);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a+7\"" ";:;" ])
+
+    # A token `##' manufactured occupies the position of its LEFT operand,
+    # so it takes that operand's boundary rather than a default space. Note
+    # that `lexAll' cannot catch this one: "z+ foo" is a perfectly good
+    # string literal, so validating that the result lexes as one SCON says
+    # nothing about whether its CONTENT is right.
+    (e "a pasted token takes the boundary of the operand it replaced"
+      "#define Q(x) #x\n#define F(p,q) Q(z+p##q)\nchar *s = F(f,oo);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"z+foo\"" ";:;" ])
+
+    # AND THE SAME RULE ONE LEVEL IN. When the left operand is more than one
+    # token the pasted token is NOT the first of its chain, so the chain's
+    # boundary does not reach it and it has to take the boundary of the token
+    # it replaced -- the LAST of the left operand. The pair is written both
+    # ways round because only one of them discriminates: with `a b' the token
+    # replaced had a space and the default space is right by accident, and
+    # with `a+b' it had none.
+    (e "a pasted token deep in a sequence takes the boundary of the token it replaced"
+      "#define Q(x) #x\n#define F(p,q) Q(z+p##q)\nchar *s = F(a+b,c);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"z+a+bc\"" ";:;" ])
+
+    (e "and the accident that hides it: a left operand whose last token had a space"
+      "#define Q(x) #x\n#define F(p,q) Q(z+p##q)\nchar *s = F(a b,c);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"z+a bc\"" ";:;" ])
+
+    # AND THE FIFTH IS A DIFFERENT QUESTION: not whose boundary it is, but
+    # whether it is whitespace at all. ISO C's phase 2 removes a
+    # backslash-newline WITHOUT putting a space in its place, which is what
+    # poc/02-lexer's `glue' flag records. Both places it can appear:
+    (e "a continuation inside a stringified argument is not whitespace"
+      "#define Q(x) #x\nchar *s = Q(a\\\n+b);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a+b\"" ";:;" ])
+
+    (e "and neither is one inside the replacement list the argument came from"
+      "#define Q(x) #x\n#define XQ(x) Q(x)\n#define B a\\\n+b\nchar *s = XQ(B);\n"
+      [ "CHAR:char" "*:*" "ID:s" "=:=" "SCON:\"a+b\"" ";:;" ])
+
     # A KNOWN DIVERGENCE, PINNED HERE SO IT IS NOT SILENT (task-080). C89
     # 6.8.3.4 gives the replacement of a FUNCTION-LIKE macro the hide set
     # `(HS(name) INTERSECT HS(rparen)) UNION {name}'. The intersection is the
@@ -598,21 +701,22 @@ rec {
       render = "# 1 \"t.c\"\nint a;\n a <<= 2;\n a << = 2;\n";
     }
     {
-      # AN ARGUMENT ARRIVES WITH THE SPACING IT WAS WRITTEN WITH, which is
-      # the half of `render' that slice 2 puts under new pressure: a body
-      # token always has one space in front of it, but the token substituted
-      # after it came off the invocation and may have had none. `AFTER(b)'
-      # puts `b' straight after `a' with an empty `ws', and `ab' is one
-      # identifier -- so the renderer has to put a space back. `MINUS(1)'
-      # is the control: `-' and `1' written together still lex as two, so no
-      # space is added and `-1' comes out as it was meant to.
+      # AN ARGUMENT TAKES THE BOUNDARY ITS PARAMETER HAD, not the one it was
+      # written with at the invocation. All three invocations below pass the
+      # same argument with the same (empty) spacing in front of it, and the
+      # three come out differently because the three replacement lists put
+      # different whitespace in front of the parameter. That is C89 6.8.3's
+      # rule and gcc's output byte for byte -- `a b;', `a+b;', `- 1;'.
       #
-      # The token streams are identical either way, so the differential
-      # cannot see this; only the exact text can.
-      what = "an argument keeps its own spacing, and gains a space only where it would paste";
-      src = "#define AFTER(x) a x\n#define MINUS(x) - x\nAFTER(b);\nMINUS(1);\n";
-      lines = [ "3:a" "3:b" "3:;" "4:-" "4:1" "4:;" ];
-      render = "# 3 \"t.c\"\n a b;\n -1;\n";
+      # An earlier version of this case asserted the opposite, that an
+      # argument keeps its own spacing, and passed. It was wrong about the
+      # rule and the token streams are identical either way, so nothing but
+      # the exact text could have said so -- which is why this case is here
+      # and not in the differential.
+      what = "an argument takes the boundary its parameter occurrence had";
+      src = "#define AFTER(x) a x\n#define TIGHT(x) a+x\n#define MINUS(x) - x\nAFTER(b);\nTIGHT(b);\nMINUS(1);\n";
+      lines = [ "4:a" "4:b" "4:;" "5:a" "5:+" "5:b" "5:;" "6:-" "6:1" "6:;" ];
+      render = "# 4 \"t.c\"\n a b;\n a+b;\n - 1;\n";
     }
     {
       # And the same question asked of `##', which is the operator that

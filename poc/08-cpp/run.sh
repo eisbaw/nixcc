@@ -252,7 +252,7 @@ mutate "cpp: the linemarker names its own line instead of the next one" \
 # changes is what lcc's parser does with them, and the only check that holds
 # it is the exact rendered text in cases.nix's relocation table.
 mutate "cpp: render loses the adjacency that keeps \`<<=' one operator" \
-       "the rendered output is" \
+       "adjacency survives rendering, which is what keeps \`<<=' one operator to lcc: the rendered output is" \
        "sed -i 's@            if t.ws != \"\" then \" \" + t.text@            if true then \" \" + t.text@' cpp.nix" \
        "$table_check"
 
@@ -358,7 +358,7 @@ mutate "cpp: the operand of ## is expanded before it is pasted" \
 
 mutate "cpp: stringify stops collapsing the whitespace inside its argument" \
        "# collapses internal whitespace to exactly one space: expected" \
-       "sed -i 's@        (if j != 0 \&\& t.ws != \"\" then \" \" else \"\") + spell t;@        spell t;@' cpp.nix" \
+       "sed -i 's@        (if j != 0 \&\& separates t then \" \" else \"\") + spell t;@        spell t;@' cpp.nix" \
        "$table_check"
 
 mutate "cpp: stringify stops escaping what is inside a literal" \
@@ -421,16 +421,13 @@ mutate "cpp: the blue paint does not reach the tokens an argument was made of" \
 # The two refusals that keep an invocation inside one logical line. Each is a
 # SILENT wrong answer without them: the first compiles `y = F (1)' as a call,
 # the second splits an argument list across a line boundary.
-# THE MUTATION FOR A SILENT MISCOMPILE A CROSS-MODEL REVIEW FOUND. `#'
-# reproduces the spelling its argument was WRITTEN with, and an argument can
-# come out of another macro's replacement list -- so a replacement list has to
-# hand its tokens on with their own trivia. Give them all one space and
-# `#define WHERE Q(file.c:12)' stringifies to "file . c : 12", which is a
-# wrong string literal in the compiled program and no diagnostic anywhere.
-mutate "cpp: an expansion gives every token one space, so # cannot reproduce a spelling" \
-       "# reproduces the spelling of an argument that came out of a macro body: expected" \
-       "sed -i 's@^  fromBody = use: bt: mkTok use { inherit (bt) kind text ws; };@  fromBody = use: bt: mkTok use { inherit (bt) kind text; };@' cpp.nix" \
-       "$table_check"
+# NO MUTATION FOR `fromBody' ANY MORE, and that is a removal rather than a
+# gap. It used to carry the body token's `ws' and the mutation took it away,
+# which made `#define WHERE Q(file.c:12)' stringify to "file . c : 12". The
+# second review round replaced that whole mechanism: trivia is now owned by
+# the plan's `pre' and `fromBody' carries none, so there is nothing left there
+# to break. The case is still in cases.nix as a regression pin, and the
+# mechanism that replaced it has the two `pre' mutations below.
 
 # The OTHER side of task-077's refusal: it has to fire only when the next line
 # could actually be opening an argument list. Refusing whenever anything
@@ -464,6 +461,57 @@ mutate "cpp: a redefinition may change the parameter list" \
        "'a redefinition with a different parameter list' did not throw" \
        "sed -i 's@        else if prev != null \&\& prev.params != myParams then@        else if false then@' cpp.nix" \
        "$message_check"
+
+# --- mutations of the five silent miscompiles a cross-model review found ---
+#
+# SEVERAL FRAGMENTS HERE ARE THE ANSWER PRODUCED, not the case's name, and
+# that is forced rather than stylistic: three different defects make
+# `#if EXP(AB,B) == 2' take the `#else', because all three leave a leftover
+# identifier and every leftover identifier is zero. The case name cannot tell
+# them apart and what came OUT can -- `1 + AB' against `ABB' against
+# `B1 + A'. The same is true of the two trivia mutations, which produce
+# `"a+ 7"' and `"z+a+ bc"' where the case names they break are shared.
+#
+# Each of these shipped past the 48-unit differential once, so each one gets
+# a mutation as well as a case. Four of the five are one rule -- trivia
+# belongs to the position, not the token -- asked in four places, and the
+# mutations follow the places rather than the cases.
+
+mutate "cpp: a paste inherits both operands' paint instead of what they share" \
+       "\`+:+' \`ID:AB' \`;:;'" \
+       "sed -i 's@hide = (b.intersectAttrs lp.hide rp.hide) // h;@hide = lp.hide // rp.hide // h;@' cpp.nix" \
+       "$table_check"
+
+# The parameter occurrence's boundary, which is the one an argument takes.
+# It breaks the empty-argument case too, and that is not a fragment clash to
+# be worked around: the two are ONE mechanism, and a deleted element handing
+# its boundary on is the same rule as a present one carrying it.
+mutate "cpp: a replacement-list element loses the boundary written in front of it" \
+       "ap q" \
+       "sed -i 's@            pre = if i == 0 then noPre else preOf (at i); };@            pre = noPre; };@' cpp.nix" \
+       "$table_check"
+
+# And the first element, whose boundary was written before the replacement
+# list and is therefore not in it.
+mutate "cpp: the first token of a replacement list keeps the definition's spacing" \
+       "a+ 7" \
+       "sed -i 's@            pre = if i == 0 then noPre else preOf (at i); };@            pre = preOf (at i); };@' cpp.nix" \
+       "$table_check"
+
+# A pasted token deep in a sequence, where the chain's own boundary does not
+# reach it. The case this pins is the one whose left operand ends in a token
+# written with NO space; its twin, where the space is there anyway, passes
+# under the mutation and is in cases.nix to say so.
+mutate "cpp: a pasted token takes a default space instead of the position it replaced" \
+       "z+a+ bc" \
+       "sed -i 's@    then mkTok use ({ inherit ((b.head r)) kind text; } // preOf p)@    then mkTok use { inherit ((b.head r)) kind text; }@' cpp.nix" \
+       "$table_check"
+
+# Not whose boundary it is, but whether it is whitespace at all.
+mutate "cpp: a line continuation counts as whitespace inside a stringified argument" \
+       "a continuation inside a stringified argument is not whitespace: expected" \
+       "sed -i 's@^  separates = t: t.ws != \"\" \&\& !t.glue;@  separates = t: t.ws != \"\";@' cpp.nix" \
+       "$table_check"
 
 # --- mutations of the harness ---
 mutate "harness: the expansion table is emptied" \
@@ -591,7 +639,7 @@ done
 [ "$bad" = 0 ] || exit 1
 # The count this harness declares, checked for equality; poc/lib/mutant.sh
 # says why it is equality and not a floor.
-declared=58
+declared=62
 [ "${#names[@]}" -eq "$declared" ] || {
   echo "${#names[@]} mutations recorded, against the $declared this harness" >&2
   echo "declares. Either a mutate call has gone missing, or one was added" >&2
