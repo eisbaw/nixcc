@@ -1,10 +1,10 @@
 ---
 id: TASK-070
 title: 'Decide where #include resolves from, and how it survives a pure eval'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-09-16 17:27'
-updated_date: '2026-09-16 19:16'
+updated_date: '2026-09-17 07:01'
 labels:
   - frontend
   - preprocessor
@@ -27,9 +27,9 @@ That last option is worth weighing seriously: an attrset of headers is pure, tes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The three options for header provenance are costed: write our own freestanding set, vendor one, or declare hosted headers out of scope
-- [ ] #2 The purity question is settled explicitly: how #include works inside nix flake check, where --impure is not available
-- [ ] #3 A decision record is written with the reasoning, as decision-005 was
+- [x] #1 The three options for header provenance are costed: write our own freestanding set, vendor one, or declare hosted headers out of scope
+- [x] #2 The purity question is settled explicitly: how #include works inside nix flake check, where --impure is not available
+- [x] #3 A decision record is written with the reasoning, as decision-005 was
 - [ ] #4 If the answer restricts what C can be compiled, the README's limits section says so in the same change
 <!-- AC:END -->
 
@@ -44,3 +44,13 @@ poc/08-cpp's entry point is `preprocess { src, file }' and `src' is a STRING. No
 
 THE OTHER THING THAT IS NOW MEASURED rather than guessed: what a header COSTS once it is in. The macro table is one attrset updated with `//', which copies every binding it holds -- 3 MB of peak RSS above lexing at 500 macros, 37 MB at 2000 and 138 MB at 4000 (task-072). `#include <stdio.h>' on any real system is a four-figure macro count before the program has declared anything. If option one is chosen -- write our own freestanding set -- the size of that set is a memory decision as well as a scope one, and this is the number to decide it against.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Decided: freestanding headers only (float, limits, stdarg, stddef), carried in the repo. Recorded as decision-010.
+
+The purity question turned out not to be a blocker. A bare nix eval --expr refuses absolute paths, but the flake's checks already read source purely via flake-relative paths, and nix eval .#checks...drvPath evaluates with no --impure. Headers in the repository are readable inside nix flake check.
+
+The content question was settled by there being no libc: stdio.h would be a header with nothing behind it, which is the silent-failure shape this project refuses everywhere else. AC#4 (README limits) falls to task-013.03, which is where the limit becomes user-visible.
+<!-- SECTION:FINAL_SUMMARY:END -->
